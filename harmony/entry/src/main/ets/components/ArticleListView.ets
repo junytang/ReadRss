@@ -32,6 +32,13 @@ export struct ArticleListView {
 
   @State articles: Article[] = [];
   @State feeds: Feed[] = [];
+  // Full, unfiltered feed list used only for article icon lookup. `feeds` is
+  // filtered by "only unread feeds" for the drawer, which can drop a source
+  // and make its articles lose their icon after marking read.
+  @State iconFeeds: Feed[] = [];
+  // feedId -> normalized icon src, rebuilt only when the feed list changes.
+  // Avoids a linear scan on every article row render.
+  private iconSrcMap: Map<string, string> = new Map();
   @State groups: FeedGroup[] = [];
   @State currentFeedId: string = '';
   @State currentGroupId: string = '';
@@ -42,6 +49,8 @@ export struct ArticleListView {
   @State firstVisibleIndex: number = 0;
   private visibleCount: number = 0;
   private lastMarkedIndex: number = 0;
+  private scrollMarksPending: boolean = false;
+  private lastPrefetchIndex: number = 0;
   private loadSeq: number = 0;
   @State markReadOnScroll: boolean = false;
   @State unreadCount: number = 0;
@@ -115,6 +124,8 @@ export struct ArticleListView {
   /** Refresh the drawer's per-feed unread badges after a read-state change. */
   private async refreshFeeds(): Promise<void> {
     const allFeeds: Feed[] = await rssRepository.listFeeds();
+    this.iconFeeds = allFeeds;
+    this.rebuildIconMap();
     this.feeds = settingsStore.get().onlyUnreadFeeds
       ? allFeeds.filter((feed: Feed) => feed.unreadCount > 0)
       : allFeeds;
@@ -125,8 +136,10 @@ export struct ArticleListView {
   }
 
   onFeedIconChanged(): void {
+    this.rebuildIconMap();
     this.articles = this.articles.slice();
     this.feeds = this.feeds.slice();
+    this.iconFeeds = this.iconFeeds.slice();
   }
 
   onFeedFilterChanged(): void {
@@ -154,6 +167,7 @@ export struct ArticleListView {
   }
 
   aboutToDisappear(): void {
+    this.flushScrollMarks();
     readStatusBatcher.flush();
   }
 
@@ -170,6 +184,10 @@ export struct ArticleListView {
     for (let i = this.lastMarkedIndex; i < start && i < this.articles.length; i++) {
       const article: Article = this.articles[i];
       if (!article.isRead) {
+        // Mutate in place during scrolling. Do NOT slice here: replacing the
+        // whole @State array on every index change forces ForEach to rebuild
+        // all 500 rows and causes visible stutter. We defer the single slice
+        // until scrolling settles (flushScrollMarks).
         this.articles[i] = ArticleListView.withReadState(article, true);
         readStatusBatcher.add(article.id);
         markedCount++;
@@ -177,9 +195,17 @@ export struct ArticleListView {
     }
     this.lastMarkedIndex = start;
     if (markedCount > 0) {
-      this.articles = this.articles.slice();
+      this.scrollMarksPending = true;
       this.unreadCount = Math.max(0, this.unreadCount - markedCount);
       Logger.info(`Marked ${markedCount} articles read on scroll`);
+    }
+  }
+
+  /** Apply deferred visual updates once, after scrolling stops. */
+  private flushScrollMarks(): void {
+    if (this.scrollMarksPending) {
+      this.scrollMarksPending = false;
+      this.articles = this.articles.slice();
     }
   }
 
@@ -246,6 +272,8 @@ export struct ArticleListView {
     this.markReadOnScroll = settingsStore.get().markReadOnScroll;
     const allFeeds: Feed[] = await rssRepository.listFeeds();
     if (seq !== this.loadSeq) return;
+    this.iconFeeds = allFeeds;
+    this.rebuildIconMap();
     this.feeds = settingsStore.get().onlyUnreadFeeds
       ? allFeeds.filter((feed: Feed) => feed.unreadCount > 0)
       : allFeeds;
@@ -261,6 +289,8 @@ export struct ArticleListView {
     if (seq !== this.loadSeq) return;
     this.articles = articles;
     this.lastMarkedIndex = 0;
+    this.lastPrefetchIndex = 0;
+    this.scrollMarksPending = false;
     const unread: number = await rssRepository.unreadCount(this.currentFeedId, this.currentGroupId);
     if (seq !== this.loadSeq) return;
     this.unreadCount = unread;
@@ -528,13 +558,16 @@ export struct ArticleListView {
   }
 
 
-  private iconForFeed(feedId: string): string {
-    for (const feed of this.feeds) {
-      if (feed.id === feedId) {
-        return FeedIcon.src(feed.iconUrl);
-      }
+  private rebuildIconMap(): void {
+    this.iconSrcMap.clear();
+    for (const feed of this.iconFeeds) {
+      this.iconSrcMap.set(feed.id, FeedIcon.src(feed.iconUrl));
     }
-    return '';
+  }
+
+  private iconForFeed(feedId: string): string {
+    const src: string | undefined = this.iconSrcMap.get(feedId);
+    return src === undefined ? '' : src;
   }
 
   private feedsInGroup(groupId: string): Feed[] {
@@ -749,14 +782,19 @@ export struct ArticleListView {
             if (start > 0 && this.showSearch) {
               this.showSearch = false;
             }
-            fullContentPrefetcher.ensureWindow(this.articles, start, this.visibleCount);
+            // Throttle prefetch: only recompute the window after the visible
+            // item moved a few rows, not on every index tick.
+            if (Math.abs(start - this.lastPrefetchIndex) >= 3) {
+              this.lastPrefetchIndex = start;
+              fullContentPrefetcher.ensureWindow(this.articles, start, this.visibleCount);
+            }
             this.markScrolledArticles(start);
           })
-          // On real devices the Refresh container can consume the gesture, so
-          // onScrollIndex may be delayed; onScroll is a fallback trigger.
+          // Flush the deferred row rebuilds when scrolling settles, so the
+          // ForEach is rebuilt once instead of on every scroll frame.
           .onScroll((offset: number, scrollState: ScrollState) => {
-            if (this.firstVisibleIndex > 0) {
-              this.markScrolledArticles(this.firstVisibleIndex);
+            if (scrollState === ScrollState.Idle) {
+              this.flushScrollMarks();
             }
           })
         }
@@ -964,7 +1002,7 @@ export struct ArticleListView {
             .width('100%')
             .layoutWeight(1)
           }
-          .width('82%')
+          .width('66%')
           .height('100%')
           .backgroundColor(this.surfaceColor())
           .padding({ bottom: 16 })

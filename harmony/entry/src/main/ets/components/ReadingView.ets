@@ -1,6 +1,10 @@
 import { webview } from '@kit.ArkWeb';
 import { buffer } from '@kit.ArkTS';
 import { common } from '@kit.AbilityKit';
+import { pasteboard } from '@kit.BasicServicesKit';
+import { systemShare } from '@kit.ShareKit';
+import { uniformTypeDescriptor as utd } from '@kit.ArkData';
+import { BusinessError } from '@kit.BasicServicesKit';
 import { Article, ArticleNeighbors, Feed } from '../model/Models';
 import { rssRepository } from '../rss/RssRepository';
 import { settingsStore } from '../data/SettingsStore';
@@ -141,6 +145,46 @@ export struct ReadingView {
     }
   }
 
+  private async copyLink(): Promise<void> {
+    const link: string = this.article?.link ?? '';
+    if (link.length === 0) {
+      this.getUIContext().getPromptAction().showToast({ message: '这篇文章没有原文链接' });
+      return;
+    }
+    try {
+      const pasteData: pasteboard.PasteData = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, link);
+      await pasteboard.getSystemPasteboard().setData(pasteData);
+      this.getUIContext().getPromptAction().showToast({ message: '链接已复制' });
+    } catch (error) {
+      this.getUIContext().getPromptAction().showToast({ message: `复制失败：${(error as Error).message}` });
+    }
+  }
+
+  private async shareArticle(): Promise<void> {
+    const link: string = this.article?.link ?? '';
+    if (link.length === 0) {
+      this.getUIContext().getPromptAction().showToast({ message: '这篇文章没有原文链接' });
+      return;
+    }
+    try {
+      const title: string = this.article?.title ?? '';
+      const shareData: systemShare.SharedData = new systemShare.SharedData({
+        utd: utd.UniformDataType.HYPERLINK,
+        content: link,
+        title: title,
+        description: title,
+      });
+      const controller: systemShare.ShareController = new systemShare.ShareController(shareData);
+      const context: common.UIAbilityContext =
+        this.getUIContext().getHostContext() as common.UIAbilityContext;
+      await controller.show(context, {
+        selectionMode: systemShare.SelectionMode.SINGLE,
+        previewMode: systemShare.SharePreviewMode.DETAIL,
+      });
+    } catch (error) {
+      this.getUIContext().getPromptAction().showToast({ message: `分享失败：${(error as Error).message}` });
+    }
+  }
 
   private appFont(): string {
     // Reading the tick here makes font changes trigger a component rebuild.
@@ -186,6 +230,23 @@ export struct ReadingView {
                 .fontSize(12)
                 .fontColor(this.darkMode ? '#9AA0A6' : '#5E636A')
             }
+            Blank()
+            Button() {
+              Image($r('app.media.ic_more'))
+                .width(20)
+                .height(20)
+                .fillColor(this.darkMode ? '#E8EAED' : '#1A1C1E')
+            }
+            .type(ButtonType.Circle)
+            .width(32)
+            .height(32)
+            .backgroundColor(Color.Transparent)
+            .margin({ left: 4 })
+            .bindMenu([
+              { value: '用浏览器打开', action: () => this.openOriginal() },
+              { value: '复制链接', action: () => this.copyLink() },
+              { value: '分享', action: () => this.shareArticle() },
+            ])
           }
           .width('100%')
           Text(this.article?.title ?? '').fontFamily(this.appFont())
@@ -239,7 +300,6 @@ export struct ReadingView {
       }
       .width('100%')
       .height('100%')
-
       .backgroundColor(this.darkMode ? '#15171A' : '#FFFFFF')
     }
     .hideTitleBar(true)

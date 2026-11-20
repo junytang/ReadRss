@@ -88,5 +88,11 @@
     "file": "ifanr_1.html",
     "container": "o-single-content__body__content",
     "note": "同上站点不同文章：正文含图片/小标题/列表/表格"
+  },
+  {
+    "name": "scien_1",
+    "file": "scien_1.html",
+    "container": "blog_article",
+    "note": "同上站点不同文章：正文含图片/小标题/列表/表格"
   }
 ]

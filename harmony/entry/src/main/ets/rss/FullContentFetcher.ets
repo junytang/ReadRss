@@ -1,9 +1,10 @@
 import { http } from '@kit.NetworkKit';
+import { util } from '@kit.ArkTS';
 import { Logger } from '../common/Logger';
 import { HtmlDom, HtmlNode } from './HtmlDom';
 
 /** Bumped whenever the extraction algorithm changes so stale cached bodies are re-fetched. */
-export const FULL_CONTENT_VERSION_MARKER: string = '<!--ry-extract-v10-->';
+export const FULL_CONTENT_VERSION_MARKER: string = '<!--ry-extract-v11-->';
 
 /**
  * Lightweight stand-in for Android's Readability4J-based article extraction.
@@ -18,7 +19,7 @@ export class FullContentFetcher {
     try {
       const response: http.HttpResponse = await request.request(url, {
         method: http.RequestMethod.GET,
-        expectDataType: http.HttpDataType.STRING,
+        expectDataType: http.HttpDataType.ARRAY_BUFFER,
         connectTimeout: 10000,
         readTimeout: 10000,
         header: {
@@ -29,12 +30,60 @@ export class FullContentFetcher {
       if (response.responseCode < 200 || response.responseCode >= 300) {
         return '';
       }
-      return FullContentFetcher.clean(response.result as string, title);
+      const bytes: ArrayBuffer = response.result as ArrayBuffer;
+      const charset: string = FullContentFetcher.detectCharset(response, bytes);
+      const html: string = FullContentFetcher.decode(bytes, charset);
+      return FullContentFetcher.clean(html, title);
     } catch (error) {
       Logger.error(`Full content fetch failed: ${(error as Error).message}`);
       return '';
     } finally {
       request.destroy();
+    }
+  }
+
+  /** Detect charset from Content-Type header, then from the HTML <meta> tag. */
+  private static detectCharset(response: http.HttpResponse, bytes: ArrayBuffer): string {
+    // response.header is an object on older APIs and a Map on newer ones;
+    // stringifying covers both without depending on either type.
+    let charset: string = FullContentFetcher.charsetFrom(JSON.stringify(response.header));
+    if (charset.length > 0) {
+      return charset;
+    }
+    // Read the leading part of the document for <meta charset=...>. The charset
+    // declaration itself is ASCII, so a UTF-8 decode is safe here.
+    const headBytes: ArrayBuffer = bytes.byteLength > 2048
+      ? bytes.slice(0, 2048) : bytes;
+    let head: string = '';
+    try {
+      const decoder: util.TextDecoder = util.TextDecoder.create('utf-8', { ignoreBOM: true });
+      head = decoder.decodeToString(new Uint8Array(headBytes));
+    } catch (error) {
+      head = '';
+    }
+    charset = FullContentFetcher.charsetFrom(head);
+    return charset.length > 0 ? charset : 'utf-8';
+  }
+
+  private static charsetFrom(value: string): string {
+    const match: Array<string> | null =
+      value.match(/charset\s*=\s*["']?\s*([\w-]+)/i);
+    if (match === null || match.length < 2) {
+      return '';
+    }
+    return match[1].toLowerCase();
+  }
+
+  private static decode(bytes: ArrayBuffer, charset: string): string {
+    // TextDecoder labels include 'gbk', 'gb2312', 'utf-8', etc.
+    const label: string = charset.length > 0 ? charset : 'utf-8';
+    try {
+      const decoder: util.TextDecoder = util.TextDecoder.create(label, { ignoreBOM: true });
+      return decoder.decodeToString(new Uint8Array(bytes));
+    } catch (error) {
+      Logger.warn(`Unsupported charset ${label}, falling back to utf-8`);
+      const fallback: util.TextDecoder = util.TextDecoder.create('utf-8', { ignoreBOM: true });
+      return fallback.decodeToString(new Uint8Array(bytes));
     }
   }
 
