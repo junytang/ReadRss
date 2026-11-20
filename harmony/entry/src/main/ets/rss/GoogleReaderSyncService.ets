@@ -12,12 +12,13 @@ import {
 } from '../account/AccountModels';
 import { accountRepository, DEFAULT_GROUP_SUFFIX } from '../account/AccountRepository';
 import { database } from '../data/Database';
+import { settingsStore } from '../data/SettingsStore';
 import { Article, Feed, FeedGroup } from '../model/Models';
+import { beginSync, notifySyncBatch, notifySyncFinal, notifyContentReady } from './SyncProgress';
 import {
   ApiParams,
   GReaderItem,
   GReaderSubscription,
-  GReaderUser,
   GoogleReaderApi,
   ItemIdsDto,
   ItemsContentsResult,
@@ -37,7 +38,10 @@ const STARRED_TAG: string = 'user/-/state/com.google/starred';
  * Capping them avoids tens of thousands of requests on a first sync. This is a
  * deliberate deviation from Android, which fetches every read-id page.
  */
-const MAX_READ_ID_PAGES: number = 3;
+/** ID streams are paged with a large page size to minimise network round-trips;
+ *  the configured fetchBatchSize only governs content fetch + insert batches. */
+const ID_PAGE_SIZE: string = '1000';
+const READ_ID_PAGES: number = 3;
 
 /** Port of GoogleReaderRssService.kt (also handles FreshRSS). */
 export class GoogleReaderSyncService implements FeedSyncService {
@@ -54,19 +58,10 @@ export class GoogleReaderSyncService implements FeedSyncService {
 
   async validCredentials(account: Account): Promise<boolean> {
     const api: GoogleReaderApi = this.api(account);
-    const ok: boolean = await api.validCredentials();
-    if (ok) {
-      try {
-        const user: GReaderUser = await api.getUserInfo();
-        if (user.userName) {
-          account.name = user.userName;
-          await database.updateAccount(account);
-        }
-      } catch (error) {
-        // Best effort, same as Android.
-      }
-    }
-    return ok;
+    // Do not overwrite the user-entered display name with the remote username:
+    // the header should show the chosen name, falling back to username only
+    // when no name was provided.
+    return await api.validCredentials();
   }
 
   clearAuthorization(): void {
@@ -92,6 +87,7 @@ export class GoogleReaderSyncService implements FeedSyncService {
       iconUrl: '',
       sortOrder: Date.now(),
       unreadCount: 0,
+      starredCount: 0,
     };
     await api.subscriptionEdit('edit', added.streamId, categoryStreamId(remoteId(groupId)), '', title);
     await database.upsertFeed(feed, account.id);
@@ -198,29 +194,37 @@ export class GoogleReaderSyncService implements FeedSyncService {
     }
     const api: GoogleReaderApi = this.api(account);
     const now: number = Date.now();
+    beginSync();
+    Logger.info('SYNCDBG greader sync begin');
     try {
       const ok: boolean = await api.validCredentials();
+      Logger.info(`SYNCDBG greader credentials ok=${ok}`);
       if (!ok) {
         throw new Error('Invalid credentials');
       }
 
       const isFreshRss: boolean = account.type === AccountType.FRESH_RSS;
       const since: number = Math.floor((now - 30 * 24 * 3600 * 1000) / 1000);
+      const batchSize: number = settingsStore.get().fetchBatchSize;
       const readParams: ApiParams = isFreshRss
-        ? { s: READING_LIST_STREAM, it: READ_TAG, ot: since.toString(), n: '1000' }
-        : { s: READ_TAG, ot: since.toString(), n: '1000' };
-      const unreadParams: ApiParams = { s: READING_LIST_STREAM, xt: READ_TAG, n: '1000' };
-      const starredParams: ApiParams = { s: STARRED_TAG, n: '1000' };
+        ? { s: READING_LIST_STREAM, it: READ_TAG, ot: since.toString(), n: ID_PAGE_SIZE }
+        : { s: READ_TAG, ot: since.toString(), n: ID_PAGE_SIZE };
+      const unreadParams: ApiParams = { s: READING_LIST_STREAM, xt: READ_TAG, n: ID_PAGE_SIZE };
+      const starredParams: ApiParams = { s: STARRED_TAG, n: ID_PAGE_SIZE };
 
+      // Only unread + starred IDs are needed to fetch and render content. Fetch
+      // these first so the first article batch can be shown quickly. The slow
+      // read-ID reconciliation is deferred until after content is committed.
+      Logger.info('SYNCDBG greader fetching unread/starred ids');
       const unreadIds: string[] = await this.allItemIds(api, unreadParams);
       const starredIds: string[] = await this.allItemIds(api, starredParams);
-      const readIds: string[] = await this.allItemIds(api, readParams, MAX_READ_ID_PAGES);
-      Logger.info(`GReader ids: unread=${unreadIds.length} starred=${starredIds.length} read=${readIds.length} (capped at ${MAX_READ_ID_PAGES * 1000})`);
+      Logger.info(`SYNCDBG greader ids unread=${unreadIds.length} starred=${starredIds.length} (id page=${ID_PAGE_SIZE})`);
       const unreadSet: Set<string> = new Set<string>(unreadIds);
       const starredSet: Set<string> = new Set<string>(starredIds);
-      const readSet: Set<string> = new Set<string>(readIds);
 
+      Logger.info('SYNCDBG greader fetching subscriptions');
       const subscriptions: GReaderSubscription[] = await api.getSubscriptionList();
+      Logger.info(`SYNCDBG greader subscriptions=${subscriptions.length}`);
       const keepGroupIds: string[] = [];
       const keepFeedIds: string[] = [];
       const defaultGroupId: string = dbId(account.id, DEFAULT_GROUP_SUFFIX);
@@ -258,6 +262,7 @@ export class GoogleReaderSyncService implements FeedSyncService {
           iconUrl: subscription.iconUrl ?? '',
           sortOrder: keepFeedIds.length,
           unreadCount: 0,
+          starredCount: 0,
         };
         await database.upsertFeed(feed, account.id);
         keepFeedIds.push(feed.id);
@@ -269,24 +274,19 @@ export class GoogleReaderSyncService implements FeedSyncService {
       }
 
       const allLocal: string[] = await database.listRemoteIds(account.id);
-      const localUnread: string[] = await database.listRemoteIds(account.id, false);
       const localRead: string[] = await database.listRemoteIds(account.id, true);
       const localStarred: string[] = await database.listRemoteIds(account.id, undefined, true);
-      const unreadLocals: Set<string> = new Set<string>(localUnread);
       const readLocals: Set<string> = new Set<string>(localRead);
       const starredLocals: Set<string> = new Set<string>(localStarred);
-      const toRead: string[] = [];
       const toUnread: string[] = [];
       const toStar: string[] = [];
       const toUnstar: string[] = [];
       for (const dbIdValue of allLocal) {
         const id: string = remoteId(dbIdValue);
-        if (unreadLocals.has(dbIdValue) && readSet.has(id)) toRead.push(dbIdValue);
         if (readLocals.has(dbIdValue) && unreadSet.has(id)) toUnread.push(dbIdValue);
         if (!starredLocals.has(dbIdValue) && starredSet.has(id)) toStar.push(dbIdValue);
         if (starredLocals.has(dbIdValue) && !starredSet.has(id)) toUnstar.push(dbIdValue);
       }
-      await database.setStates(toRead, true, undefined);
       await database.setStates(toUnread, false, undefined);
       await database.setStates(toStar, undefined, true);
       await database.setStates(toUnstar, undefined, false);
@@ -300,7 +300,8 @@ export class GoogleReaderSyncService implements FeedSyncService {
         }
         toFetch.push(id);
       }
-      for (const batch of await this.chunks(toFetch, 100)) {
+      Logger.info(`SYNCDBG greader toFetch=${toFetch.length} batchSize=${batchSize} (local=${allLocal.length})`);
+      for (const batch of await this.chunks(toFetch, batchSize)) {
         const contents: ItemsContentsResult = await api.getItemsContents(batch);
         const articles: Article[] = [];
         for (const item of contents.items) {
@@ -332,6 +333,10 @@ export class GoogleReaderSyncService implements FeedSyncService {
           });
         }
         result.newArticles += await database.insertArticles(articles, account.id);
+        Logger.info(`SYNCDBG greader batch committed size=${articles.length} newArticles=${result.newArticles}`);
+        // Let the UI refresh unread badges after this batch, without waiting
+        // for the remaining batches to finish.
+        notifySyncBatch();
         const unread: Article[] = articles.filter((article: Article) => !article.isRead);
         for (const feed of await database.listFeeds(account.id)) {
           const feedArticles: Article[] = unread.filter((article: Article) => article.feedId === feed.id);
@@ -341,11 +346,34 @@ export class GoogleReaderSyncService implements FeedSyncService {
         }
       }
 
+      // All readable content is committed. Stop the spinner now even if there
+      // were no new articles (toFetch empty), before the slow reconciliation.
+      notifyContentReady();
+
+      // Deferred, slow part: read-ID pages are only used to mark locally-unread
+      // articles that the server considers read. By now content is committed and
+      // the user can already read, so this runs silently in the background.
+      const readIds: string[] = await this.allItemIds(api, readParams, READ_ID_PAGES);
+      const readSet: Set<string> = new Set<string>(readIds);
+      const localUnread: string[] = await database.listRemoteIds(account.id, false);
+      const toRead: string[] = [];
+      for (const dbIdValue of localUnread) {
+        if (readSet.has(remoteId(dbIdValue))) {
+          toRead.push(dbIdValue);
+        }
+      }
+      if (toRead.length > 0) {
+        await database.setStates(toRead, true, undefined);
+      }
+      Logger.info(`SYNCDBG greader deferred read reconciliation ids=${readIds.length} toRead=${toRead.length}`);
+
       await database.deleteFeedsExcept(account.id, keepFeedIds);
       await database.deleteGroupsExcept(account.id, keepGroupIds);
       account.updateAt = now;
       await database.updateAccount(account);
       result.succeeded = 1;
+      Logger.info('SYNCDBG greader sync end');
+      notifySyncFinal();
     } catch (error) {
       Logger.error(`GReader sync failed: ${(error as Error).message}`);
       result.failed = 1;

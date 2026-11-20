@@ -56,6 +56,7 @@ class ReadYouAccountRepository {
         iconUrl: '',
         sortOrder: 0,
         unreadCount: 0,
+        starredCount: 0,
       };
       await database.upsertFeed(initialFeed, '1');
       Logger.info('Created default account, group and starter feed');

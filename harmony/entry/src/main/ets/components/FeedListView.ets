@@ -1,5 +1,5 @@
 import { common } from '@kit.AbilityKit';
-import { Feed, FeedGroup } from '../model/Models';
+import { Feed, FeedGroup, filterFeedsByDrawer } from '../model/Models';
 import { rssRepository } from '../rss/RssRepository';
 import { settingsStore } from '../data/SettingsStore';
 import { goBack, openAccounts, openFlow, openSettings, openSubscribe } from '../common/NavigationService';
@@ -9,6 +9,7 @@ import { FILTER_ALL, FILTER_STARRED, FILTER_UNREAD } from '../common/Constants';
 import { FilterBarView } from './FilterBarView';
 import { FeedIcon } from '../common/FeedIcon';
 import { FontManager } from '../common/FontManager';
+import { Logger } from '../common/Logger';
 
 /** Home screen: subscription list with pull-to-refresh and unread counts. */
 @Component
@@ -18,7 +19,6 @@ export struct FeedListView {
   @StorageLink('darkMode') darkMode: boolean = false;
   @StorageProp('fontDataTick') fontDataTick: number = 0;
   @StorageProp('feedIconTick') @Watch('onFeedIconChanged') feedIconTick: number = 0;
-  @StorageProp('feedFilterTick') @Watch('onFeedFilterChanged') feedFilterTick: number = 0;
   @StorageProp('topInset') topInset: number = 0;
   @StorageProp('readStatusTick') @Watch('onReadStatusChanged') readStatusTick: number = 0;
   @State feeds: Feed[] = [];
@@ -28,9 +28,13 @@ export struct FeedListView {
   @State isLoading: boolean = true;
   @State activeAccountLabel: string = '';
   @State bannerCount: number = 0;
+  @State unreadTotal: number = 0;
+  @State starredTotal: number = 0;
+  @State allTotal: number = 0;
   @StorageLink('currentFilter') currentFilter: string = FILTER_UNREAD;
   @StorageProp('accountSwitchTick') @Watch('onAccountChanged') accountTick: number = 0;
   @StorageProp('feedDataTick') @Watch('onFeedDataChanged') feedDataTick: number = 0;
+  @StorageProp('syncFirstBatchTick') @Watch('onSyncFirstBatch') firstBatchTick: number = 0;
   @StorageProp('navBackTick') @Watch('onNavBack') navBackTick: number = 0;
 
   onAccountChanged(): void {
@@ -38,7 +42,15 @@ export struct FeedListView {
     this.load();
   }
 
+  onSyncFirstBatch(): void {
+    Logger.info(`SYNCDBG feeds onSyncFirstBatch isSyncing=${this.isSyncing}`);
+    if (this.isSyncing) {
+      this.isRefreshing = false;
+    }
+  }
+
   onFeedDataChanged(): void {
+    Logger.info(`SYNCDBG feeds onFeedDataChanged isSyncing=${this.isSyncing}`);
     this.load();
   }
 
@@ -52,10 +64,6 @@ export struct FeedListView {
 
   onFeedIconChanged(): void {
     this.feeds = this.feeds.slice();
-  }
-
-  onFeedFilterChanged(): void {
-    this.load();
   }
 
   private async loadAccount(): Promise<void> {
@@ -88,16 +96,20 @@ export struct FeedListView {
   private async load(): Promise<void> {
     try {
       const allFeeds: Feed[] = await rssRepository.listFeeds();
-      this.feeds = settingsStore.get().onlyUnreadFeeds
-        ? allFeeds.filter((feed: Feed) => feed.unreadCount > 0)
-        : allFeeds;
+      this.feeds = filterFeedsByDrawer(allFeeds, this.currentFilter);
       const allGroups: FeedGroup[] = await rssRepository.listGroups();
       // Hide groups that have no visible feeds.
       this.groups = allGroups.filter((group: FeedGroup) =>
         this.feeds.some((feed: Feed) => feed.groupId === group.id)
       );
       FeedIcon.prefetch(this.getUIContext().getHostContext() as common.Context, this.feeds);
-      this.bannerCount = await rssRepository.articleCount(this.currentFilter);
+      // Banner totals are global (all sources, no feed/group scope) and are
+      // computed once so they never change when a source or group is clicked.
+      this.unreadTotal = await rssRepository.articleCount(FILTER_UNREAD);
+      this.starredTotal = await rssRepository.articleCount(FILTER_STARRED);
+      this.allTotal = await rssRepository.articleCount(FILTER_ALL);
+      this.bannerCount = this.currentFilter === FILTER_STARRED ? this.starredTotal
+        : (this.currentFilter === FILTER_ALL ? this.allTotal : this.unreadTotal);
     } finally {
       this.isLoading = false;
     }
@@ -109,22 +121,33 @@ export struct FeedListView {
     return '未读';
   }
 
+  /** Per-feed badge count follows the active filter. */
+  private feedBadgeCount(feed: Feed): number {
+    return this.currentFilter === FILTER_STARRED ? feed.starredCount : feed.unreadCount;
+  }
+
   /** Android FeedsBanner: click opens Flow with global scope (group=null, feed=null). */
   private openGlobalFlow(): void {
     openFlow('', `${this.filterName()}文章`);
   }
 
   private async sync(): Promise<void> {
-    // isRefreshing is controlled by Refresh's two-way binding (already true on pull).
-    // Use a separate guard to avoid skipping the request.
+    // A sync is already running (possibly still committing batches). Ignore the
+    // duplicate pull, stop its spinner, and tell the user rather than silently
+    // doing nothing.
     if (this.isSyncing) {
+      this.isRefreshing = false;
+      this.getUIContext().getPromptAction().showToast({ message: '正在同步中，请稍候' });
       return;
     }
     this.isSyncing = true;
     this.isRefreshing = true;
+    Logger.info('SYNCDBG feeds sync start');
     try {
       const result = await rssRepository.syncAll();
+      Logger.info('SYNCDBG feeds syncAll resolved');
       await this.load();
+      Logger.info('SYNCDBG feeds toast 同步完成');
       this.getUIContext().getPromptAction().showToast({
         message: `同步完成：${result.succeeded} 个源，新增 ${result.newArticles} 篇，失败 ${result.failed} 个`,
       });
@@ -133,6 +156,7 @@ export struct FeedListView {
     } finally {
       this.isSyncing = false;
       this.isRefreshing = false;
+      Logger.info('SYNCDBG feeds sync finally (spinner stopped)');
     }
   }
 
@@ -228,11 +252,11 @@ export struct FeedListView {
       .layoutWeight(1)
       .alignItems(HorizontalAlign.Start)
 
-      if (feed.unreadCount > 0) {
-        Text(`${feed.unreadCount}`).fontFamily(this.appFont())
+      if (this.feedBadgeCount(feed) > 0) {
+        Text(`${this.feedBadgeCount(feed)}`).fontFamily(this.appFont())
           .fontSize(12)
-          .fontColor(Color.White)
-          .backgroundColor('#2663D6')
+          .fontColor(this.darkMode ? '#E8EAED' : '#1A1C1E')
+          .backgroundColor(this.darkMode ? '#3A3A3A' : '#E8E8E8')
           .borderRadius(12)
           .padding({ left: 8, right: 8, top: 3, bottom: 3 })
           .margin({ left: 12 })
@@ -358,9 +382,9 @@ export struct FeedListView {
         .padding({ left: 20, right: 20, bottom: 10 })
       }
 
-      // With "only unread feeds" enabled, an empty result is normal: keep the
-      // banner and list layout instead of showing a big centered empty state.
-      if (this.feeds.length === 0 && !this.isLoading && !settingsStore.get().onlyUnreadFeeds) {
+      // An empty result under a filter is normal; only show the big "no feeds"
+      // empty state when the filter is "all" (i.e. genuinely no subscriptions).
+      if (this.feeds.length === 0 && !this.isLoading && this.currentFilter === FILTER_ALL) {
         Column() {
           Text('还没有订阅源').fontFamily(this.appFont())
             .fontSize(18)
@@ -393,12 +417,24 @@ export struct FeedListView {
             }
             .layoutWeight(1)
             .alignItems(HorizontalAlign.Start)
+            if (this.bannerCount > 0) {
+              Text(`${this.bannerCount}`).fontFamily(this.appFont())
+                .fontSize(12)
+                .fontColor(this.darkMode ? '#E8EAED' : '#1A1C1E')
+                .backgroundColor(this.darkMode ? '#3A3A3A' : '#E8E8E8')
+                .borderRadius(10)
+                .padding({ left: 8, right: 8, top: 2, bottom: 2 })
+                .margin({ right: 8 })
+            }
             Text('→').fontFamily(this.appFont()).fontSize(20).fontColor(this.secondaryColor())
           }
           .width('100%')
           .padding({ left: 20, right: 20, top: 10, bottom: 10 })
           .backgroundColor(this.surfaceColor())
           .onClick(() => this.openGlobalFlow())
+
+          // Blank row to visually separate the summary banner from the sources.
+          Row().width('100%').height(12)
         }
 
         Refresh({ refreshing: $$this.isRefreshing }) {
@@ -422,8 +458,9 @@ export struct FeedListView {
             }
 
             if (!this.asDestination && this.feeds.length > 0) {
+              // Enough room for the floating HdsTabs so the last source stays visible.
               ListItem() {
-                Row().width('100%').height(72)
+                Row().width('100%').height(144)
               }
             }
           }

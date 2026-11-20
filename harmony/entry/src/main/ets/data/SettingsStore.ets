@@ -15,12 +15,11 @@ class ReadYouSettingsStore {
       darkMode: await this.readBool('darkMode', this.cache.darkMode),
       syncOnLaunch: await this.readBool('syncOnLaunch', this.cache.syncOnLaunch),
       markReadOnOpen: await this.readBool('markReadOnOpen', this.cache.markReadOnOpen),
-      showFullContent: await this.readBool('showFullContent', this.cache.showFullContent),
       fontSizeIndex: await this.readInt('fontSizeIndex', this.cache.fontSizeIndex),
       customFontPath: await this.readString('customFontPath', this.cache.customFontPath),
       markReadOnScroll: await this.readBool('markReadOnScroll', this.cache.markReadOnScroll),
       keepArticleDays: await this.readInt('keepArticleDays', this.cache.keepArticleDays),
-      onlyUnreadFeeds: await this.readBool('onlyUnreadFeeds', this.cache.onlyUnreadFeeds),
+      fetchBatchSize: await this.readInt('fetchBatchSize', this.cache.fetchBatchSize),
     };
   }
 
@@ -84,16 +83,6 @@ class ReadYouSettingsStore {
     await this.write('markReadOnOpen', value);
   }
 
-  async setShowFullContent(value: boolean): Promise<void> {
-    this.cache.showFullContent = value;
-    await this.write('showFullContent', value);
-  }
-
-  async setOnlyUnreadFeeds(value: boolean): Promise<void> {
-    this.cache.onlyUnreadFeeds = value;
-    await this.write('onlyUnreadFeeds', value);
-  }
-
   async setKeepArticleDays(value: number): Promise<void> {
     this.cache.keepArticleDays = value;
     await this.write('keepArticleDays', value);
@@ -115,6 +104,11 @@ class ReadYouSettingsStore {
   async setFontSizeIndex(value: number): Promise<void> {
     this.cache.fontSizeIndex = value;
     await this.write('fontSizeIndex', value);
+  }
+
+  async setFetchBatchSize(value: number): Promise<void> {
+    this.cache.fetchBatchSize = value;
+    await this.write('fetchBatchSize', value);
   }
 }
 

@@ -13,12 +13,11 @@ export struct SettingsView {
   @StorageProp('topInset') topInset: number = 0;
   @State syncOnLaunch: boolean = true;
   @State markReadOnOpen: boolean = true;
-  @State showFullContent: boolean = true;
   @State fontSizeIndex: number = 1;
   @State customFontPath: string = '';
   @State markReadOnScroll: boolean = false;
   @State keepArticleDays: number = 30;
-  @State onlyUnreadFeeds: boolean = false;
+  @State fetchBatchSize: number = 100;
 
   private surfaceColor(): string {
     return this.darkMode ? '#1F2226' : '#FFFFFF';
@@ -36,12 +35,11 @@ export struct SettingsView {
     const settings = settingsStore.get();
     this.syncOnLaunch = settings.syncOnLaunch;
     this.markReadOnOpen = settings.markReadOnOpen;
-    this.showFullContent = settings.showFullContent;
     this.fontSizeIndex = settings.fontSizeIndex;
     this.customFontPath = settings.customFontPath;
     this.markReadOnScroll = settings.markReadOnScroll;
     this.keepArticleDays = settings.keepArticleDays;
-    this.onlyUnreadFeeds = settings.onlyUnreadFeeds;
+    this.fetchBatchSize = settings.fetchBatchSize;
   }
 
   private applyFontSize(index: number): void {
@@ -51,6 +49,68 @@ export struct SettingsView {
         .setFontSizeScale(fontScaleForIndex(index));
     }
     AppStorage.set<number>('fontScale', fontScaleForIndex(index));
+  }
+
+  private fetchBatchMenu(): Array<MenuElement> {
+    const items: Array<MenuElement> = [];
+    for (const size of [50, 100, 200, 300, 500]) {
+      items.push({
+        value: `${size}`,
+        action: () => {
+          this.fetchBatchSize = size;
+          settingsStore.setFetchBatchSize(size);
+        },
+      });
+    }
+    return items;
+  }
+
+  private keepDaysMenu(): Array<MenuElement> {
+    const items: Array<MenuElement> = [];
+    const values: number[] = [7, 14, 30, 90];
+    const labels: string[] = ['1周', '2周', '1月', '3月'];
+    for (let i: number = 0; i < values.length; i++) {
+      const days: number = values[i];
+      items.push({
+        value: labels[i],
+        action: () => {
+          this.keepArticleDays = days;
+          settingsStore.setKeepArticleDays(days);
+        },
+      });
+    }
+    return items;
+  }
+
+  private fontSizeMenu(): Array<MenuElement> {
+    const items: Array<MenuElement> = [];
+    const labels: string[] = ['小', '中', '大', '特大'];
+    for (let i: number = 0; i < labels.length; i++) {
+      const index: number = i;
+      items.push({
+        value: labels[i],
+        action: () => {
+          this.fontSizeIndex = index;
+          settingsStore.setFontSizeIndex(index);
+          this.applyFontSize(index);
+        },
+      });
+    }
+    return items;
+  }
+
+  private keepDaysLabel(): string {
+    if (this.keepArticleDays === 7) return '1周';
+    if (this.keepArticleDays === 14) return '2周';
+    if (this.keepArticleDays === 30) return '1月';
+    if (this.keepArticleDays === 90) return '3月';
+    return `${this.keepArticleDays}天`;
+  }
+
+  private fontSizeLabel(): string {
+    const labels: string[] = ['小', '中', '大', '特大'];
+    return this.fontSizeIndex >= 0 && this.fontSizeIndex < labels.length
+      ? labels[this.fontSizeIndex] : '中';
   }
 
   private async chooseFont(): Promise<void> {
@@ -201,23 +261,6 @@ export struct SettingsView {
 
             Row() {
               Column() {
-                Text('显示全文').fontFamily(this.appFont()).fontSize(15).fontColor(this.textColor())
-                Text('优先渲染').fontFamily(this.appFont()).fontSize(12).fontColor(this.secondaryColor()).margin({ top: 3 })
-              }
-              .layoutWeight(1)
-              .alignItems(HorizontalAlign.Start)
-              Toggle({ isOn: this.showFullContent, type: ToggleType.Switch })
-                .onChange((value: boolean) => {
-                  this.showFullContent = value;
-                  settingsStore.setShowFullContent(value);
-                })
-            }
-            .width('100%')
-            .padding({ left: 16, right: 16, top: 14, bottom: 14 })
-            .backgroundColor(this.surfaceColor())
-
-            Row() {
-              Column() {
                 Text('滚动标记已读').fontFamily(this.appFont()).fontSize(15).fontColor(this.textColor())
                 Text('滚动出屏幕的文章自动标为已读').fontFamily(this.appFont())
                   .fontSize(12).fontColor(this.secondaryColor()).margin({ top: 3 })
@@ -234,23 +277,25 @@ export struct SettingsView {
             .padding({ left: 16, right: 16, top: 14, bottom: 14 })
             .backgroundColor(this.surfaceColor())
 
-            Row() {
-              Column() {
-                Text('只显示未读的源').fontFamily(this.appFont()).fontSize(15).fontColor(this.textColor())
-                Text('订阅源页面只显示有未读文章的源')
-                  .fontFamily(this.appFont()).fontSize(12).fontColor(this.secondaryColor())
-                  .margin({ top: 3 })
+            Column() {
+              Row() {
+                Text('每次拉取条数').fontFamily(this.appFont()).fontSize(15).fontColor(this.textColor())
+                  .layoutWeight(1)
+                Row() {
+                  Text(`${this.fetchBatchSize}`).fontFamily(this.appFont())
+                    .fontSize(14).fontColor(this.secondaryColor())
+                  Text('›').fontSize(18).fontColor(this.secondaryColor()).margin({ left: 4 })
+                }
+                .bindMenu(this.fetchBatchMenu(), { placement: Placement.BottomRight })
               }
-              .layoutWeight(1)
-              .alignItems(HorizontalAlign.Start)
-              Toggle({ isOn: this.onlyUnreadFeeds, type: ToggleType.Switch })
-                .onChange((value: boolean) => {
-                  this.onlyUnreadFeeds = value;
-                  settingsStore.setOnlyUnreadFeeds(value);
-                  AppStorage.set<number>('feedFilterTick', Date.now());
-                })
+              .width('100%')
+              Text('同步时每批拉取并入库的文章数量')
+                .fontFamily(this.appFont()).fontSize(12).fontColor(this.secondaryColor())
+                .margin({ top: 6 })
+                .alignSelf(ItemAlign.Start)
             }
             .width('100%')
+            .alignItems(HorizontalAlign.Start)
             .padding({ left: 16, right: 16, top: 14, bottom: 14 })
             .backgroundColor(this.surfaceColor())
 
@@ -258,20 +303,12 @@ export struct SettingsView {
               Row() {
                 Text('保留文章时间').fontFamily(this.appFont()).fontSize(15).fontColor(this.textColor())
                   .layoutWeight(1)
-                ForEach([7, 14, 30, 90], (days: number) => {
-                  Text(days === 7 ? '1周' : (days === 14 ? '2周' : (days === 30 ? '1月' : '3月')))
-                    .fontFamily(this.appFont())
-                    .fontSize(12)
-                    .fontColor(this.keepArticleDays === days ? Color.White : this.textColor())
-                    .backgroundColor(this.keepArticleDays === days ? '#2663D6' : this.surfaceColor())
-                    .borderRadius(6)
-                    .padding({ left: 8, right: 8, top: 5, bottom: 5 })
-                    .margin({ left: 4 })
-                    .onClick(() => {
-                      this.keepArticleDays = days;
-                      settingsStore.setKeepArticleDays(days);
-                    })
-                })
+                Row() {
+                  Text(this.keepDaysLabel()).fontFamily(this.appFont())
+                    .fontSize(14).fontColor(this.secondaryColor())
+                  Text('›').fontSize(18).fontColor(this.secondaryColor()).margin({ left: 4 })
+                }
+                .bindMenu(this.keepDaysMenu(), { placement: Placement.BottomRight })
               }
               .width('100%')
               Text('清理超过该时间的文章')
@@ -286,20 +323,12 @@ export struct SettingsView {
 
             Row() {
               Text('正文字号').fontFamily(this.appFont()).fontSize(15).fontColor(this.textColor()).layoutWeight(1)
-              ForEach(['小', '中', '大', '特大'], (label: string, index: number) => {
-                Text(label).fontFamily(this.appFont())
-                  .fontSize(13)
-                  .fontColor(this.fontSizeIndex === index ? Color.White : this.textColor())
-                  .backgroundColor(this.fontSizeIndex === index ? '#2663D6' : this.surfaceColor())
-                  .borderRadius(6)
-                  .padding({ left: 10, right: 10, top: 6, bottom: 6 })
-                  .margin({ left: 6 })
-                  .onClick(() => {
-                    this.fontSizeIndex = index;
-                    settingsStore.setFontSizeIndex(index);
-                    this.applyFontSize(index);
-                  })
-              })
+              Row() {
+                Text(this.fontSizeLabel()).fontFamily(this.appFont())
+                  .fontSize(14).fontColor(this.secondaryColor())
+                Text('›').fontSize(18).fontColor(this.secondaryColor()).margin({ left: 4 })
+              }
+              .bindMenu(this.fontSizeMenu(), { placement: Placement.BottomRight })
             }
             .width('100%')
             .padding({ left: 16, right: 16, top: 14, bottom: 14 })

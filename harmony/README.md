@@ -101,11 +101,9 @@ MVP 有意裁剪了以下内容，完整移植需要分阶段补齐：
 ## 下一步建议
 
 1. 首次在 DevEco 中编译，修正系统图标 / API 签名差异（已尽量只用稳定的 Kit API）。
-2. 把 `SettingsView` 中的 `showFullContent` 真正接入 `RssRepository`，
-   使摘要模式生效（目前仅持久化该偏好）。
-3. 增加后台同步（`@ohos.resourceschedule.backgroundTaskManager`）。
-4. 逐步移植 Fever / GReader 同步与多账号模型。
-5. 补齐 OPML 导入导出、通知与小组件。
+2. 增加后台同步（`@ohos.resourceschedule.backgroundTaskManager`）。
+3. 逐步移植 Fever / GReader 同步与多账号模型。
+4. 补齐 OPML 导入导出、通知与小组件。
 
 ## 许可
 

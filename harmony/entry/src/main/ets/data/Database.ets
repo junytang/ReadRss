@@ -301,6 +301,7 @@ class ReadYouDatabase {
     const sql: string =
       `SELECT f.id, f.title, f.url, f.group_id, f.icon_url, f.sort_order,
               (SELECT COUNT(*) FROM article a WHERE a.feed_id = f.id AND a.is_read = 0) AS unread_count,
+              (SELECT COUNT(*) FROM article a WHERE a.feed_id = f.id AND a.is_starred = 1) AS starred_count,
               (SELECT MAX(a.published_at) FROM article a WHERE a.feed_id = f.id) AS latest_at
        FROM feed f WHERE f.account_id = ? ORDER BY latest_at DESC, f.sort_order ASC, f.title ASC`;
     const result: Feed[] = [];
@@ -315,6 +316,7 @@ class ReadYouDatabase {
           iconUrl: this.str(rs, this.colIndex(rs, 'icon_url')),
           sortOrder: this.lng(rs, this.colIndex(rs, 'sort_order')),
           unreadCount: this.lng(rs, this.colIndex(rs, 'unread_count')),
+          starredCount: this.lng(rs, this.colIndex(rs, 'starred_count')),
         });
       }
     } finally {
@@ -339,6 +341,7 @@ class ReadYouDatabase {
           iconUrl: this.str(rs, this.colIndex(rs, 'icon_url')),
           sortOrder: this.lng(rs, this.colIndex(rs, 'sort_order')),
           unreadCount: 0,
+          starredCount: 0,
         };
       }
     } finally {
@@ -398,9 +401,12 @@ class ReadYouDatabase {
       const pattern: string = `%${searchContent}%`;
       args.push(pattern, pattern, pattern);
     }
+    // Secondary key on id keeps ordering deterministic when several articles
+    // share the same published_at, so the list cannot reshuffle between the
+    // incremental-limit reloads used for paging.
     sql += sortAscending
-      ? ' ORDER BY a.published_at ASC LIMIT ?'
-      : ' ORDER BY a.published_at DESC LIMIT ?';
+      ? ' ORDER BY a.published_at ASC, a.id ASC LIMIT ?'
+      : ' ORDER BY a.published_at DESC, a.id DESC LIMIT ?';
     args.push(limit);
 
     const result: Article[] = [];

@@ -12,6 +12,21 @@ export interface Feed {
   iconUrl: string;
   sortOrder: number;
   unreadCount: number;
+  starredCount: number;
+}
+
+/**
+ * Filter feeds for the subscription drawer: unread keeps feeds with unread
+ * articles, starred keeps feeds with starred articles, all keeps everything.
+ */
+export function filterFeedsByDrawer(feeds: Feed[], filter: string): Feed[] {
+  if (filter === 'unread') {
+    return feeds.filter((feed: Feed) => feed.unreadCount > 0);
+  }
+  if (filter === 'starred') {
+    return feeds.filter((feed: Feed) => feed.starredCount > 0);
+  }
+  return feeds;
 }
 
 export interface Article {
@@ -46,12 +61,11 @@ export interface AppSettings {
   darkMode: boolean;
   syncOnLaunch: boolean;
   markReadOnOpen: boolean;
-  showFullContent: boolean;
   fontSizeIndex: number;
   customFontPath: string;
   markReadOnScroll: boolean;
   keepArticleDays: number;
-  onlyUnreadFeeds: boolean;
+  fetchBatchSize: number;
 }
 
 export function defaultSettings(): AppSettings {
@@ -60,11 +74,10 @@ export function defaultSettings(): AppSettings {
     darkMode: false,
     syncOnLaunch: false,
     markReadOnOpen: true,
-    showFullContent: true,
     fontSizeIndex: 1,
     customFontPath: '',
     markReadOnScroll: false,
     keepArticleDays: 30,
-    onlyUnreadFeeds: false,
+    fetchBatchSize: 100,
   };
 }

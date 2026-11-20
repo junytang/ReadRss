@@ -1,5 +1,5 @@
 import { common } from '@kit.AbilityKit';
-import { Article, Feed, FeedGroup } from '../model/Models';
+import { Article, Feed, FeedGroup, filterFeedsByDrawer } from '../model/Models';
 import { rssRepository } from '../rss/RssRepository';
 import { fullContentPrefetcher } from '../rss/FullContentPrefetcher';
 import { Logger } from '../common/Logger';
@@ -26,8 +26,10 @@ export struct ArticleListView {
   @StorageProp('fontScale') fontScale: number = 1;
   @StorageProp('readStatusTick') @Watch('onReadStatusChanged') readStatusTick: number = 0;
   @StorageProp('feedIconTick') @Watch('onFeedIconChanged') feedIconTick: number = 0;
-  @StorageProp('feedFilterTick') @Watch('onFeedFilterChanged') feedFilterTick: number = 0;
   @StorageProp('accountSwitchTick') @Watch('onAccountSwitched') accountSwitchTick: number = 0;
+  @StorageProp('feedDataTick') @Watch('onSyncBatch') syncBatchTick: number = 0;
+  @StorageProp('syncFirstBatchTick') @Watch('onSyncFirstBatch') firstBatchTick: number = 0;
+  @StorageProp('syncFinishedTick') @Watch('onSyncFinished') syncFinishedTick: number = 0;
   @StorageLink('currentFilter') currentFilter: string = FILTER_UNREAD;
 
   @State articles: Article[] = [];
@@ -52,10 +54,18 @@ export struct ArticleListView {
   private scrollMarksPending: boolean = false;
   private lastPrefetchIndex: number = 0;
   private loadSeq: number = 0;
+  private displayLimit: number = 500;
+  private isLoadingMore: boolean = false;
+  private pageLoadSeq: number = 0;
   @State markReadOnScroll: boolean = false;
   @State unreadCount: number = 0;
   @State starredCount: number = 0;
   @State allCount: number = 0;
+  // Global totals (all sources) for the drawer top row, independent of the
+  // currently selected feed/group.
+  @State globalUnread: number = 0;
+  @State globalStarred: number = 0;
+  @State globalAll: number = 0;
   @State showMarkAllConfirm: boolean = false;
   @State showSearch: boolean = false;
   @State accountName: string = '';
@@ -119,6 +129,10 @@ export struct ArticleListView {
     this.unreadCount = await rssRepository.unreadCount(this.currentFeedId, this.currentGroupId);
     this.starredCount = await rssRepository.articleCount(FILTER_STARRED, this.currentFeedId, this.currentGroupId);
     this.allCount = await rssRepository.articleCount(FILTER_ALL, this.currentFeedId, this.currentGroupId);
+    // Global totals for the drawer top row, never scoped by feed/group.
+    this.globalUnread = await rssRepository.unreadCount();
+    this.globalStarred = await rssRepository.articleCount(FILTER_STARRED);
+    this.globalAll = await rssRepository.articleCount(FILTER_ALL);
   }
 
   /** Refresh the drawer's per-feed unread badges after a read-state change. */
@@ -126,9 +140,7 @@ export struct ArticleListView {
     const allFeeds: Feed[] = await rssRepository.listFeeds();
     this.iconFeeds = allFeeds;
     this.rebuildIconMap();
-    this.feeds = settingsStore.get().onlyUnreadFeeds
-      ? allFeeds.filter((feed: Feed) => feed.unreadCount > 0)
-      : allFeeds;
+    this.feeds = filterFeedsByDrawer(allFeeds, this.currentFilter);
     const allGroups: FeedGroup[] = await rssRepository.listGroups();
     this.groups = allGroups.filter((group: FeedGroup) =>
       this.feeds.some((feed: Feed) => feed.groupId === group.id)
@@ -142,8 +154,39 @@ export struct ArticleListView {
     this.iconFeeds = this.iconFeeds.slice();
   }
 
-  onFeedFilterChanged(): void {
-    this.load();
+  /** First content batch landed: stop the spinner AND reload the list so the
+   *  new articles appear at once (the batch is already committed). The "同步完成"
+   *  toast still comes at sync end; later batches only refresh counts/badges. */
+  onSyncFirstBatch(): void {
+    Logger.info(`SYNCDBG onSyncFirstBatch isSyncing=${this.isSyncing}`);
+    if (this.isSyncing) {
+      this.isRefreshing = false;
+    }
+    // Reload now with the first batch committed, preserving paging depth. Without
+    // this the list would keep showing stale data until onSyncFinished, so the UI
+    // would jump only when the final toast appears.
+    this.load(false, true);
+  }
+
+  /** A full sync finished. Reload the article list with everything committed so
+   *  far, preserving paging depth (covers first-install sync from EntryAbility). */
+  onSyncFinished(): void {
+    Logger.info('SYNCDBG home onSyncFinished -> reload list');
+    this.load(false, true);
+    // A page-level pull refresh (isSyncing=true) shows its own toast; this covers
+    // syncs started elsewhere (first install / launch sync from EntryAbility).
+    if (!this.isSyncing) {
+      this.getUIContext().getPromptAction().showToast({ message: '同步完成' });
+    }
+  }
+
+  /** A sync batch was committed: refresh unread counts/badges live. The list
+   *  itself is reloaded once by onSyncFirstBatch and again by onSyncFinished;
+   *  reloading on every batch would interrupt reading. */
+  onSyncBatch(): void {
+    Logger.info(`SYNCDBG home onSyncBatch articles=${this.articles.length} isSyncing=${this.isSyncing}`);
+    this.refreshCounts();
+    this.refreshFeeds();
   }
 
   onAccountSwitched(): void {
@@ -154,7 +197,14 @@ export struct ArticleListView {
   private async loadAccount(): Promise<void> {
     const account = await accountRepository.active();
     if (account) {
-      this.accountName = account.name;
+      // Prefer the user-entered display name; fall back to the username when
+      // no name was provided.
+      let name: string = account.name;
+      if (name.length === 0) {
+        const credentials = accountRepository.credentials(account);
+        name = credentials.username;
+      }
+      this.accountName = name;
       this.accountTypeLabel = accountTypeShortName(account.type);
     }
   }
@@ -265,18 +315,30 @@ export struct ArticleListView {
     this.articles = next;
   }
 
-  private async load(): Promise<void> {
+  private async load(resetPaging: boolean = true, fromSync: boolean = false): Promise<void> {
+    // During a sync the DB is being written batch by batch. An externally
+    // triggered load would read an intermediate state and reset paging/scroll
+    // markers, so ignore it. The sync's own refreshes pass fromSync=true.
+    if (this.isSyncing && !fromSync) {
+      Logger.info('SYNCDBG home load skipped during sync');
+      return;
+    }
     // Discard results from an older load: selecting a feed then tapping a filter
     // tab can start two overlapping loads whose DB queries resolve out of order.
     const seq: number = ++this.loadSeq;
+    // Invalidate any in-flight loadMore so it cannot append stale rows after us.
+    this.pageLoadSeq++;
+    // Reset to the first page only on a genuine context switch (filter/feed/search).
+    // A sync-completed refresh passes false to preserve how deep the user scrolled.
+    if (resetPaging) {
+      this.displayLimit = 500;
+    }
     this.markReadOnScroll = settingsStore.get().markReadOnScroll;
     const allFeeds: Feed[] = await rssRepository.listFeeds();
     if (seq !== this.loadSeq) return;
     this.iconFeeds = allFeeds;
     this.rebuildIconMap();
-    this.feeds = settingsStore.get().onlyUnreadFeeds
-      ? allFeeds.filter((feed: Feed) => feed.unreadCount > 0)
-      : allFeeds;
+    this.feeds = filterFeedsByDrawer(allFeeds, this.currentFilter);
     const allGroups: FeedGroup[] = await rssRepository.listGroups();
     if (seq !== this.loadSeq) return;
     this.groups = allGroups.filter((group: FeedGroup) =>
@@ -284,10 +346,11 @@ export struct ArticleListView {
     );
     FeedIcon.prefetch(this.getUIContext().getHostContext() as common.Context, this.feeds);
     const articles: Article[] = await rssRepository.listArticles(
-      this.currentFeedId, this.currentFilter, 500, this.currentGroupId, false, this.searchText
+      this.currentFeedId, this.currentFilter, this.displayLimit, this.currentGroupId, false, this.searchText
     );
     if (seq !== this.loadSeq) return;
     this.articles = articles;
+    Logger.info(`SYNCDBG home load done articles=${articles.length} displayLimit=${this.displayLimit}`);
     this.lastMarkedIndex = 0;
     this.lastPrefetchIndex = 0;
     this.scrollMarksPending = false;
@@ -300,9 +363,52 @@ export struct ArticleListView {
     const all: number = await rssRepository.articleCount(FILTER_ALL, this.currentFeedId, this.currentGroupId);
     if (seq !== this.loadSeq) return;
     this.allCount = all;
+    // Drawer global totals, never scoped by the selected feed/group.
+    this.globalUnread = await rssRepository.unreadCount();
+    this.globalStarred = await rssRepository.articleCount(FILTER_STARRED);
+    this.globalAll = await rssRepository.articleCount(FILTER_ALL);
     fullContentPrefetcher.ensureWindow(
       this.articles, this.firstVisibleIndex, this.visibleCount
     );
+  }
+
+  /** Load the next page when scrolling reaches the end. Appends to keep the
+   *  current scroll position and already-read markings intact. */
+  private async loadMore(): Promise<void> {
+    if (this.isLoadingMore) {
+      return;
+    }
+    // While a sync is committing batches the DB holds an intermediate state;
+    // loading another page now could mix partial rows into the list. Triggered
+    // automatically by scrolling, so ignore silently (no toast) to avoid spam.
+    if (this.isSyncing) {
+      return;
+    }
+    // No more rows if the last page was not full.
+    if (this.articles.length < this.displayLimit) {
+      return;
+    }
+    this.isLoadingMore = true;
+    const pageSeq: number = ++this.pageLoadSeq;
+    try {
+      const nextLimit: number = this.displayLimit + 500;
+      const rows: Article[] = await rssRepository.listArticles(
+        this.currentFeedId, this.currentFilter, nextLimit, this.currentGroupId, false, this.searchText
+      );
+      // A newer load()/loadMore() Invalidated this request; discard it so stale
+      // rows cannot overwrite the current list or reorder it.
+      if (pageSeq !== this.pageLoadSeq) {
+        return;
+      }
+      this.displayLimit = nextLimit;
+      // Re-assign the full (now larger) set; ForEach keys keep existing rows,
+      // so scroll position and read state are preserved.
+      this.articles = rows;
+    } catch (error) {
+      Logger.error(`Load more failed: ${(error as Error).message}`);
+    } finally {
+      this.isLoadingMore = false;
+    }
   }
 
   private titleText(): string {
@@ -331,20 +437,29 @@ export struct ArticleListView {
   }
 
   private async sync(): Promise<void> {
+    // Ignore duplicate pull while a sync is still committing batches; stop its
+    // spinner and notify instead of silently returning.
     if (this.isSyncing) {
+      this.isRefreshing = false;
+      this.getUIContext().getPromptAction().showToast({ message: '正在同步中，请稍候' });
       return;
     }
     this.isSyncing = true;
     this.isRefreshing = true;
+    Logger.info('SYNCDBG sync start');
     try {
       await rssRepository.syncAll();
-      await this.load();
+      Logger.info('SYNCDBG syncAll resolved');
+      // No load() here: syncAll emits syncFinishedTick internally, whose watcher
+      // (onSyncFinished) already reloaded the list while preserving paging depth.
+      Logger.info('SYNCDBG toast 同步完成');
       this.getUIContext().getPromptAction().showToast({ message: '同步完成' });
     } catch (error) {
       this.getUIContext().getPromptAction().showToast({ message: `同步失败：${(error as Error).message}` });
     } finally {
       this.isSyncing = false;
       this.isRefreshing = false;
+      Logger.info('SYNCDBG sync finally (spinner stopped)');
     }
   }
 
@@ -367,7 +482,7 @@ export struct ArticleListView {
     const previousUnread: number = this.unreadCount;
     this.setLocalRead(ids, true);
     this.unreadCount = 0;
-    rssRepository.markAllRead(this.currentFeedId).then(() => { this.refreshFeeds(); }).catch((error: Error) => {
+    rssRepository.markAllRead(this.currentFeedId, this.currentGroupId).then(() => { this.refreshFeeds(); }).catch((error: Error) => {
       this.setLocalRead(ids, false);
       this.unreadCount = previousUnread;
       Logger.error(`Mark all read failed: ${error.message}`);
@@ -604,7 +719,15 @@ export struct ArticleListView {
   @Builder
   drawerFeedItem(feedId: string, title: string, unreadCount: number): void {
     Row() {
-      if (this.iconForFeed(feedId).length > 0) {
+      if (feedId.length === 0) {
+        // Top "全部/未读/星标" row uses the same icon as the HdsTabs tab.
+        Image(this.filterIcon())
+          .width(20)
+          .height(20)
+          .padding(3)
+          .fillColor(this.darkMode ? '#E8EAED' : '#1A1C1E')
+          .margin({ right: 8 })
+      } else if (this.iconForFeed(feedId).length > 0) {
         Image(this.iconForFeed(feedId))
           .width(20)
           .height(20)
@@ -627,8 +750,8 @@ export struct ArticleListView {
       if (unreadCount > 0) {
         Text(`${unreadCount}`)
           .fontSize(12)
-          .fontColor(Color.White)
-          .backgroundColor('#2663D6')
+          .fontColor(this.darkMode ? '#E8EAED' : '#1A1C1E')
+          .backgroundColor(this.darkMode ? '#3A3A3A' : '#E8E8E8')
           .borderRadius(10)
           .padding({ left: 7, right: 7, top: 2, bottom: 2 })
           .margin({ left: 6 })
@@ -654,6 +777,31 @@ export struct ArticleListView {
       this.getUIContext().animateTo({ duration: 240, curve: Curve.EaseInOut }, () => { this.showFeedDrawer = false; });
       this.load();
     })
+  }
+
+  /** Badge count follows the active filter: starred uses starredCount, others unread. */
+  private drawerBadgeCount(feed: Feed): number {
+    return this.currentFilter === FILTER_STARRED ? feed.starredCount : feed.unreadCount;
+  }
+
+  /** Total article count for the active filter (shown on the drawer "全部" row). */
+  private drawerTotalCount(): number {
+    if (this.currentFilter === FILTER_STARRED) return this.globalStarred;
+    if (this.currentFilter === FILTER_ALL) return this.globalAll;
+    return this.globalUnread;
+  }
+
+  private filterName(): string {
+    if (this.currentFilter === FILTER_STARRED) return '星标';
+    if (this.currentFilter === FILTER_ALL) return '全部';
+    return '未读';
+  }
+
+  /** Same icons as the HdsTabs bottom bar, used for the drawer top row. */
+  private filterIcon(): Resource {
+    if (this.currentFilter === FILTER_STARRED) return $r('app.media.ic_filter_star');
+    if (this.currentFilter === FILTER_ALL) return $r('app.media.ic_filter_all');
+    return $r('app.media.ic_filter_unread');
   }
 
   private appFont(): string {
@@ -776,6 +924,7 @@ export struct ArticleListView {
           .width('100%')
           .height('100%')
           .divider({ strokeWidth: 1, color: this.darkMode ? '#2A2D31' : '#ECEFF2' })
+          .onReachEnd(() => { this.loadMore(); })
           .onScrollIndex((start: number, end: number) => {
             this.firstVisibleIndex = start;
             this.visibleCount = end >= start ? end - start + 1 : 0;
@@ -970,12 +1119,17 @@ export struct ArticleListView {
 
             List() {
               ListItem() {
-                this.drawerFeedItem('', '全部', 0)
+                this.drawerFeedItem('', this.filterName(), this.drawerTotalCount())
+              }
+
+              // Blank row separating the "全部" summary from the source list.
+              ListItem() {
+                Row().width('100%').height(12)
               }
 
               if (this.feeds.length === 0) {
                 ListItem() {
-                  Text(settingsStore.get().onlyUnreadFeeds ? '没有未读的订阅源' : '还没有订阅源')
+                  Text(this.currentFilter === FILTER_ALL ? '还没有订阅源' : '该筛选下没有订阅源')
                     .fontFamily(this.appFont())
                     .fontSize(13)
                     .fontColor(this.secondaryColor())
@@ -989,18 +1143,21 @@ export struct ArticleListView {
                 }
                 ForEach(this.feedsInGroup(group.id), (feed: Feed) => {
                   ListItem() {
-                    this.drawerFeedItem(feed.id, feed.title, feed.unreadCount)
+                    this.drawerFeedItem(feed.id, feed.title, this.drawerBadgeCount(feed))
                   }
                 }, (feed: Feed) => feed.id)
               }, (group: FeedGroup) => group.id)
               ForEach(this.ungroupedFeeds(), (feed: Feed) => {
                 ListItem() {
-                  this.drawerFeedItem(feed.id, feed.title, feed.unreadCount)
+                  this.drawerFeedItem(feed.id, feed.title, this.drawerBadgeCount(feed))
                 }
               }, (feed: Feed) => feed.id)
             }
             .width('100%')
             .layoutWeight(1)
+            // Padding on the List reserves space at the bottom even when
+            // scrolled to the end, so the last source never sits on the edge.
+            .padding({ bottom: 50 })
           }
           .width('66%')
           .height('100%')

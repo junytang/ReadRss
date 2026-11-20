@@ -1,7 +1,9 @@
 import { Account, AccountType, dbId, remoteId } from '../account/AccountModels';
 import { accountRepository } from '../account/AccountRepository';
 import { database } from '../data/Database';
+import { settingsStore } from '../data/SettingsStore';
 import { Article, Feed, FeedGroup } from '../model/Models';
+import { beginSync, notifySyncBatch, notifySyncFinal, notifyContentReady } from './SyncProgress';
 import { FeverApi, FeverFeed, FeverGroupMapping, FeverItem, FeverStatus } from './FeverApi';
 import { FeedSyncService, SyncResult } from './SyncService';
 import { Logger } from '../common/Logger';
@@ -41,6 +43,8 @@ export class FeverSyncService implements FeedSyncService {
     const preTime: number = Date.now();
     const api: FeverApi = this.api(account);
     const result: SyncResult = { succeeded: 0, failed: 0, newArticles: 0 };
+    beginSync();
+    Logger.info('SYNCDBG fever sync begin');
 
     try {
       const groupsBody = await api.getGroups();
@@ -113,6 +117,7 @@ export class FeverSyncService implements FeedSyncService {
           iconUrl: favicon,
           sortOrder: i,
           unreadCount: 0,
+          starredCount: 0,
         };
         await database.upsertFeed(local, account.id);
         feedTitles.set(local.id, local.title);
@@ -120,9 +125,12 @@ export class FeverSyncService implements FeedSyncService {
 
       let lastSeenId: string = account.lastArticleId ?? '';
       let newArticles: number = 0;
+      const batchSize: number = settingsStore.get().fetchBatchSize;
+      Logger.info(`SYNCDBG fever fetching items batchSize=${batchSize}`);
       for (;;) {
         const body = await api.getItemsSince(lastSeenId);
         const items: FeverItem[] = body.items ?? [];
+        Logger.info(`SYNCDBG fever got items page=${items.length}`);
         const articles: Article[] = [];
         for (const item of items) {
           const id: string = String(item.id ?? '');
@@ -148,12 +156,19 @@ export class FeverSyncService implements FeedSyncService {
             fullContent: '',
           });
         }
-        newArticles += await database.insertArticles(articles, account.id);
-        const unread: Article[] = articles.filter((article: Article) => !article.isRead);
-        for (const feed of await database.listFeeds(account.id)) {
-          const feedArticles: Article[] = unread.filter((article: Article) => article.feedId === feed.id);
-          if (feedArticles.length > 0) {
-            await NotificationHelper.notify(feed.title, feedArticles[0].title, feedArticles.length);
+        // Insert in configured batches and notify the UI after each one so
+        // unread counts update while the rest of the sync continues in background.
+        for (let start: number = 0; start < articles.length; start += batchSize) {
+          const chunk: Article[] = articles.slice(start, start + batchSize);
+          newArticles += await database.insertArticles(chunk, account.id);
+          Logger.info(`SYNCDBG fever batch committed size=${chunk.length} newArticles=${newArticles}`);
+          notifySyncBatch();
+          const unread: Article[] = chunk.filter((article: Article) => !article.isRead);
+          for (const feed of await database.listFeeds(account.id)) {
+            const feedArticles: Article[] = unread.filter((article: Article) => article.feedId === feed.id);
+            if (feedArticles.length > 0) {
+              await NotificationHelper.notify(feed.title, feedArticles[0].title, feedArticles.length);
+            }
           }
         }
         if (items.length === 0) {
@@ -165,6 +180,8 @@ export class FeverSyncService implements FeedSyncService {
         }
       }
       result.newArticles = newArticles;
+      // Content is committed; stop the spinner before the slower state reconciliation.
+      notifyContentReady();
 
       const unread: string[] | undefined = await api.getUnreadIds();
       const unreadSet: Set<string> | undefined = unread === undefined ? undefined : new Set<string>(unread);
@@ -202,6 +219,8 @@ export class FeverSyncService implements FeedSyncService {
       account.lastArticleId = lastSeenId.length > 0 ? dbId(account.id, lastSeenId) : null;
       await database.updateAccount(account);
       result.succeeded = 1;
+      Logger.info('SYNCDBG fever sync end');
+      notifySyncFinal();
     } catch (error) {
       Logger.error(`Fever sync failed: ${(error as Error).message}`);
       result.failed = 1;

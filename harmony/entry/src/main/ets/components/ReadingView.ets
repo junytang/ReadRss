@@ -54,7 +54,7 @@ export struct ReadingView {
     this.pushHtml();
     Logger.info(`Open article: cachedFull=${article.fullContent.length} cachedBody=${article.content.length}`);
 
-    if (settingsStore.get().showFullContent && !rssRepository.hasCurrentFullContent(article) && article.link.length > 0) {
+    if (!rssRepository.hasCurrentFullContent(article) && article.link.length > 0) {
       rssRepository.ensureFullContent(this.articleId).then(async (updated: Article | undefined) => {
         if (updated && updated.fullContent.length > 0) {
           this.article = updated;

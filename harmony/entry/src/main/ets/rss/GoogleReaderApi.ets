@@ -1,5 +1,6 @@
 import { http } from '@kit.NetworkKit';
 import { Logger } from '../common/Logger';
+import { gReaderTokenStore } from './GReaderTokenStore';
 
 export interface GReaderCategory { id: string; label: string }
 export interface GReaderSubscription {
@@ -85,18 +86,34 @@ async function withRetry<T>(action: () => Promise<T>, onRetry: () => void): Prom
   throw new Error('unreachable');
 }
 
-/** HTTP client for the Google Reader API (also used by FreshRSS). Mirrors GoogleReaderAPI.kt. */
+/** HTTP client for the Google Reader API (also used by FreshRSS). Mirrors GoogleReaderAPI.kt.
+ *  Login tokens are persisted via gReaderTokenStore and loaded lazily on first use. */
 export class GoogleReaderApi {
   private serverUrl: string;
   private username: string;
   private password: string;
   private loginToken: string = '';
   private actionToken: string = '';
+  private tokensLoaded: boolean = false;
 
   constructor(serverUrl: string, username: string, password: string) {
     this.serverUrl = serverUrl;
     this.username = username;
     this.password = password;
+  }
+
+  /** Load persisted tokens once, on first auth check. */
+  private async loadTokens(): Promise<void> {
+    if (this.tokensLoaded) {
+      return;
+    }
+    this.tokensLoaded = true;
+    const cached = await gReaderTokenStore.load(this.serverUrl, this.username);
+    if (cached) {
+      this.loginToken = cached.loginToken;
+      this.actionToken = cached.actionToken;
+      Logger.info('SYNCDBG greader tokens loaded from store');
+    }
   }
 
   // ------------------------------- auth -----------------------------------
@@ -137,9 +154,11 @@ export class GoogleReaderApi {
     );
     // Android accepts an empty action token and still sends T= (see GoogleReaderAPI.kt:144-150).
     this.actionToken = tokenText.trim();
+    await gReaderTokenStore.save(this.serverUrl, this.username, this.loginToken, this.actionToken);
   }
 
   private async ensureAuth(): Promise<void> {
+    await this.loadTokens();
     if (this.loginToken.length === 0) {
       await this.reAuthenticate();
     }
@@ -148,9 +167,19 @@ export class GoogleReaderApi {
   private clearAuth(): void {
     this.loginToken = '';
     this.actionToken = '';
+    gReaderTokenStore.clear(this.serverUrl, this.username);
+  }
+
+  /** True when a persisted login token has been loaded. */
+  hasAuth(): boolean {
+    return this.loginToken.length > 0;
   }
 
   async validCredentials(): Promise<boolean> {
+    await this.loadTokens();
+    if (this.hasAuth()) {
+      return true;
+    }
     try {
       await this.reAuthenticate();
       return true;

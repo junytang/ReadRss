@@ -4,6 +4,7 @@ import { database } from '../data/Database';
 import { settingsStore } from '../data/SettingsStore';
 import { accountRepository } from '../account/AccountRepository';
 import { rssRepository } from '../rss/RssRepository';
+import { gReaderTokenStore } from '../rss/GReaderTokenStore';
 import { FILTER_UNREAD, fontScaleForIndex } from '../common/Constants';
 import { Logger } from '../common/Logger';
 import { WindowInsets } from '../common/WindowInsets';
@@ -69,6 +70,7 @@ export default class EntryAbility extends UIAbility {
     const context = this.context;
     const dataReady: Promise<void> = database.init(context)
       .then(() => settingsStore.init(context))
+      .then(() => gReaderTokenStore.init(context))
       .then(async () => {
         await accountRepository.ensureDefault();
         // Startup retention cleanup (non-blocking for UI).
@@ -86,11 +88,12 @@ export default class EntryAbility extends UIAbility {
         AppStorage.setOrCreate<string>('activeAccountId', settingsStore.get().activeAccountId);
         AppStorage.setOrCreate<number>('accountSwitchTick', 0);
         AppStorage.setOrCreate<number>('feedDataTick', 0);
+        AppStorage.setOrCreate<number>('syncFirstBatchTick', 0);
+        AppStorage.setOrCreate<number>('syncFinishedTick', 0);
         AppStorage.setOrCreate<number>('navBackTick', 0);
         AppStorage.setOrCreate<number>('fontDataTick', 0);
         AppStorage.setOrCreate<number>('readStatusTick', 0);
         AppStorage.setOrCreate<number>('feedIconTick', 0);
-        AppStorage.setOrCreate<number>('feedFilterTick', 0);
         AppStorage.setOrCreate<string>('lastChangedArticle', '');
         AppStorage.setOrCreate<number>('fontScale',
           fontScaleForIndex(settingsStore.get().fontSizeIndex));

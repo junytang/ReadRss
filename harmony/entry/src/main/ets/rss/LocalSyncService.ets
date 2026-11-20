@@ -1,7 +1,9 @@
 import { http } from '@kit.NetworkKit';
 import { Account, dbId } from '../account/AccountModels';
 import { database } from '../data/Database';
+import { settingsStore } from '../data/SettingsStore';
 import { Article, Feed } from '../model/Models';
+import { beginSync, notifySyncBatch, notifySyncFinal, notifyContentReady } from './SyncProgress';
 import { ParsedFeed, RssParser } from './RssParser';
 import { FeedSyncService, SyncResult } from './SyncService';
 import { Logger } from '../common/Logger';
@@ -65,6 +67,7 @@ export class LocalSyncService implements FeedSyncService {
       iconUrl: '',
       sortOrder: Date.now(),
       unreadCount: parsed.articles.length,
+      starredCount: 0,
     };
     await database.upsertFeed(feed, account.id);
     await database.insertArticles(parsed.articles, account.id);
@@ -74,6 +77,9 @@ export class LocalSyncService implements FeedSyncService {
   async sync(account: Account): Promise<SyncResult> {
     const feeds: Feed[] = await database.listFeeds(account.id);
     const result: SyncResult = { succeeded: 0, failed: 0, newArticles: 0 };
+    const batchSize: number = settingsStore.get().fetchBatchSize;
+    beginSync();
+    Logger.info(`SYNCDBG local sync begin feeds=${feeds.length} batchSize=${batchSize}`);
     for (const feed of feeds) {
       try {
         const parsed: ParsedFeed = this.parser.parse(await this.fetch(feed.url), feed.id, feed.title);
@@ -81,13 +87,22 @@ export class LocalSyncService implements FeedSyncService {
           feed.title = parsed.title;
           await database.upsertFeed(feed, account.id);
         }
-        result.newArticles += await database.insertArticles(parsed.articles, account.id);
+        for (let start: number = 0; start < parsed.articles.length; start += batchSize) {
+          const chunk: Article[] = parsed.articles.slice(start, start + batchSize);
+          result.newArticles += await database.insertArticles(chunk, account.id);
+          Logger.info(`SYNCDBG local batch committed feed=${feed.title} size=${chunk.length} newArticles=${result.newArticles}`);
+          notifySyncBatch();
+        }
         result.succeeded += 1;
       } catch (error) {
         result.failed += 1;
         Logger.error(`Local sync failed for ${feed.url}: ${(error as Error).message}`);
       }
     }
+    // All feed content is committed; stop the spinner here.
+    notifyContentReady();
+    Logger.info('SYNCDBG local sync end');
+    notifySyncFinal();
     return result;
   }
 

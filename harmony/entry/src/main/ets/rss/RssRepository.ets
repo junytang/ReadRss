@@ -1,4 +1,4 @@
-import { Account, AccountType } from '../account/AccountModels';
+import { Account } from '../account/AccountModels';
 import { accountRepository } from '../account/AccountRepository';
 import { database } from '../data/Database';
 import { Article, ArticleNeighbors, Feed, FeedGroup } from '../model/Models';
@@ -170,8 +170,8 @@ class FeedRepository {
     const account: Account = await this.activeAccount();
     try {
       const result: SyncResult = await syncServiceFor(account).sync(account);
-      // Let the home list reload after data changes without a manual pull-to-refresh.
-      AppStorage.setOrCreate<number>('feedDataTick', Date.now());
+      // Each service emits feedDataTick per batch and notifySyncFinal at the end;
+      // no extra tick here to avoid a redundant full UI reload.
       return result;
     } catch (error) {
       Logger.error(`Sync failed: ${(error as Error).message}`);
@@ -224,19 +224,19 @@ class FeedRepository {
     await syncServiceFor(account).markStarred(account, article, starred);
   }
 
-  async markAllRead(feedId: string): Promise<void> {
+  /** Mark all unread articles in the current scope (feed / group / all) as read.
+   *  Only unread rows are collected, so already-read articles are never sent to
+   *  the server again, reducing load for large accounts. */
+  async markAllRead(feedId: string, groupId?: string): Promise<void> {
     const account: Account = await this.activeAccount();
     const service: FeedSyncService = syncServiceFor(account);
-    if (feedId.length === 0) {
-      if (account.type === AccountType.FEVER) {
-        await service.markRead(account, [], true);
-      } else {
-        const all: Article[] = await database.listArticles(account.id, '', 'all', 100000);
-        await service.markRead(account, all.map((article: Article) => article.id), true);
-      }
+    const unread: Article[] = await database.listArticles(
+      account.id, feedId, 'unread', 100000, groupId
+    );
+    if (unread.length === 0) {
       return;
     }
-    await service.markReadFeed(account, feedId, true);
+    await service.markRead(account, unread.map((article: Article) => article.id), true);
   }
 }
 
