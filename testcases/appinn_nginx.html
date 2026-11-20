@@ -1,0 +1,224 @@
+<div class="single_post">
+						<div class="breadcrumb" itemscope="" itemtype="https://schema.org/BreadcrumbList"><div><i class="fa fa-home"></i></div><div itemprop="itemListElement" itemscope="" itemtype="https://schema.org/ListItem" class="root"><a href="https://www.appinn.com" itemprop="item"><span itemprop="name">Home</span><meta itemprop="position" content="1"></a></div><div><i class="fa fa-caret-right"></i></div><div itemprop="itemListElement" itemscope="" itemtype="https://schema.org/ListItem"><a href="https://www.appinn.com/category/security/" itemprop="item"><span itemprop="name">安全情报</span><meta itemprop="position" content="2"></a></div></div>						<header>
+							<h1 class="title single-title entry-title">Nginx 爆出严重漏洞，HTTP/2 用户注意：可能被远程执行代码｜CVE-2026-123007 评分 8.1分</h1>
+										<div class="post-info">
+                                <span class="thecategory"><a href="https://www.appinn.com/category/security/" title="View all posts in 安全情报">安全情报</a></span>
+                            <span class="thetime updated"><i class="fa fa-clock-o"></i> <span>2026/11/19</span></span>
+                            <span class="theauthor"><i class="fa fa-user"></i> <span><a href="https://www.appinn.com/author/qingwa/" rel="author">青小蛙</a></span></span>
+
+<span class="thecomment"><i class="fa fa-comments"></i>
+<a href="https://www.appinn.com/nginx-http2-security-vulnerabilities-2026/#meta-discussion" itemprop="interactionCount">
+  0</a>
+</span>
+
+                            			</div>
+								</header><!--.headline_area-->
+						<div class="post-single-content box mark-links entry-content">
+
+<p class="has-very-light-gray-to-cyan-bluish-gray-gradient-background has-background wp-block-paragraph">如果你使用 Nginx，并且开启了 HTTP/2，需要更新。<br>注意：Nginx 非常常见，也可能包含在很多其他服务中。</p>
+
+
+
+<p class="wp-block-paragraph">2026 年 11 月 18 日，Nginx 披露了多个安全漏洞，其中两项涉及 HTTP/2，<strong>攻击者可能在无需登录的情况下远程执行代码（RCE）。</strong></p>
+
+
+
+<p class="wp-block-paragraph">青小蛙也趁早更新了小众软件的 WordPress 主站和 Discourse <a href="https://meta.appinn.net" target="_blank" rel="noopener">论坛<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" aria-hidden="true" role="img" width="0.7em" height="0.7em" preserveAspectRatio="xMidYMid meet" viewBox="0 0 20 20"><path d="M9 3h8v8l-2-1V6.92l-5.6 5.59l-1.41-1.41L14.08 5H10zm3 12v-3l2-2v7H3V6h8L9 8H5v7h7z" fill="currentColor"></path></svg></a>。结果两个服务都遇到了点问题，放在最后再说。</p>
+
+
+
+<figure class="wp-block-image size-full"><img fetchpriority="high" decoding="async" width="804" height="351" src="https://static3cdn.appinn.com/images/2026/11/NGINX严重漏洞警报：HTTP_2高危风险.jpg" alt="Nginx 爆出严重漏洞，HTTP/2 用户注意：可能被远程执行代码｜CVE-2026-123007 评分 8.1分 1" class="wp-image-60908" title="Nginx 爆出严重漏洞，HTTP/2 用户注意：可能被远程执行代码｜CVE-2026-123007 评分 8.1分 1" srcset="https://static3cdn.appinn.com/images/2026/11/NGINX严重漏洞警报：HTTP_2高危风险.jpg 804w, https://static3cdn.appinn.com/images/2026/11/NGINX严重漏洞警报：HTTP_2高危风险-767x335.jpg 767w" sizes="(max-width: 804px) 100vw, 804px"></figure>
+
+
+
+<h2 class="wp-block-heading">这次 Nginx 漏洞有多严重？</h2>
+
+
+
+<p class="wp-block-paragraph">这次披露的漏洞中，最值得关注的是两项 HTTP/2 安全漏洞：</p>
+
+
+
+<ul class="wp-block-list">
+<li><strong>CVE-2026-123007</strong>：HTTP/2 流量控制处理中的内存损坏问题，可能导致远程代码执行。</li>
+
+
+
+<li><strong>CVE-2026-123633</strong>：HTTP/2 连接复用中的 Use-after-free（释放后使用）问题，在特定条件下可能导致远程代码执行。</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">此外，还有涉及 DNS 解析、TLS、<code>try_files</code> 与 <code>alias</code> 等功能的安全漏洞。</p>
+
+
+
+<p class="wp-block-paragraph">对于普通网站管理员来说，最需要关注的是：<strong>Nginx 是否启用了 HTTP/2，以及是否已经安装安全补丁。</strong></p>
+
+
+
+<h2 class="wp-block-heading">如何检查并修复 NGINX 漏洞？</h2>
+
+
+
+<p class="wp-block-paragraph">首先查看当前 NGINX 版本：</p>
+
+
+<div class="wp-block-syntaxhighlighter-code "><div><div id="highlighter_436628" class="syntaxhighlighter  plain"><table border="0" cellpadding="0" cellspacing="0"><tbody><tr><td class="gutter"><div class="line number1 index0 alt2">1</div></td><td class="code"><div class="container"><div class="line number1 index0 alt2"><code class="plain plain">nginx -v</code></div></div></td></tr></tbody></table></div></div></div>
+
+
+<p class="wp-block-paragraph">NGINX 官方已经在以下版本中修复相关漏洞：</p>
+
+
+
+<ul class="wp-block-list">
+<li><strong>稳定版：1.30.7</strong></li>
+
+
+
+<li><strong>主线版：1.31.9</strong></li>
+</ul>
+
+
+
+<h3 class="wp-block-heading">暂时无法升级怎么办？</h3>
+
+
+
+<p class="wp-block-paragraph">可以临时关闭 HTTP/2，检查方式：</p>
+
+
+<div class="wp-block-syntaxhighlighter-code "><div><div id="highlighter_120181" class="syntaxhighlighter  plain"><table border="0" cellpadding="0" cellspacing="0"><tbody><tr><td class="gutter"><div class="line number1 index0 alt2">1</div></td><td class="code"><div class="container"><div class="line number1 index0 alt2"><code class="plain plain">nginx -T 2&gt;&amp;amp;1 | grep -E 'http2|quic'</code></div></div></td></tr></tbody></table></div></div></div>
+
+
+<p class="wp-block-paragraph">如果配置中出现 <code>http2 on;</code>，就去把这一行删掉。然后重启 Nginx 就行了。</p>
+
+
+
+<p class="wp-block-paragraph">对于 Docker 用户，需要特别注意：更新前需要确认镜像中的 Nginx 版本也更新了。</p>
+
+
+
+<p class="wp-block-paragraph">不然很尴尬。</p>
+
+
+
+<h2 class="wp-block-heading">青小蛙遇到的两个问题</h2>
+
+
+
+<p class="wp-block-paragraph">WordPress 的更新比较容易，很快就搞定了。顺手还升级了 PHP8.5，目前已经跑起来了。</p>
+
+
+
+<p class="wp-block-paragraph">论坛就，很尴尬了。</p>
+
+
+
+<p class="wp-block-paragraph">Discourse 官方已经修复并推送新版本，于是青小蛙使用的是官方标准更新方式：</p>
+
+
+<div class="wp-block-syntaxhighlighter-code "><div><div id="highlighter_185277" class="syntaxhighlighter  plain"><table border="0" cellpadding="0" cellspacing="0"><tbody><tr><td class="gutter"><div class="line number1 index0 alt2">1</div><div class="line number2 index1 alt1">2</div><div class="line number3 index2 alt2">3</div></td><td class="code"><div class="container"><div class="line number1 index0 alt2"><code class="plain plain">cd /var/discourse</code></div><div class="line number2 index1 alt1"><code class="plain plain">git pull</code></div><div class="line number3 index2 alt2"><code class="plain plain">./launcher rebuild app</code></div></div></td></tr></tbody></table></div></div></div>
+
+
+<p class="wp-block-paragraph">但更新后检查：</p>
+
+
+<div class="wp-block-syntaxhighlighter-code "><div><div id="highlighter_870924" class="syntaxhighlighter  plain"><table border="0" cellpadding="0" cellspacing="0"><tbody><tr><td class="gutter"><div class="line number1 index0 alt2">1</div></td><td class="code"><div class="container"><div class="line number1 index0 alt2"><code class="plain plain">nginx version: nginx/1.26.3</code></div></div></td></tr></tbody></table></div></div></div>
+
+
+<p class="wp-block-paragraph">这就…很老很老了，甚至这个版本已经停止维护了。</p>
+
+
+
+<p class="wp-block-paragraph">百思不得其解，我就去研究了一下源码。</p>
+
+
+
+<p class="wp-block-paragraph">原来，Discourse 真的就一直在使用 1.26.3 这个版本，目的是跟随基础镜像 Debian 13。</p>
+
+
+
+<p class="wp-block-paragraph">但为了解决安全问题，不断的打补丁：</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" width="964" height="406" src="https://static3cdn.appinn.com/images/2026/11/screenshot-2026-11-19-at-10.36.35-AM@2x.avif" alt="Nginx 爆出严重漏洞，HTTP/2 用户注意：可能被远程执行代码｜CVE-2026-123007 评分 8.1分 2" class="wp-image-60906" title="Nginx 爆出严重漏洞，HTTP/2 用户注意：可能被远程执行代码｜CVE-2026-123007 评分 8.1分 2" srcset="https://static3cdn.appinn.com/images/2026/11/screenshot-2026-11-19-at-10.36.35-AM@2x.avif 964w, https://static3cdn.appinn.com/images/2026/11/screenshot-2026-11-19-at-10.36.35-AM@2x-767x323.avif 767w" sizes="(max-width: 964px) 100vw, 964px"></figure>
+
+
+
+<p class="wp-block-paragraph">好吧，修了就好。</p>
+
+
+
+<p class="wp-block-paragraph">于是重建论坛程序，成功之后发现：<strong>未完成更新！</strong></p>
+
+
+
+<p class="wp-block-paragraph">Nginx 补丁没装上。再去查，发现：</p>
+
+
+
+<p class="wp-block-paragraph">今天（11月19日）上午，Discourse 已经合并了安全修复代码，并在 Docker Hub 发布了新的基础镜像，也修改了代码，进行了推送。</p>
+
+
+
+<p class="wp-block-paragraph">但是，目前处于等待审核阶段，代码没有被合并：</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" width="1084" height="454" src="https://static3cdn.appinn.com/images/2026/11/screenshot-2026-11-19-at-10.10.11-AM@2x.avif" alt="Nginx 爆出严重漏洞，HTTP/2 用户注意：可能被远程执行代码｜CVE-2026-123007 评分 8.1分 3" class="wp-image-60907" title="Nginx 爆出严重漏洞，HTTP/2 用户注意：可能被远程执行代码｜CVE-2026-123007 评分 8.1分 3" srcset="https://static3cdn.appinn.com/images/2026/11/screenshot-2026-11-19-at-10.10.11-AM@2x.avif 1084w, https://static3cdn.appinn.com/images/2026/11/screenshot-2026-11-19-at-10.10.11-AM@2x-766x321.avif 766w" sizes="(max-width: 1084px) 100vw, 1084px"></figure>
+
+
+
+<p class="wp-block-paragraph">所以，还得继续等…</p>
+
+
+
+<h2 class="wp-block-heading">最后要吐槽</h2>
+
+
+
+<p class="wp-block-paragraph">以前更新程序，青小蛙内心的期待是：<strong>加速！提升！性能！</strong></p>
+
+
+
+<p class="wp-block-paragraph">现在更新程序，内心的期待变成了：<strong>安全！可靠！别漏！</strong></p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity">
+
+
+
+<p class="wp-block-paragraph">原文：https://www.appinn.com/nginx-http2-security-vulnerabilities-2026/</p>
+
+
+
+<p class="wp-block-paragraph">参考资料：</p>
+
+
+
+<ul class="wp-block-list">
+<li><a href="https://nginx.org/en/security_advisories.html" target="_blank" rel="noopener">NGINX 官方安全公告<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M9 3h8v8l-2-1V6.92l-5.6 5.59l-1.41-1.41L14.08 5H10zm3 12v-3l2-2v7H3V6h8L9 8H5v7h7z" fill="currentColor"></path></svg></a></li>
+
+
+
+<li><a href="https://cert.europa.eu/publications/security-advisories/2026-022/" target="_blank" rel="noopener">CERT-EU 安全通报<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M9 3h8v8l-2-1V6.92l-5.6 5.59l-1.41-1.41L14.08 5H10zm3 12v-3l2-2v7H3V6h8L9 8H5v7h7z" fill="currentColor"></path></svg></a></li>
+
+
+
+<li><a href="https://github.com/discourse/discourse_docker/pull/1164" target="_blank" rel="noopener">Discourse NGINX 安全修复 PR #1164<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M9 3h8v8l-2-1V6.92l-5.6 5.59l-1.41-1.41L14.08 5H10zm3 12v-3l2-2v7H3V6h8L9 8H5v7h7z" fill="currentColor"></path></svg></a></li>
+
+
+
+<li><a href="https://github.com/discourse/discourse_docker/pull/1162" target="_blank" rel="noopener">Discourse 默认镜像更新 PR #1162<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M9 3h8v8l-2-1V6.92l-5.6 5.59l-1.41-1.41L14.08 5H10zm3 12v-3l2-2v7H3V6h8L9 8H5v7h7z" fill="currentColor"></path></svg></a></li>
+</ul>
+
+
+
+<p class="wp-block-paragraph"></p>
+																
+								
+                            						</div><!--.post-content box mark-links-->
+					</div> 

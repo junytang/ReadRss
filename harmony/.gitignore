@@ -1,0 +1,11 @@
+/node_modules
+/oh_modules
+/.hvigor
+/build
+/.idea
+*.hap
+*.hsp
+*.app
+/local.properties
+/build-profile.json5.bak
+/.appanalyzer

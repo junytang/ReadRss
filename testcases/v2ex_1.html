@@ -1,0 +1,336 @@
+<div class="content">
+            
+            <div id="Leftbar"></div>
+            <div id="Rightbar">
+                <div class="sep20"></div>
+                
+
+
+
+
+
+<div class="box" id="pro-campaign-container"><div class="pro-unit-title">200M服务器38元1年、AI建站9.9元、千万Token免费领！</div><div class="inner" style="padding-bottom: 0px;"><a href="https://t.aliyun.com/U/fngelv" target="_blank" rel="noopener noreferrer"><img src="https://cid.v2ex.pro/ipfs/QmVvdTHYMjDSoWS88f6p7VqUsBsLaV6UjggwMmY3uxogDp" class="pro-unit-img" style="max-width: 500px; max-height: 500px; width: 100%; display: block; vertical-align: bottom;" alt=""></a></div><div class="pro-unit-description">
+                    <div style="text-align: center" data-pro-link="https://t.aliyun.com/U/fngelv">阿里云服务器特惠：轻量200M峰值带宽秒杀38元1年，云服务器ECS新老同享99元一年，企业199元2核4G5M带宽，续费同价，万小智AI建站9.9元免费送域名，免费领取阿里云超7000万Tokens</div>
+                    </div><div class="pro-unit-cta-container"><a href="https://t.aliyun.com/U/fngelv" target="_blank" rel="noopener noreferrer" class="pro-unit-cta">立即查看</a></div><div class="pro-unit-from flex-one-row gap10">
+        <div>Promoted by <a href="/member/mabiji" target="_blank" rel="noopener noreferrer">mabiji</a></div>
+        <div><a href="/pro/about" target="_blank" rel="noopener noreferrer" class="fade"><i class="fa fa-question-circle fade"></i> <span style="font-size: 12px; color: var(--color-fade)">PRO</span></a></div>
+        </div></div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    function escapeHtml(text) {
+        if (text === null || text === undefined) return '';
+        return String(text)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    function safeHttpsUrl(url) {
+        if (url === null || url === undefined) return '';
+        var value = String(url);
+        if (!/^https:\/\//i.test(value)) return '';
+        try {
+            var parsed = new URL(value);
+            if (parsed.protocol !== 'https:') return '';
+            return parsed.href;
+        } catch (e) {
+            return '';
+        }
+    }
+
+    function safeMemberUsername(username) {
+        if (username === null || username === undefined) return '';
+        username = String(username);
+        if (!/^[A-Za-z0-9_-]+$/.test(username)) return '';
+        return username;
+    }
+
+    function bindCampaignLinks(container) {
+        var items = container.querySelectorAll('[data-pro-link]');
+        for (var i = 0; i < items.length; i++) {
+            items[i].addEventListener('click', function() {
+                var link = this.getAttribute('data-pro-link');
+                if (link) {
+                    window.open(link, '_blank', 'noopener');
+                }
+            });
+        }
+    }
+
+    function renderCampaign(campaign) {
+        let html = '';
+        let displayFormat = campaign.display_format || 'text-only';
+        let linkUrl = safeHttpsUrl(campaign.link);
+        if (!linkUrl) return '';
+
+        let title = escapeHtml(campaign.title);
+        let description = escapeHtml(campaign.description);
+        let callToAction = escapeHtml(campaign.call_to_action);
+        let link = escapeHtml(linkUrl);
+        let imgSmallUrl = safeHttpsUrl(campaign.img_small_url);
+        let imgBannerUrl = safeHttpsUrl(campaign.img_banner_url);
+        let imgBigUrl = safeHttpsUrl(campaign.img_big_url);
+        let memberUsername = safeMemberUsername(campaign.member && campaign.member.username);
+        let promotedBy = memberUsername ? `Promoted by <a href="/member/${encodeURIComponent(memberUsername)}" target="_blank" rel="noopener noreferrer">${escapeHtml(memberUsername)}</a>` : 'Promoted by V2EX member';
+
+        if (displayFormat === 'small-with-description' && !imgSmallUrl) {
+            displayFormat = 'text-only';
+        } else if (displayFormat === 'banner-only' && !imgBannerUrl) {
+            displayFormat = 'text-only';
+        } else if ((displayFormat === 'big-only' || displayFormat === 'big-with-description' || displayFormat === 'big-with-title-description-button') && !imgBigUrl) {
+            displayFormat = 'text-only';
+        }
+
+        html = `<div class="pro-unit-title">${title}</div>`;
+        switch(displayFormat) {
+            case 'text-only':
+                html += `
+                    <div class="pro-unit">
+                    <div class="pro-unit-description flex-one-row gap10">
+                        <div data-pro-link="${link}">${description}</div>
+                        <div><a href="${link}" class="pro-unit-go" target="_blank" rel="noopener noreferrer">›</a>
+                        </div>
+                    </div>
+                    </div>
+                `;
+                break;
+
+            case 'small-with-description':
+                html += `<div class="pro-unit flex-one-row">
+                    ${imgSmallUrl ? `<div class="pro-unit-small-image">
+                        <a href="${link}" target="_blank" rel="noopener noreferrer"><img src="${escapeHtml(imgSmallUrl)}" class="pro-unit-img" style="max-width: 130px; max-height: 100px;" alt="" /></a>
+                    </div>` : ''}
+                    <div data-pro-link="${link}" class="pro-unit-description">${description}</div>
+                </div>`;
+                break;
+
+            case 'banner-only':
+                html += `<div class="cell"><a href="${link}" target="_blank" rel="noopener noreferrer"><img src="${escapeHtml(imgBannerUrl)}" class="pro-unit-img" style="max-width: 250px; max-height: 60px; display: block; vertical-align: bottom;" alt="" /></a></div>`;
+                break;
+
+            case 'big-only':
+                html += `<div class="cell"><a href="${link}" target="_blank" rel="noopener noreferrer"><img src="${escapeHtml(imgBigUrl)}" class="pro-unit-img" style="max-width: 500px; max-height: 500px; width: 100%; display: block; vertical-align: bottom;" alt="" /></a></div>`;
+                break;
+
+            case 'big-with-description':
+                html += `<div class="inner" style="padding-bottom: 0px;"><a href="${link}" target="_blank" rel="noopener noreferrer"><img src="${escapeHtml(imgBigUrl)}" class="pro-unit-img" style="max-width: 500px; max-height: 500px; width: 100%; display: block; vertical-align: bottom;" alt="" /></a></div>`;
+                html += `<div class="pro-unit-description flex-one-row gap10">
+                    <div data-pro-link="${link}">${description}</div>
+                    <div><a href="${link}" class="pro-unit-go" target="_blank" rel="noopener noreferrer">›</a></div></div>`;
+                break;
+
+            case 'big-with-title-description-button':
+                html += `<div class="inner" style="padding-bottom: 0px;"><a href="${link}" target="_blank" rel="noopener noreferrer"><img src="${escapeHtml(imgBigUrl)}" class="pro-unit-img" style="max-width: 500px; max-height: 500px; width: 100%; display: block; vertical-align: bottom;" alt="" /></a></div>`;
+                html += `<div class="pro-unit-description">
+                    <div style="text-align: center" data-pro-link="${link}">${description}</div>
+                    </div>`;
+                html += `<div class="pro-unit-cta-container"><a href="${link}" target="_blank" rel="noopener noreferrer" class="pro-unit-cta">${callToAction}</a></div>`;
+                break;
+
+            default:
+                html += `
+                    <div class="pro-unit-description flex-one-row gap10">
+                        <div data-pro-link="${link}">${description}</div>
+                        <div><a href="${link}" class="pro-unit-go" target="_blank" rel="noopener noreferrer">›</a></div>
+                    </div>
+                `;
+        }
+
+        html += `<div class="pro-unit-from flex-one-row gap10">
+        <div>${promotedBy}</div>
+        <div><a href="/pro/about" target="_blank" rel="noopener noreferrer" class="fade"><i class="fa fa-question-circle fade"></i> <span style="font-size: 12px; color: var(--color-fade)">PRO</span></a></div>
+        </div>`
+
+        return html;
+    }
+
+    // Load campaign from emitter
+    var emitterUrl = '/pro/emitter';
+    var proFormat = null;
+    if (proFormat) {
+        emitterUrl += '?format=' + encodeURIComponent(proFormat);
+    }
+    var proMemberId = null;
+    if (proMemberId) {
+        emitterUrl += (proFormat ? '&' : '?') + 'member_id=' + encodeURIComponent(proMemberId);
+    }
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', emitterUrl, true);
+    xhr.setRequestHeader('Content-Type', 'application/json');
+
+    xhr.onreadystatechange = function() {
+        if (xhr.readyState === 4) {
+            if (xhr.status === 200) {
+                try {
+                    var campaign = JSON.parse(xhr.responseText);
+                    if (campaign && campaign.id) {
+                        var html = renderCampaign(campaign);
+                        var container = document.getElementById('pro-campaign-container');
+                        if (html) {
+                            container.innerHTML = html;
+                            bindCampaignLinks(container);
+                            container.style.display = '';
+                        } else {
+                            container.style.display = 'none';
+                        }
+                    } else {
+                        document.getElementById('pro-campaign-container').style.display = 'none';
+                    }
+                } catch (e) {
+                    document.getElementById('pro-campaign-container').style.display = 'none';
+                    console.log('Error parsing campaign data: ' + e.message);
+                }
+            } else {
+                document.getElementById('pro-campaign-container').style.display = 'none';
+                console.log('Error loading campaign: HTTP ' + xhr.status);
+            }
+        }
+    };
+
+    xhr.send();
+});
+</script>
+
+
+
+
+
+            </div>
+            <div id="Main">
+                <div class="sep20"></div>
+                
+<div class="box" style="border-bottom: 0px;">
+    
+    <div class="header"><div class="fr"><a href="/member/azhi2007"><img src="https://cdn.v2ex.com/avatar/20df/ce13/442824_xlarge.png?m=1795097341" class="avatar" border="0" align="default" width="73" style="width: 73px; max-height: 73px;" alt="azhi2007" data-uid="442824"></a></div>
+    <div class="flex-one-row gap10">
+        <div><a href="/">V2EX</a> <span class="chevron">&nbsp;›&nbsp;</span> <a href="/go/android">Android</a></div>
+        
+    </div>
+    <div class="sep10"></div>
+    <h1>安卓手机就没办法彻底关闭视频彩铃了吗</h1>
+    <div id="topic_1258390_votes" class="votes">
+<a href="javascript:" onclick="upVoteTopic(1258390);" class="vote"><li class="fa fa-chevron-up"></li></a> &nbsp;<a href="javascript:" onclick="downVoteTopic(1258390);" class="vote"><li class="fa fa-chevron-down"></li></a></div> &nbsp; <small class="gray"><a href="/member/azhi2007">azhi2007</a> · <span title="2026-11-19 23:35:09 +08:00">6 小时 37 分钟前</span> · 413 次点击</small>
+    </div>
+    
+    
+    
+    <div class="cell">
+        
+        <div class="topic_content">红米 note 13 pro 开发者选项里都找遍了，也找不到关闭入口了，打电话总是弹出视频彩铃，真是恶心死了</div>
+        
+    </div>
+    
+    
+    <div class="cell">
+        <script async="" src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5060390720525238" crossorigin="anonymous"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5060390720525238" data-ad-slot="3793860149"></ins>
+<script>
+    (adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+    </div>
+    
+    
+    
+</div>
+
+<!-- SOL tip topic -->
+
+
+<div class="sep20"></div>
+<div id="topic-replies">
+
+
+<div class="box reply-threads reply-threads-off">
+    <div class="cell"><div class="fr" style="margin: -3px -5px 0px 0px;"><a href="/tag/视频" class="tag"><li class="fa fa-tag"></li> 视频</a><a href="/tag/彩铃" class="tag"><li class="fa fa-tag"></li> 彩铃</a><a href="/tag/关闭" class="tag"><li class="fa fa-tag"></li> 关闭</a></div><span class="gray">3 条回复 &nbsp;<strong class="snow">•</strong> &nbsp;2026-11-20 00:20:14 +08:00</span>
+    </div>
+    
+
+    <div id="r_18309219" class="cell" data-reply-id="18309219">
+<table cellpadding="0" cellspacing="0" border="0" width="100%">
+    <tbody><tr>
+        <td width="48" valign="top" align="center"><img src="https://cdn.v2ex.com/gravatar/903c77773f44fed8c5aca9560caef7d2?s=48&amp;d=retro" class="avatar" border="0" align="default" alt="y395791498" data-uid="721053"></td>
+        <td width="10" valign="top"></td>
+        <td width="auto" valign="top" align="left">
+            <div class="flex-one-row">
+            <div class="flex-one-row gap10"><strong><a href="/member/y395791498" class="dark">y395791498</a></strong><div class="badges"></div><span class="ago" title="2026-11-19 23:55:08 +08:00">6 小时 17 分钟前 via Android</span></div>
+            <div class="flex-one-row gap10"><span class="no">1</span></div>
+            </div>
+            <div class="sep5"></div>
+            
+            <div class="reply_content">root 后用 Cerler 之类的模块可以关</div>
+            
+            
+        </td>
+    </tr>
+</tbody></table>
+</div>
+    
+
+    <div id="r_18309233" class="cell" data-reply-id="18309233">
+<table cellpadding="0" cellspacing="0" border="0" width="100%">
+    <tbody><tr>
+        <td width="48" valign="top" align="center"><img src="https://cdn.v2ex.com/avatar/bedf/40df/438004_normal.png?m=1786379099" class="avatar" border="0" align="default" alt="docx" data-uid="438004"></td>
+        <td width="10" valign="top"></td>
+        <td width="auto" valign="top" align="left">
+            <div class="flex-one-row">
+            <div class="flex-one-row gap10"><strong><a href="/member/docx" class="dark">docx</a></strong><div class="badges"></div><span class="ago" title="2026-11-20 00:09:14 +08:00">6 小时 3 分钟前 via iPhone</span></div>
+            <div class="flex-one-row gap10"><span class="no">2</span></div>
+            </div>
+            <div class="sep5"></div>
+            
+            <div class="reply_content">系统不给选择的话无解，原生 Android 把视频通话关掉可以解决这个问题</div>
+            
+            
+        </td>
+    </tr>
+</tbody></table>
+</div>
+    
+
+    <div id="r_18309251" class="cell" data-reply-id="18309251">
+<table cellpadding="0" cellspacing="0" border="0" width="100%">
+    <tbody><tr>
+        <td width="48" valign="top" align="center"><img src="https://cdn.v2ex.com/avatar/50d4/5ea2/477585_normal.png?m=1791915521" class="avatar" border="0" align="default" alt="imhuhe" data-uid="477585"></td>
+        <td width="10" valign="top"></td>
+        <td width="auto" valign="top" align="left">
+            <div class="flex-one-row">
+            <div class="flex-one-row gap10"><strong><a href="/member/imhuhe" class="dark">imhuhe</a></strong><div class="badges"></div><span class="ago" title="2026-11-20 00:20:14 +08:00">5 小时 52 分钟前 via iPhone</span></div>
+            <div class="flex-one-row gap10"><span class="no">3</span></div>
+            </div>
+            <div class="sep5"></div>
+            
+            <div class="reply_content">三星 s21 已经关闭，记得应该在开发者选项里，用 ai 链接你的手机让它帮你配置。</div>
+            
+            
+        </td>
+    </tr>
+</tbody></table>
+</div>
+    
+    <div class="reply-ad"><div style="border-bottom: 1px solid var(--box-border-color);">
+<script async="" src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5060390720525238" crossorigin="anonymous"></script>
+<ins class="adsbygoogle" style="display: block; height: 72px;" data-ad-format="fluid" data-ad-layout-key="-hs-19-p-2z+is" data-ad-client="ca-pub-5060390720525238" data-ad-slot="1009394990"></ins>
+<script>
+     (adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</div></div>
+    
+
+
+
+</div>
+<div class="sep20"></div>
+
+</div>
+
+
+
+
+
+            </div>
+            
+            
+        </div>

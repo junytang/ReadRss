@@ -1,0 +1,32 @@
+{
+  "color": [
+    {
+      "name": "start_window_background",
+      "value": "#FFFFFFFF"
+    },
+    {
+      "name": "primary",
+      "value": "#FF2663D6"
+    },
+    {
+      "name": "primary_light",
+      "value": "#FF12B7BE"
+    },
+    {
+      "name": "background",
+      "value": "#FFF7F8FA"
+    },
+    {
+      "name": "surface",
+      "value": "#FFFFFFFF"
+    },
+    {
+      "name": "on_surface",
+      "value": "#FF1A1C1E"
+    },
+    {
+      "name": "on_surface_secondary",
+      "value": "#FF5E636A"
+    }
+  ]
+}

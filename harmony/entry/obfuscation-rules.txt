@@ -1,0 +1,4 @@
+# Obfuscation rules (disabled by default for the MVP).
+# Keep exported ArkTS symbols if you enable obfuscation for release.
+-keep-property-name
+-keep-global-name

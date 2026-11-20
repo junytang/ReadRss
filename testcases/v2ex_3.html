@@ -1,0 +1,395 @@
+<body>
+    
+    
+    <div id="Top">
+        <div class="content">
+            <div class="site-nav">
+                <a href="/" name="top" title="way to explore"><div id="Logo"></div></a>
+                <div id="search-container">
+                    <input id="search" type="text" maxlength="128" autocomplete="off" tabindex="1">
+                    <div id="search-result" class="box"></div>
+                </div>
+                <div class="tools">
+                
+                    <a href="/" class="top">首页</a>
+                    <a href="https://edge.v2ex.com/signup" class="top">注册</a>
+                    <a href="https://edge.v2ex.com/signin" class="top">登录</a>
+                
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div id="Wrapper">
+    <script>if (SITE_NIGHT) document.getElementById('Wrapper').classList.add('Night');</script>
+        <div class="content">
+            
+            <div id="Leftbar"></div>
+            <div id="Rightbar">
+                <div class="sep20"></div>
+                
+
+
+
+
+
+<div class="box" id="pro-campaign-container"><div class="pro-unit-title">Temp.now 临时邮箱</div><div class="cell"><a href="https://temp.now/" target="_blank" rel="noopener noreferrer"><img src="https://cid.v2ex.pro/ipfs/QmTfFDDsoMkasye62k2KdSTDiiG444wcQvLTdDfQrWiqo4" class="pro-unit-img" style="max-width: 500px; max-height: 500px; width: 100%; display: block; vertical-align: bottom;" alt=""></a></div><div class="pro-unit-from flex-one-row gap10">
+        <div>Promoted by <a href="/member/BeCool" target="_blank" rel="noopener noreferrer">BeCool</a></div>
+        <div><a href="/pro/about" target="_blank" rel="noopener noreferrer" class="fade"><i class="fa fa-question-circle fade"></i> <span style="font-size: 12px; color: var(--color-fade)">PRO</span></a></div>
+        </div></div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    function escapeHtml(text) {
+        if (text === null || text === undefined) return '';
+        return String(text)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    function safeHttpsUrl(url) {
+        if (url === null || url === undefined) return '';
+        var value = String(url);
+        if (!/^https:\/\//i.test(value)) return '';
+        try {
+            var parsed = new URL(value);
+            if (parsed.protocol !== 'https:') return '';
+            return parsed.href;
+        } catch (e) {
+            return '';
+        }
+    }
+
+    function safeMemberUsername(username) {
+        if (username === null || username === undefined) return '';
+        username = String(username);
+        if (!/^[A-Za-z0-9_-]+$/.test(username)) return '';
+        return username;
+    }
+
+    function bindCampaignLinks(container) {
+        var items = container.querySelectorAll('[data-pro-link]');
+        for (var i = 0; i < items.length; i++) {
+            items[i].addEventListener('click', function() {
+                var link = this.getAttribute('data-pro-link');
+                if (link) {
+                    window.open(link, '_blank', 'noopener');
+                }
+            });
+        }
+    }
+
+    function renderCampaign(campaign) {
+        let html = '';
+        let displayFormat = campaign.display_format || 'text-only';
+        let linkUrl = safeHttpsUrl(campaign.link);
+        if (!linkUrl) return '';
+
+        let title = escapeHtml(campaign.title);
+        let description = escapeHtml(campaign.description);
+        let callToAction = escapeHtml(campaign.call_to_action);
+        let link = escapeHtml(linkUrl);
+        let imgSmallUrl = safeHttpsUrl(campaign.img_small_url);
+        let imgBannerUrl = safeHttpsUrl(campaign.img_banner_url);
+        let imgBigUrl = safeHttpsUrl(campaign.img_big_url);
+        let memberUsername = safeMemberUsername(campaign.member && campaign.member.username);
+        let promotedBy = memberUsername ? `Promoted by <a href="/member/${encodeURIComponent(memberUsername)}" target="_blank" rel="noopener noreferrer">${escapeHtml(memberUsername)}</a>` : 'Promoted by V2EX member';
+
+        if (displayFormat === 'small-with-description' && !imgSmallUrl) {
+            displayFormat = 'text-only';
+        } else if (displayFormat === 'banner-only' && !imgBannerUrl) {
+            displayFormat = 'text-only';
+        } else if ((displayFormat === 'big-only' || displayFormat === 'big-with-description' || displayFormat === 'big-with-title-description-button') && !imgBigUrl) {
+            displayFormat = 'text-only';
+        }
+
+        html = `<div class="pro-unit-title">${title}</div>`;
+        switch(displayFormat) {
+            case 'text-only':
+                html += `
+                    <div class="pro-unit">
+                    <div class="pro-unit-description flex-one-row gap10">
+                        <div data-pro-link="${link}">${description}</div>
+                        <div><a href="${link}" class="pro-unit-go" target="_blank" rel="noopener noreferrer">›</a>
+                        </div>
+                    </div>
+                    </div>
+                `;
+                break;
+
+            case 'small-with-description':
+                html += `<div class="pro-unit flex-one-row">
+                    ${imgSmallUrl ? `<div class="pro-unit-small-image">
+                        <a href="${link}" target="_blank" rel="noopener noreferrer"><img src="${escapeHtml(imgSmallUrl)}" class="pro-unit-img" style="max-width: 130px; max-height: 100px;" alt="" /></a>
+                    </div>` : ''}
+                    <div data-pro-link="${link}" class="pro-unit-description">${description}</div>
+                </div>`;
+                break;
+
+            case 'banner-only':
+                html += `<div class="cell"><a href="${link}" target="_blank" rel="noopener noreferrer"><img src="${escapeHtml(imgBannerUrl)}" class="pro-unit-img" style="max-width: 250px; max-height: 60px; display: block; vertical-align: bottom;" alt="" /></a></div>`;
+                break;
+
+            case 'big-only':
+                html += `<div class="cell"><a href="${link}" target="_blank" rel="noopener noreferrer"><img src="${escapeHtml(imgBigUrl)}" class="pro-unit-img" style="max-width: 500px; max-height: 500px; width: 100%; display: block; vertical-align: bottom;" alt="" /></a></div>`;
+                break;
+
+            case 'big-with-description':
+                html += `<div class="inner" style="padding-bottom: 0px;"><a href="${link}" target="_blank" rel="noopener noreferrer"><img src="${escapeHtml(imgBigUrl)}" class="pro-unit-img" style="max-width: 500px; max-height: 500px; width: 100%; display: block; vertical-align: bottom;" alt="" /></a></div>`;
+                html += `<div class="pro-unit-description flex-one-row gap10">
+                    <div data-pro-link="${link}">${description}</div>
+                    <div><a href="${link}" class="pro-unit-go" target="_blank" rel="noopener noreferrer">›</a></div></div>`;
+                break;
+
+            case 'big-with-title-description-button':
+                html += `<div class="inner" style="padding-bottom: 0px;"><a href="${link}" target="_blank" rel="noopener noreferrer"><img src="${escapeHtml(imgBigUrl)}" class="pro-unit-img" style="max-width: 500px; max-height: 500px; width: 100%; display: block; vertical-align: bottom;" alt="" /></a></div>`;
+                html += `<div class="pro-unit-description">
+                    <div style="text-align: center" data-pro-link="${link}">${description}</div>
+                    </div>`;
+                html += `<div class="pro-unit-cta-container"><a href="${link}" target="_blank" rel="noopener noreferrer" class="pro-unit-cta">${callToAction}</a></div>`;
+                break;
+
+            default:
+                html += `
+                    <div class="pro-unit-description flex-one-row gap10">
+                        <div data-pro-link="${link}">${description}</div>
+                        <div><a href="${link}" class="pro-unit-go" target="_blank" rel="noopener noreferrer">›</a></div>
+                    </div>
+                `;
+        }
+
+        html += `<div class="pro-unit-from flex-one-row gap10">
+        <div>${promotedBy}</div>
+        <div><a href="/pro/about" target="_blank" rel="noopener noreferrer" class="fade"><i class="fa fa-question-circle fade"></i> <span style="font-size: 12px; color: var(--color-fade)">PRO</span></a></div>
+        </div>`
+
+        return html;
+    }
+
+    // Load campaign from emitter
+    var emitterUrl = '/pro/emitter';
+    var proFormat = null;
+    if (proFormat) {
+        emitterUrl += '?format=' + encodeURIComponent(proFormat);
+    }
+    var proMemberId = null;
+    if (proMemberId) {
+        emitterUrl += (proFormat ? '&' : '?') + 'member_id=' + encodeURIComponent(proMemberId);
+    }
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', emitterUrl, true);
+    xhr.setRequestHeader('Content-Type', 'application/json');
+
+    xhr.onreadystatechange = function() {
+        if (xhr.readyState === 4) {
+            if (xhr.status === 200) {
+                try {
+                    var campaign = JSON.parse(xhr.responseText);
+                    if (campaign && campaign.id) {
+                        var html = renderCampaign(campaign);
+                        var container = document.getElementById('pro-campaign-container');
+                        if (html) {
+                            container.innerHTML = html;
+                            bindCampaignLinks(container);
+                            container.style.display = '';
+                        } else {
+                            container.style.display = 'none';
+                        }
+                    } else {
+                        document.getElementById('pro-campaign-container').style.display = 'none';
+                    }
+                } catch (e) {
+                    document.getElementById('pro-campaign-container').style.display = 'none';
+                    console.log('Error parsing campaign data: ' + e.message);
+                }
+            } else {
+                document.getElementById('pro-campaign-container').style.display = 'none';
+                console.log('Error loading campaign: HTTP ' + xhr.status);
+            }
+        }
+    };
+
+    xhr.send();
+});
+</script>
+
+
+
+        
+        <div class="sep"></div>
+        <div class="box">
+            <div class="inner" id="node_sidebar">
+                • 请不要在回答技术问题时复制粘贴 AI 生成的内容
+
+<style type="text/css">
+  #Wrapper {
+    background-color: #e2e2e2;
+    background-image: url("/static/img/shadow_light.png"), url("//cdn.v2ex.com/assets/bgs/circuit.png");
+    background-repeat: repeat-x, repeat-x;
+  }
+  #Wrapper.Night {
+  	background-color: #1f2e3d;
+	background-image: url("/static/img/shadow.png"), url("//cdn.v2ex.com/assets/bgs/circuit_night.png");
+	background-repeat: repeat-x, repeat-x;
+  	background-size: 20px 20px, 162.5px 162.5px;
+  }
+</style>
+                
+            </div>
+            
+        </div>
+        
+    
+
+
+            </div>
+            <div id="Main">
+                <div class="sep20"></div>
+                
+<div class="box" style="border-bottom: 0px;">
+    
+    <div class="header"><div class="fr"><a href="/member/blackantt"><img src="https://cdn.v2ex.com/gravatar/003f1b50994eb31aeb26105920380e3a?s=73&amp;d=retro" class="avatar" border="0" align="default" alt="blackantt" data-uid="215985"></a></div>
+    <div class="flex-one-row gap10">
+        <div><a href="/">V2EX</a> <span class="chevron">&nbsp;›&nbsp;</span> <a href="/go/programmer">程序员</a></div>
+        
+    </div>
+    <div class="sep10"></div>
+    <h1>dsh-next , claude 桌面版 都用 deepseek v4 pro 的话， 编程的话有没有区别？</h1>
+    <div id="topic_1258360_votes" class="votes">
+<a href="javascript:" onclick="upVoteTopic(1258360);" class="vote"><li class="fa fa-chevron-up"></li></a> &nbsp;<a href="javascript:" onclick="downVoteTopic(1258360);" class="vote"><li class="fa fa-chevron-down"></li></a></div> &nbsp; <small class="gray"><a href="/member/blackantt">blackantt</a> · <span title="2026-11-19 19:54:40 +08:00">11 小时 58 分钟前</span> · 552 次点击</small>
+    </div>
+    
+    
+    
+    <div class="cell">
+        
+        <div class="topic_content"><div class="markdown_body"><p>？</p>
+</div></div>
+        
+    </div>
+    
+    
+    <div class="cell">
+        <script async="" src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5060390720525238" crossorigin="anonymous"></script>
+<ins class="adsbygoogle" style="display:block; text-align:center;" data-ad-layout="in-article" data-ad-format="fluid" data-ad-client="ca-pub-5060390720525238" data-ad-slot="3793860149"></ins>
+<script>
+    (adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+    </div>
+    
+    
+    
+</div>
+
+<!-- SOL tip topic -->
+
+
+<div class="sep20"></div>
+<div id="topic-replies">
+
+
+<div class="box reply-threads reply-threads-off">
+    <div class="cell"><div class="fr" style="margin: -3px -5px 0px 0px;"><a href="/tag/编程" class="tag"><li class="fa fa-tag"></li> 编程</a><a href="/tag/区别" class="tag"><li class="fa fa-tag"></li> 区别</a><a href="/tag/DeepSeek" class="tag"><li class="fa fa-tag"></li> DeepSeek</a></div><span class="gray">1 条回复 &nbsp;<strong class="snow">•</strong> &nbsp;2026-11-19 20:06:17 +08:00</span>
+    </div>
+    
+
+    <div id="r_18308778" class="cell" data-reply-id="18308778">
+<table cellpadding="0" cellspacing="0" border="0" width="100%">
+    <tbody><tr>
+        <td width="48" valign="top" align="center"><img src="https://cdn.v2ex.com/gravatar/40eaa45a823f075189ca2a4f76343678?s=48&amp;d=retro" class="avatar" border="0" align="default" alt="jackOff" data-uid="593397"></td>
+        <td width="10" valign="top"></td>
+        <td width="auto" valign="top" align="left">
+            <div class="flex-one-row">
+            <div class="flex-one-row gap10"><strong><a href="/member/jackOff" class="dark">jackOff</a></strong><div class="badges"></div><span class="ago" title="2026-11-19 20:06:17 +08:00">11 小时 47 分钟前</span></div>
+            <div class="flex-one-row gap10"><span class="no">1</span></div>
+            </div>
+            <div class="sep5"></div>
+            
+            <div class="reply_content">一个省钱，一个情绪稳定</div>
+            
+            
+        </td>
+    </tr>
+</tbody></table>
+</div>
+    
+    <div class="reply-ad"><div style="border-bottom: 1px solid var(--box-border-color);">
+<script async="" src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5060390720525238" crossorigin="anonymous"></script>
+<ins class="adsbygoogle" style="display: block; height: 72px;" data-ad-format="fluid" data-ad-layout-key="-hs-19-p-2z+is" data-ad-client="ca-pub-5060390720525238" data-ad-slot="1009394990"></ins>
+<script>
+     (adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</div></div>
+    
+
+
+
+</div>
+<div class="sep20"></div>
+
+</div>
+
+
+
+
+
+            </div>
+            
+            
+        </div>
+        <div class="c"></div>
+        <div class="sep20"></div>
+    </div>
+    <div id="Bottom">
+        <div class="content">
+            <div class="inner">
+                <div class="sep10"></div>
+                    <div class="fr">
+                        <a href="https://www.digitalocean.com/?refcode=1b51f1a7651d" target="_blank"><div id="DigitalOcean"></div></a>
+                    </div>
+                    <strong><a href="/about" class="dark" target="_self">关于</a> &nbsp; <span class="snow">·</span> &nbsp; <a href="https://edge.v2ex.com/help" class="dark" target="_self">帮助文档</a> &nbsp; <span class="snow">·</span> &nbsp; <a href="/pro/about" class="dark" target="_self">自助推广系统</a> &nbsp; <span class="snow">·</span> &nbsp; <a href="https://blog.v2ex.com/" class="dark" target="_blank">博客</a> &nbsp; <span class="snow">·</span> &nbsp; <a href="https://edge.v2ex.com/help/api" class="dark" target="_self">API</a> &nbsp; <span class="snow">·</span> &nbsp; <a href="/faq" class="dark" target="_self">FAQ</a> &nbsp; <span class="snow">·</span> &nbsp; <a href="/privacy" class="dark" target="_self">Privacy</a> &nbsp; <span class="snow">·</span> &nbsp; <a href="https://edge.v2ex.com/solana" class="dark" target="_self">Solana</a> &nbsp; <span class="snow">·</span> &nbsp; 1278 人在线</strong> &nbsp; <span class="fade">最高记录 6679</span> &nbsp; <span class="snow">·</span> &nbsp; <a href="/select/language" class="f11"><img src="/static/img/language.png?v=6a5cfa731dc71a3769f6daace6784739" width="16" align="absmiddle" id="ico-select-language"> &nbsp; Select Language</a>
+                    <div class="sep20"></div>
+                    创意工作者们的社区
+                    <div class="sep5"></div>
+                    World is powered by solitude
+                    <div class="sep20"></div>
+                    <span class="small fade">VERSION: 3.9.8.5 · 22ms · <a href="/worldclock#utc">UTC 23:53</a> · <a href="/worldclock#pvg">PVG 07:53</a> · <a href="/worldclock#lax">LAX 15:53</a> · <a href="/worldclock#jfk">JFK 18:53</a><br>♥ Do have faith in what you're doing.</span>
+                <div class="sep10"></div>
+            </div>
+        </div>
+    </div>
+
+    
+
+    
+
+    
+    <script src="/b/i/wfAEMQsefTgw6NWMniL6vxu85-LA4b7tviUnAqqFGNPSJT-WCnw3EGdHfdnxieahxlKXov1fI9NfnNktDPJhF47z0wAGmYeLdcJEkjI8bBMyvFMHoCwcFYmxktedy1DGEO27Gwev-ryjvMraIH8lrxtJbSFfATA6OeUPgfz99qU="></script>
+    
+
+    
+    <script>
+      (function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]||function(){
+      (i[r].q=i[r].q||[]).push(arguments)},i[r].l=1*new Date();a=s.createElement(o),
+      m=s.getElementsByTagName(o)[0];a.async=1;a.src=g;m.parentNode.insertBefore(a,m)
+      })(window,document,'script','//www.google-analytics.com/analytics.js','ga');
+
+      ga('create', 'UA-11940834-2', 'v2ex.com');
+      ga('send', 'pageview');
+      
+
+ga('send', 'event', 'Node', 'topic', 'programmer');
+
+
+
+    </script>
+    
+
+    
+    <script>document.addEventListener('DOMContentLoaded', function () { setupThemeSwitches(); setupInlineVideos(); });</script>
+<button class="scroll-top" data-scroll="up" type="button"><span>❯<span></span></span></button>
+
+</body>

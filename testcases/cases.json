@@ -1,0 +1,92 @@
+[
+  {
+    "name": "Appinn / UU远程收费",
+    "file": "appinn_uuvip.html",
+    "container": "entry-content",
+    "note": "WordPress 站点：正文在 post-single-content ... entry-content，含图片/小标题/列表/表格"
+  },
+  {
+    "name": "Appinn / Nginx 漏洞",
+    "file": "appinn_nginx.html",
+    "container": "entry-content",
+    "note": "同上站点不同文章：正文含代码块、代码块内嵌 div/table，验证嵌套 div 不被提前关闭"
+  },
+  {
+    "name": "Solidot / 黄仁勋",
+    "file": "solidot_huang.html",
+    "container": "p_mainnew",
+    "note": "正文在 p_mainnew，父级含导航/分享/相关文章/页脚等大量链接容器"
+  },
+  {
+    "name": "huxiu_1",
+    "file": "huxiu_1.html",
+    "container": "article__content",
+    "note": "同上站点不同文章：正文含图片/小标题/列表/表格"
+  },
+  {
+    "name": "huxiu_2",
+    "file": "huxiu_2.html",
+    "container": "article__content",
+    "note": "同上站点不同文章：正文含图片/小标题/列表/表格"
+  },
+  {
+    "name": "shuzi_1",
+    "file": "shuzi_1.html",
+    "container": "post-content",
+    "note": "同上站点不同文章：正文含图片/小标题/列表/表格"
+  },
+  {
+    "name": "bohai_1",
+    "file": "bohai_1.html",
+    "container": "entry-content",
+    "note": "同上站点不同文章：正文含图片/小标题/列表/表格"
+  },
+  {
+    "name": "sspai_1",
+    "file": "sspai_1.html",
+    "container": "article__main__content",
+    "note": "同上站点不同文章：正文含图片/小标题/列表/表格"
+  },
+  {
+    "name": "v2ex_1",
+    "file": "v2ex_1.html",
+    "container": "topic_content",
+    "note": "同上站点不同文章：正文含图片/小标题/列表/表格"
+  },
+  {
+    "name": "v2ex_2",
+    "file": "v2ex_2.html",
+    "container": "markdown_body",
+    "note": "V2EX 帖子：topic_content 内嵌 markdown_body，正文以更内层的 markdown_body 为准"
+  },
+  {
+    "name": "v2ex_3",
+    "file": "v2ex_3.html",
+    "container": "markdown_body",
+    "note": "V2EX 帖子：正文只有1个字符"
+  },
+  {
+    "name": "v2ex_4",
+    "file": "v2ex_4.html",
+    "container": "topic_content",
+    "note": "V2EX 帖子：图片贴"
+  },
+  {
+    "name": "ithome_1",
+    "file": "ithome_1.html",
+    "container": "post_content",
+    "note": "同上站点不同文章：正文含图片/小标题/列表/表格"
+  },
+  {
+    "name": "appinn_1",
+    "file": "appinn_1.html",
+    "container": "post-single-content",
+    "note": "同上站点不同文章：正文含图片/小标题/列表/表格"
+  },
+  {
+    "name": "ifanr_1",
+    "file": "ifanr_1.html",
+    "container": "o-single-content__body__content",
+    "note": "同上站点不同文章：正文含图片/小标题/列表/表格"
+  }
+]

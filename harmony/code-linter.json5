@@ -1,0 +1,11 @@
+{
+  "files": [
+    "**/*.ets"
+  ],
+  "ignore": [
+    "**/build/**",
+    "**/node_modules/**",
+    "**/.hvigor/**"
+  ],
+  "rules": {}
+}

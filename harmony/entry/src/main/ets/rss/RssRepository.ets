@@ -1,0 +1,243 @@
+import { Account, AccountType } from '../account/AccountModels';
+import { accountRepository } from '../account/AccountRepository';
+import { database } from '../data/Database';
+import { Article, ArticleNeighbors, Feed, FeedGroup } from '../model/Models';
+import { FeedSyncService, SyncResult } from './SyncService';
+import { syncServiceFor } from './SyncServiceFactory';
+import { Logger } from '../common/Logger';
+import { FullContentFetcher, FULL_CONTENT_VERSION_MARKER } from './FullContentFetcher';
+
+/** Facade used by the UI; always operates on the active account. */
+class FeedRepository {
+  async activeAccount(): Promise<Account> {
+    const account: Account | undefined = await accountRepository.active();
+    if (!account) {
+      throw new Error('没有可用账号');
+    }
+    return account;
+  }
+
+  listAccounts() {
+    return accountRepository.list();
+  }
+
+  async switchAccount(id: string): Promise<void> {
+    await accountRepository.switchTo(id);
+  }
+
+  validCredentials(account: Account): Promise<boolean> {
+    return syncServiceFor(account).validCredentials(account);
+  }
+
+  canAddSubscription(account: Account): boolean {
+    return syncServiceFor(account).canAddSubscription;
+  }
+
+  canDeleteSubscription(account: Account): boolean {
+    return syncServiceFor(account).canDeleteSubscription;
+  }
+
+  /** Some servers (e.g. Miniflux) emit icon URLs pointing at "localhost". */
+  private fixIconUrl(iconUrl: string, serverUrl: string): string {
+    if (iconUrl.length === 0 || iconUrl.indexOf('://localhost') < 0) {
+      return iconUrl;
+    }
+    const match: Array<string> | null = serverUrl.match(/^(https?:\/\/[^\/]+)/i);
+    if (!match || match.length < 2) {
+      return iconUrl;
+    }
+    return iconUrl.replace(/^(https?:\/\/)[^\/]+/i, match[1]);
+  }
+
+  async listFeeds(): Promise<Feed[]> {
+    const account: Account = await this.activeAccount();
+    const feeds: Feed[] = await database.listFeeds(account.id);
+    const serverUrl: string = accountRepository.credentials(account).serverUrl;
+    for (const feed of feeds) {
+      feed.iconUrl = this.fixIconUrl(feed.iconUrl, serverUrl);
+    }
+    return feeds;
+  }
+
+  async listGroups(): Promise<FeedGroup[]> {
+    const account: Account = await this.activeAccount();
+    return database.listGroups(account.id);
+  }
+
+  async listArticles(
+    feedId: string, filter: string, limit: number,
+    groupId?: string, sortAscending?: boolean, searchContent?: string
+  ): Promise<Article[]> {
+    const account: Account = await this.activeAccount();
+    return database.listArticles(account.id, feedId, filter, limit, groupId, sortAscending, searchContent);
+  }
+
+  /** Android prefetchArticleId: previous/next article in the same feed. */
+  async neighborIds(articleId: string): Promise<ArticleNeighbors> {
+    const article: Article | undefined = await database.getArticle(articleId);
+    const empty: ArticleNeighbors = { previous: '', next: '' };
+    if (!article) {
+      return empty;
+    }
+    const account: Account = await this.activeAccount();
+    const ids: string[] = await database.listArticleIdsForFeed(account.id, article.feedId);
+    const index: number = ids.indexOf(articleId);
+    if (index < 0) {
+      return empty;
+    }
+    return {
+      previous: index > 0 ? ids[index - 1] : '',
+      next: index < ids.length - 1 ? ids[index + 1] : '',
+    };
+  }
+
+  getArticle(id: string): Promise<Article | undefined> {
+    return database.getArticle(id);
+  }
+
+  /** Lazily fetch the body for articles that were only stored as read-state ids. */
+  async ensureArticleContent(articleId: string): Promise<Article | undefined> {
+    let article: Article | undefined = await database.getArticle(articleId);
+    if (!article || article.content.length > 0) {
+      return article;
+    }
+    const account: Account = await this.activeAccount();
+    const service: FeedSyncService = syncServiceFor(account);
+    if (!service.fetchContent) {
+      return article;
+    }
+    try {
+      const content: string = await service.fetchContent(account, article);
+      if (content.length > 0) {
+        await database.updateArticleContent(articleId, content);
+        article.content = content;
+      }
+    } catch (error) {
+      Logger.error(`Fetch content failed: ${(error as Error).message}`);
+    }
+    return article;
+  }
+
+  /** Android's renderFullContent: fetch original page and cache extracted body. */
+  /** Startup cleanup so the database does not grow without bound. */
+  async cleanExpiredArticles(keepDays: number): Promise<number> {
+    if (keepDays <= 0) {
+      return 0;
+    }
+    const cutoff: number = Date.now() - keepDays * 24 * 3600 * 1000;
+    const removed: number = await database.deleteArticlesBefore(cutoff);
+    if (removed > 0) {
+      Logger.info(`Cleaned ${removed} expired articles (older than ${keepDays} days)`);
+      AppStorage.set<number>('feedDataTick', Date.now());
+    }
+    return removed;
+  }
+
+  async clearFullContentCache(): Promise<void> {
+    await database.clearFullContent();
+  }
+
+  /** True only for a body produced by the current extraction algorithm. */
+  hasCurrentFullContent(article: Article): boolean {
+    return article.fullContent.startsWith(FULL_CONTENT_VERSION_MARKER);
+  }
+
+  async ensureFullContent(articleId: string): Promise<Article | undefined> {
+    const article: Article | undefined = await database.getArticle(articleId);
+    // Re-fetch when the cached body came from an older extraction algorithm.
+    if (!article || article.link.length === 0 || this.hasCurrentFullContent(article)) {
+      return article;
+    }
+    const content: string = await FullContentFetcher.fetch(article.link, article.title);
+    if (content.length > 0) {
+      await database.updateArticleFullContent(articleId, content);
+      article.fullContent = content;
+    }
+    return article;
+  }
+
+  async unreadCount(feedId?: string, groupId?: string): Promise<number> {
+    const account: Account = await this.activeAccount();
+    return database.countUnread(account.id, feedId, groupId);
+  }
+
+  async articleCount(filter: string, feedId?: string, groupId?: string): Promise<number> {
+    const account: Account = await this.activeAccount();
+    return database.countArticles(account.id, filter, feedId, groupId);
+  }
+
+  async syncAll(): Promise<SyncResult> {
+    const account: Account = await this.activeAccount();
+    try {
+      const result: SyncResult = await syncServiceFor(account).sync(account);
+      // Let the home list reload after data changes without a manual pull-to-refresh.
+      AppStorage.setOrCreate<number>('feedDataTick', Date.now());
+      return result;
+    } catch (error) {
+      Logger.error(`Sync failed: ${(error as Error).message}`);
+      throw error as Error;
+    }
+  }
+
+  async subscribe(url: string): Promise<Feed> {
+    const account: Account = await this.activeAccount();
+    const service: FeedSyncService = syncServiceFor(account);
+    if (!service.canAddSubscription) {
+      throw new Error('Unsupported');
+    }
+    return service.subscribe(account, url);
+  }
+
+  async removeFeed(id: string): Promise<void> {
+    const account: Account = await this.activeAccount();
+    const service: FeedSyncService = syncServiceFor(account);
+    if (!service.canDeleteSubscription) {
+      throw new Error('Unsupported');
+    }
+    await service.deleteFeed(account, id);
+  }
+
+  async markRead(id: string, read: boolean, before?: number): Promise<void> {
+    const account: Account = await this.activeAccount();
+    await syncServiceFor(account).markRead(account, [id], read, before);
+  }
+
+  async markReadBatch(ids: string[], read: boolean, before?: number): Promise<string[]> {
+    if (ids.length === 0) {
+      return [];
+    }
+    const account: Account = await this.activeAccount();
+    return syncServiceFor(account).markRead(account, ids, read, before);
+  }
+
+  async markReadGroup(groupId: string, read: boolean, before?: number): Promise<void> {
+    const account: Account = await this.activeAccount();
+    await syncServiceFor(account).markReadGroup(account, groupId, read, before);
+  }
+
+  async markStarred(articleId: string, starred: boolean): Promise<void> {
+    const account: Account = await this.activeAccount();
+    const article: Article | undefined = await database.getArticle(articleId);
+    if (!article) {
+      return;
+    }
+    await syncServiceFor(account).markStarred(account, article, starred);
+  }
+
+  async markAllRead(feedId: string): Promise<void> {
+    const account: Account = await this.activeAccount();
+    const service: FeedSyncService = syncServiceFor(account);
+    if (feedId.length === 0) {
+      if (account.type === AccountType.FEVER) {
+        await service.markRead(account, [], true);
+      } else {
+        const all: Article[] = await database.listArticles(account.id, '', 'all', 100000);
+        await service.markRead(account, all.map((article: Article) => article.id), true);
+      }
+      return;
+    }
+    await service.markReadFeed(account, feedId, true);
+  }
+}
+
+export const rssRepository: FeedRepository = new FeedRepository();

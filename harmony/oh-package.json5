@@ -1,0 +1,11 @@
+{
+  "modelVersion": "5.1.0",
+  "name": "readyou-harmony",
+  "version": "0.1.0",
+  "description": "ReadYou RSS reader - HarmonyOS 7 (ArkTS/ArkUI) port",
+  "main": "",
+  "author": "ReadYou contributors",
+  "license": "GPL-3.0",
+  "dependencies": {},
+  "devDependencies": {}
+}
