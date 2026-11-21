@@ -112,7 +112,6 @@ export class GoogleReaderApi {
     if (cached) {
       this.loginToken = cached.loginToken;
       this.actionToken = cached.actionToken;
-      Logger.info('SYNCDBG greader tokens loaded from store');
     }
   }
 

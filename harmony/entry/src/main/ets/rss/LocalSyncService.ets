@@ -79,7 +79,6 @@ export class LocalSyncService implements FeedSyncService {
     const result: SyncResult = { succeeded: 0, failed: 0, newArticles: 0 };
     const batchSize: number = settingsStore.get().fetchBatchSize;
     beginSync();
-    Logger.info(`SYNCDBG local sync begin feeds=${feeds.length} batchSize=${batchSize}`);
     for (const feed of feeds) {
       try {
         const parsed: ParsedFeed = this.parser.parse(await this.fetch(feed.url), feed.id, feed.title);
@@ -90,7 +89,6 @@ export class LocalSyncService implements FeedSyncService {
         for (let start: number = 0; start < parsed.articles.length; start += batchSize) {
           const chunk: Article[] = parsed.articles.slice(start, start + batchSize);
           result.newArticles += await database.insertArticles(chunk, account.id);
-          Logger.info(`SYNCDBG local batch committed feed=${feed.title} size=${chunk.length} newArticles=${result.newArticles}`);
           notifySyncBatch();
         }
         result.succeeded += 1;
@@ -101,7 +99,6 @@ export class LocalSyncService implements FeedSyncService {
     }
     // All feed content is committed; stop the spinner here.
     notifyContentReady();
-    Logger.info('SYNCDBG local sync end');
     notifySyncFinal();
     return result;
   }

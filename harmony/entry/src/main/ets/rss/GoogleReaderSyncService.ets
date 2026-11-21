@@ -195,10 +195,8 @@ export class GoogleReaderSyncService implements FeedSyncService {
     const api: GoogleReaderApi = this.api(account);
     const now: number = Date.now();
     beginSync();
-    Logger.info('SYNCDBG greader sync begin');
     try {
       const ok: boolean = await api.validCredentials();
-      Logger.info(`SYNCDBG greader credentials ok=${ok}`);
       if (!ok) {
         throw new Error('Invalid credentials');
       }
@@ -215,16 +213,12 @@ export class GoogleReaderSyncService implements FeedSyncService {
       // Only unread + starred IDs are needed to fetch and render content. Fetch
       // these first so the first article batch can be shown quickly. The slow
       // read-ID reconciliation is deferred until after content is committed.
-      Logger.info('SYNCDBG greader fetching unread/starred ids');
       const unreadIds: string[] = await this.allItemIds(api, unreadParams);
       const starredIds: string[] = await this.allItemIds(api, starredParams);
-      Logger.info(`SYNCDBG greader ids unread=${unreadIds.length} starred=${starredIds.length} (id page=${ID_PAGE_SIZE})`);
       const unreadSet: Set<string> = new Set<string>(unreadIds);
       const starredSet: Set<string> = new Set<string>(starredIds);
 
-      Logger.info('SYNCDBG greader fetching subscriptions');
       const subscriptions: GReaderSubscription[] = await api.getSubscriptionList();
-      Logger.info(`SYNCDBG greader subscriptions=${subscriptions.length}`);
       const keepGroupIds: string[] = [];
       const keepFeedIds: string[] = [];
       const defaultGroupId: string = dbId(account.id, DEFAULT_GROUP_SUFFIX);
@@ -300,7 +294,6 @@ export class GoogleReaderSyncService implements FeedSyncService {
         }
         toFetch.push(id);
       }
-      Logger.info(`SYNCDBG greader toFetch=${toFetch.length} batchSize=${batchSize} (local=${allLocal.length})`);
       for (const batch of await this.chunks(toFetch, batchSize)) {
         const contents: ItemsContentsResult = await api.getItemsContents(batch);
         const articles: Article[] = [];
@@ -333,7 +326,6 @@ export class GoogleReaderSyncService implements FeedSyncService {
           });
         }
         result.newArticles += await database.insertArticles(articles, account.id);
-        Logger.info(`SYNCDBG greader batch committed size=${articles.length} newArticles=${result.newArticles}`);
         // Let the UI refresh unread badges after this batch, without waiting
         // for the remaining batches to finish.
         notifySyncBatch();
@@ -365,14 +357,12 @@ export class GoogleReaderSyncService implements FeedSyncService {
       if (toRead.length > 0) {
         await database.setStates(toRead, true, undefined);
       }
-      Logger.info(`SYNCDBG greader deferred read reconciliation ids=${readIds.length} toRead=${toRead.length}`);
 
       await database.deleteFeedsExcept(account.id, keepFeedIds);
       await database.deleteGroupsExcept(account.id, keepGroupIds);
       account.updateAt = now;
       await database.updateAccount(account);
       result.succeeded = 1;
-      Logger.info('SYNCDBG greader sync end');
       notifySyncFinal();
     } catch (error) {
       Logger.error(`GReader sync failed: ${(error as Error).message}`);
