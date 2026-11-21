@@ -5,7 +5,7 @@ import { settingsStore } from '../data/SettingsStore';
 import { accountRepository } from '../account/AccountRepository';
 import { rssRepository } from '../rss/RssRepository';
 import { gReaderTokenStore } from '../rss/GReaderTokenStore';
-import { FILTER_UNREAD, fontScaleForIndex } from '../common/Constants';
+import { FILTER_UNREAD } from '../common/Constants';
 import { Logger } from '../common/Logger';
 import { WindowInsets } from '../common/WindowInsets';
 
@@ -107,12 +107,7 @@ export default class EntryAbility extends UIAbility {
         AppStorage.setOrCreate<number>('bannerTick', 0);
         AppStorage.setOrCreate<number>('feedIconTick', 0);
         AppStorage.setOrCreate<string>('lastChangedArticle', '');
-        AppStorage.setOrCreate<number>('fontScale',
-          fontScaleForIndex(settingsStore.get().fontSizeIndex));
         AppStorage.set<string>('currentFilter', FILTER_UNREAD);
-        context.getApplicationContext().setFontSizeScale(
-          fontScaleForIndex(settingsStore.get().fontSizeIndex)
-        );
       });
 
     Promise.all([windowReady, dataReady]).then(() => {

@@ -6,8 +6,13 @@ import { FontManager } from '../common/FontManager';
 /** Add-subscription screen: URL entry plus a few suggested feeds. */
 @Component
 export struct SubscribeView {
+  @StorageProp('fontScale') uiFontScale: number = 1;
+  // Scale fixed UI font sizes with the system font size setting.
+  private fs(size: number): number { return size * this.uiFontScale; }
+
   @StorageLink('darkMode') darkMode: boolean = false;
   @StorageProp('fontDataTick') fontDataTick: number = 0;
+  @StorageProp('systemFontFamily') systemFontFamily: string = 'sans-serif';
   @StorageProp('topInset') topInset: number = 0;
   @State url: string = '';
   @State isSubmitting: boolean = false;
@@ -41,7 +46,8 @@ export struct SubscribeView {
 
   private appFont(): string {
     // Reading the tick here makes font changes trigger a component rebuild.
-    return this.fontDataTick >= 0 ? FontManager.family() : 'sans-serif';
+    return this.fontDataTick >= 0
+      ? FontManager.familyFor(this.systemFontFamily) : 'sans-serif';
   }
 
   build() {
@@ -61,7 +67,7 @@ export struct SubscribeView {
           .margin({ right: 8 })
           .onClick(() => goBack())
           Text('添加订阅').fontFamily(this.appFont())
-            .fontSize(18)
+            .fontSize(this.fs(19))
             .fontWeight(FontWeight.Medium)
             .fontColor(this.textColor())
         }
@@ -70,7 +76,7 @@ export struct SubscribeView {
 
         Column() {
           Text('RSS / Atom 地址').fontFamily(this.appFont())
-            .fontSize(14)
+            .fontSize(this.fs(14))
             .fontColor(this.secondaryColor())
             .alignSelf(ItemAlign.Start)
 
@@ -78,7 +84,7 @@ export struct SubscribeView {
             .width('100%')
             .height(46)
             .margin({ top: 10 })
-            .fontSize(15)
+            .fontSize(this.fs(15))
             .backgroundColor(this.darkMode ? '#1F2226' : '#FFFFFF')
             .fontColor(this.textColor())
             .onChange((value: string) => {
@@ -87,7 +93,7 @@ export struct SubscribeView {
 
           if (this.errorMessage.length > 0) {
             Text(this.errorMessage).fontFamily(this.appFont())
-              .fontSize(13)
+              .fontSize(this.fs(13))
               .fontColor('#D93025')
               .margin({ top: 10 })
               .alignSelf(ItemAlign.Start)
@@ -101,7 +107,7 @@ export struct SubscribeView {
             .onClick(() => this.submit(this.url))
 
           Text('推荐订阅').fontFamily(this.appFont())
-            .fontSize(14)
+            .fontSize(this.fs(14))
             .fontColor(this.secondaryColor())
             .margin({ top: 32, bottom: 8 })
             .alignSelf(ItemAlign.Start)
@@ -110,16 +116,16 @@ export struct SubscribeView {
             Row() {
               Column() {
                 Text(suggestion.title).fontFamily(this.appFont())
-                  .fontSize(15)
+                  .fontSize(this.fs(15))
                   .fontColor(this.textColor())
                 Text(suggestion.url).fontFamily(this.appFont())
-                  .fontSize(11)
+                  .fontSize(this.fs(11))
                   .fontColor(this.secondaryColor())
                   .margin({ top: 3 })
               }
               .layoutWeight(1)
               .alignItems(HorizontalAlign.Start)
-              Text('→').fontFamily(this.appFont()).fontSize(18).fontColor('#2663D6')
+              Text('→').fontFamily(this.appFont()).fontSize(this.fs(18)).fontColor('#2663D6')
             }
             .width('100%')
             .padding({ top: 12, bottom: 12 })

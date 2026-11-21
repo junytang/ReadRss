@@ -17,7 +17,7 @@ import { accountTypeShortName } from '../account/AccountModels';
 const DISTANCE: number = 1000;
 /** Slide duration (ms). Shared by the animation and its cleanup timer so the
  *  snapshot is never removed before the animation actually finishes. */
-const SLIDE_DURATION: number = 250;
+const SLIDE_DURATION: number = 200;
 /** Full initial dataset, loaded in a deferred second batch. */
 const FULL_PAGE_SIZE: number = 500;
 /** Rows added per chunk of the deferred batch, to avoid one long build frame. */
@@ -32,13 +32,20 @@ export struct ArticleListView {
   onOpenFeeds: () => void = () => {};
   @StorageLink('darkMode') darkMode: boolean = false;
   @StorageProp('fontDataTick') fontDataTick: number = 0;
+  @StorageProp('systemFontFamily') systemFontFamily: string = 'sans-serif';
   @StorageProp('topInset') topInset: number = 0;
   @StorageProp('bottomInset') bottomInset: number = 0;
   // Fallback only; the real value is read directly from AppStorage. Keeping this
   // as @StorageProp would create the key with 800 and overwrite the real height
   // published by EntryAbility.
   private windowHeightVp: number = 800;
-  @StorageProp('fontScale') fontScale: number = 1;
+  @StorageProp('fontScale') @Watch('onFontSizeChanged') fontScale: number = 1;
+  // Scale fixed UI font sizes with the system font size setting.
+  private fs(size: number): number { return size * this.fontScale; }
+  @StorageProp('articleTitleFontSize') articleTitleFontSize: number = 17;
+  @StorageProp('articleSummaryFontSize') articleSummaryFontSize: number = 15;
+  @StorageProp('articleMetaFontSize') articleMetaFontSize: number = 13;
+  @StorageProp('articleFontFamily') articleFontFamily: string = 'sans-serif';
   @StorageProp('readStatusTick') @Watch('onReadStatusChanged') readStatusTick: number = 0;
   @StorageProp('feedIconTick') @Watch('onFeedIconChanged') feedIconTick: number = 0;
   @StorageProp('accountSwitchTick') @Watch('onAccountSwitched') accountSwitchTick: number = 0;
@@ -710,15 +717,15 @@ export struct ArticleListView {
   articleItem(article: Article): void {
     Row() {
       Column() {
-        Text(article.title).fontFamily(this.appFont())
-          .fontSize(17)
+        Text(article.title).fontFamily(this.listFont())
+          .fontSize(this.articleTitleFontSize * this.fontScale)
           .fontWeight(article.isRead ? FontWeight.Normal : FontWeight.Medium)
           .fontColor(article.isRead ? this.readColor() : this.textColor())
           .maxLines(2)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
         if (article.summary.length > 0) {
-          Text(article.summary).fontFamily(this.appFont())
-            .fontSize(15)
+          Text(article.summary).fontFamily(this.listFont())
+            .fontSize(this.articleSummaryFontSize * this.fontScale)
             .fontColor(article.isRead ? this.readColor() : this.secondaryColor())
             .maxLines(3)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -734,26 +741,25 @@ export struct ArticleListView {
               .syncLoad(true)
               .margin({ right: 4 })
           } else {
-            Image($r('app.media.ic_feeds'))
+            Image($r('app.media.app_icon'))
               .width(14)
               .height(14)
+              .borderRadius(3)
               .syncLoad(true)
-              .padding(2)
-              .fillColor(article.isRead ? this.readColor() : this.secondaryColor())
               .margin({ right: 4 })
           }
-          Text(article.feedTitle).fontFamily(this.appFont())
-            .fontSize(13)
+          Text(article.feedTitle).fontFamily(this.listFont())
+            .fontSize(this.articleMetaFontSize * this.fontScale)
             .fontColor(article.isRead ? this.readColor() : this.secondaryColor())
             .layoutWeight(1)
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
           if (article.isStarred) {
-            Text('★').fontFamily(this.appFont()).fontSize(12).fontColor('#F9A825')
+            Text('★').fontFamily(this.appFont()).fontSize(this.fs(12)).fontColor('#F9A825')
               .margin({ right: 6 })
           }
-          Text(this.formatDate(article.publishedAt)).fontFamily(this.appFont())
-            .fontSize(13)
+          Text(this.formatDate(article.publishedAt)).fontFamily(this.listFont())
+            .fontSize(this.articleMetaFontSize * this.fontScale)
             .fontColor(article.isRead ? this.readColor() : this.secondaryColor())
         }
         .width('100%')
@@ -853,7 +859,7 @@ export struct ArticleListView {
       })
       .width('100%')
       .height(38)
-      .fontSize(14)
+      .fontSize(this.fs(14))
       .backgroundColor(this.darkMode ? '#1F2226' : '#FFFFFF')
       .fontColor(this.textColor())
       .onChange((value: string) => {
@@ -922,7 +928,8 @@ export struct ArticleListView {
   drawerGroupItem(group: FeedGroup): void {
     Row() {
       Text(group.name)
-        .fontSize(13)
+        .fontFamily(this.appFont())
+        .fontSize(this.fs(13))
         .fontWeight(FontWeight.Medium)
         .fontColor(this.textColor())
         .layoutWeight(1)
@@ -962,22 +969,24 @@ export struct ArticleListView {
           .borderRadius(4)
           .margin({ right: 8 })
       } else {
-        Image($r('app.media.ic_feeds'))
+        Image($r('app.media.app_icon'))
           .width(20)
           .height(20)
-          .padding(3)
-          .fillColor(this.secondaryColor())
+          .borderRadius(4)
           .margin({ right: 8 })
       }
       Text(title)
-        .fontSize(feedId.length === 0 ? 17 : 15)
+        .fontFamily(this.appFont())
+        // Source rows use the base 15vp; the top all-articles row is +2vp.
+        .fontSize((feedId.length === 0 ? 17 : 15) * this.fontScale)
         .fontColor(this.textColor())
         .layoutWeight(1)
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
       if (unreadCount > 0) {
         Text(`${unreadCount}`)
-          .fontSize(12)
+          .fontFamily(this.appFont())
+          .fontSize(this.fs(12))
           .fontColor(this.darkMode ? '#E8EAED' : '#1A1C1E')
           .backgroundColor(this.darkMode ? '#3A3A3A' : '#E8E8E8')
           .borderRadius(10)
@@ -1038,7 +1047,21 @@ export struct ArticleListView {
 
   private appFont(): string {
     // Reading the tick here makes font changes trigger a component rebuild.
-    return this.fontDataTick >= 0 ? FontManager.family() : 'sans-serif';
+    return this.fontDataTick >= 0
+      ? FontManager.familyFor(this.systemFontFamily) : 'sans-serif';
+  }
+
+  private listFont(): string {
+    // Font selection is per context; the tick also covers custom font installs.
+    return this.fontDataTick >= 0
+      ? FontManager.familyFor(this.articleFontFamily) : 'sans-serif';
+  }
+
+  /** Force the row list to rebuild when an article font size changes. */
+  onFontSizeChanged(): void {
+    if (this.articles.length > 0) {
+      this.articles = this.articles.slice();
+    }
   }
 
   build() {
@@ -1074,7 +1097,7 @@ export struct ArticleListView {
             .onClick(() => goBack())
           }
           Text(this.titleText()).fontFamily(this.appFont())
-            .fontSize(18)
+            .fontSize(this.fs(19))
             .fontWeight(FontWeight.Medium)
             .fontColor(this.textColor())
             .layoutWeight(1)
@@ -1243,22 +1266,22 @@ export struct ArticleListView {
         Column() {
           Column() {
             Text('全部标记为已读').fontFamily(this.appFont())
-              .fontSize(18)
+              .fontSize(this.fs(18))
               .fontWeight(FontWeight.Medium)
               .fontColor(this.textColor())
             Text('确定将当前列表中的文章全部标记为已读吗？').fontFamily(this.appFont())
-              .fontSize(14)
+              .fontSize(this.fs(14))
               .fontColor(this.secondaryColor())
               .margin({ top: 12 })
             Row() {
               Text('取消').fontFamily(this.appFont())
-                .fontSize(15)
+                .fontSize(this.fs(15))
                 .fontColor(this.secondaryColor())
                 .layoutWeight(1)
                 .textAlign(TextAlign.Center)
                 .onClick(() => { this.showMarkAllConfirm = false; })
               Text('确定').fontFamily(this.appFont())
-                .fontSize(15)
+                .fontSize(this.fs(15))
                 .fontColor('#2663D6')
                 .layoutWeight(1)
                 .textAlign(TextAlign.Center)
@@ -1291,10 +1314,10 @@ export struct ArticleListView {
 
           Column() {
             Row() {
-              Text(this.menuArticleRead ? '○' : '●').fontSize(18)
+              Text(this.menuArticleRead ? '○' : '●').fontSize(this.fs(18))
                 .fontColor(this.textColor()).width(32).textAlign(TextAlign.Center)
               Text(this.menuArticleRead ? '标记为未读' : '标记为已读').fontFamily(this.appFont())
-                .fontSize(16).fontColor(this.textColor()).layoutWeight(1)
+                .fontSize(this.fs(16)).fontColor(this.textColor()).layoutWeight(1)
             }
             .width('100%')
             .padding({ top: 14, bottom: 14 })
@@ -1304,11 +1327,11 @@ export struct ArticleListView {
             })
 
             Row() {
-              Text(this.menuArticleStarred ? '☆' : '★').fontSize(18)
+              Text(this.menuArticleStarred ? '☆' : '★').fontSize(this.fs(18))
                 .fontColor(this.menuArticleStarred ? this.secondaryColor() : '#F9A825')
                 .width(32).textAlign(TextAlign.Center)
               Text(this.menuArticleStarred ? '取消收藏' : '标记为收藏').fontFamily(this.appFont())
-                .fontSize(16).fontColor(this.textColor()).layoutWeight(1)
+                .fontSize(this.fs(16)).fontColor(this.textColor()).layoutWeight(1)
             }
             .width('100%')
             .padding({ top: 14, bottom: 14 })
@@ -1318,9 +1341,9 @@ export struct ArticleListView {
             })
 
             Row() {
-              Text('↑').fontSize(18).fontColor(this.textColor()).width(32).textAlign(TextAlign.Center)
+              Text('↑').fontSize(this.fs(18)).fontColor(this.textColor()).width(32).textAlign(TextAlign.Center)
               Text('标记上面文章为已读').fontFamily(this.appFont())
-                .fontSize(16).fontColor(this.textColor()).layoutWeight(1)
+                .fontSize(this.fs(16)).fontColor(this.textColor()).layoutWeight(1)
             }
             .width('100%')
             .padding({ top: 14, bottom: 14 })
@@ -1330,9 +1353,9 @@ export struct ArticleListView {
             })
 
             Row() {
-              Text('↓').fontSize(18).fontColor(this.textColor()).width(32).textAlign(TextAlign.Center)
+              Text('↓').fontSize(this.fs(18)).fontColor(this.textColor()).width(32).textAlign(TextAlign.Center)
               Text('标记下面文章为已读').fontFamily(this.appFont())
-                .fontSize(16).fontColor(this.textColor()).layoutWeight(1)
+                .fontSize(this.fs(16)).fontColor(this.textColor()).layoutWeight(1)
             }
             .width('100%')
             .padding({ top: 14, bottom: 14 })
@@ -1368,21 +1391,22 @@ export struct ArticleListView {
             Row() {
               Column() {
                 Text(this.accountName.length > 0 ? this.accountName : '订阅源')
-                  .fontSize(18)
+                  .fontSize(this.fs(18))
                   .fontWeight(FontWeight.Medium)
                   .fontColor(this.textColor())
                   .maxLines(1)
                   .textOverflow({ overflow: TextOverflow.Ellipsis })
                 Text(this.accountTypeLabel)
                   .fontFamily(this.appFont())
-                  .fontSize(12)
+                  .fontSize(this.fs(12))
                   .fontColor(this.secondaryColor())
                   .margin({ top: 2 })
               }
               .alignItems(HorizontalAlign.Start)
               .layoutWeight(1)
               Text('✕')
-                .fontSize(18)
+                .fontFamily(this.appFont())
+                .fontSize(this.fs(18))
                 .fontColor(this.secondaryColor())
                 .onClick(() => { this.getUIContext().animateTo({ duration: 240, curve: Curve.EaseInOut }, () => { this.showFeedDrawer = false; }); })
             }
@@ -1403,7 +1427,7 @@ export struct ArticleListView {
                 ListItem() {
                   Text(this.currentFilter === FILTER_ALL ? '还没有订阅源' : '该筛选下没有订阅源')
                     .fontFamily(this.appFont())
-                    .fontSize(13)
+                    .fontSize(this.fs(13))
                     .fontColor(this.secondaryColor())
                     .margin({ left: 16, top: 10 })
                 }

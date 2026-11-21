@@ -13,10 +13,15 @@ import { FontManager } from '../common/FontManager';
 /** Home screen: subscription list with pull-to-refresh and unread counts. */
 @Component
 export struct FeedListView {
+  @StorageProp('fontScale') uiFontScale: number = 1;
+  // Scale fixed UI font sizes with the system font size setting.
+  private fs(size: number): number { return size * this.uiFontScale; }
+
   @Prop asDestination: boolean = false;
   onCloseFeeds: () => void = () => {};
   @StorageLink('darkMode') darkMode: boolean = false;
   @StorageProp('fontDataTick') fontDataTick: number = 0;
+  @StorageProp('systemFontFamily') systemFontFamily: string = 'sans-serif';
   @StorageProp('feedIconTick') @Watch('onFeedIconChanged') feedIconTick: number = 0;
   @StorageProp('topInset') topInset: number = 0;
   @StorageProp('readStatusTick') @Watch('onReadStatusChanged') readStatusTick: number = 0;
@@ -187,7 +192,7 @@ export struct FeedListView {
   groupHeader(name: string): void {
     Row() {
       Text(name).fontFamily(this.appFont())
-        .fontSize(13)
+        .fontSize(this.fs(13))
         .fontWeight(FontWeight.Medium)
         .fontColor(this.secondaryColor())
     }
@@ -236,22 +241,21 @@ export struct FeedListView {
           .borderRadius(6)
           .margin({ right: 10 })
       } else {
-        Image($r('app.media.ic_feeds'))
+        Image($r('app.media.app_icon'))
           .width(32)
           .height(32)
-          .padding(6)
-          .fillColor(this.secondaryColor())
+          .borderRadius(6)
           .margin({ right: 10 })
       }
       Column() {
         Text(feed.title).fontFamily(this.appFont())
-          .fontSize(16)
+          .fontSize(this.fs(16))
           .fontWeight(FontWeight.Medium)
           .fontColor(this.textColor())
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
         Text(feed.url).fontFamily(this.appFont())
-          .fontSize(12)
+          .fontSize(this.fs(12))
           .fontColor(this.secondaryColor())
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -262,7 +266,7 @@ export struct FeedListView {
 
       if (this.feedBadgeCount(feed) > 0) {
         Text(`${this.feedBadgeCount(feed)}`).fontFamily(this.appFont())
-          .fontSize(12)
+          .fontSize(this.fs(12))
           .fontColor(this.darkMode ? '#E8EAED' : '#1A1C1E')
           .backgroundColor(this.darkMode ? '#3A3A3A' : '#E8E8E8')
           .borderRadius(12)
@@ -278,7 +282,8 @@ export struct FeedListView {
 
   private appFont(): string {
     // Reading the tick here makes font changes trigger a component rebuild.
-    return this.fontDataTick >= 0 ? FontManager.family() : 'sans-serif';
+    return this.fontDataTick >= 0
+      ? FontManager.familyFor(this.systemFontFamily) : 'sans-serif';
   }
 
   build() {
@@ -306,7 +311,7 @@ export struct FeedListView {
             .fontColor(this.textColor())
           if (!this.asDestination) {
             Text('订阅 · 阅读 · 稍后读').fontFamily(this.appFont())
-              .fontSize(12)
+              .fontSize(this.fs(12))
               .fontColor(this.secondaryColor())
               .margin({ top: 2 })
           }
@@ -378,11 +383,11 @@ export struct FeedListView {
       if (!this.asDestination) {
         Row() {
           Text('订阅源').fontFamily(this.appFont())
-            .fontSize(14)
+            .fontSize(this.fs(14))
             .fontColor(this.secondaryColor())
           Blank()
           Text('全部已读').fontFamily(this.appFont())
-            .fontSize(14)
+            .fontSize(this.fs(14))
             .fontColor('#2663D6')
             .onClick(() => this.markAllRead())
         }
@@ -395,11 +400,11 @@ export struct FeedListView {
       if (this.feeds.length === 0 && !this.isLoading && this.currentFilter === FILTER_ALL) {
         Column() {
           Text('还没有订阅源').fontFamily(this.appFont())
-            .fontSize(18)
+            .fontSize(this.fs(19))
             .fontWeight(FontWeight.Medium)
             .fontColor(this.textColor())
           Text('点击右上角 + 添加 RSS 地址开始阅读').fontFamily(this.appFont())
-            .fontSize(14)
+            .fontSize(this.fs(14))
             .fontColor(this.secondaryColor())
             .margin({ top: 8 })
           Button('添加订阅')
@@ -415,11 +420,11 @@ export struct FeedListView {
           Row() {
             Column() {
               Text(this.filterName()).fontFamily(this.appFont())
-                .fontSize(18)
+                .fontSize(this.fs(17))
                 .fontWeight(FontWeight.Medium)
                 .fontColor(this.textColor())
               Text(`查看全部${this.filterName()}文章 · ${this.bannerCount} 篇`).fontFamily(this.appFont())
-                .fontSize(13)
+                .fontSize(this.fs(13))
                 .fontColor(this.secondaryColor())
                 .margin({ top: 4 })
             }
@@ -427,14 +432,14 @@ export struct FeedListView {
             .alignItems(HorizontalAlign.Start)
             if (this.bannerCount > 0) {
               Text(`${this.bannerCount}`).fontFamily(this.appFont())
-                .fontSize(12)
+                .fontSize(this.fs(12))
                 .fontColor(this.darkMode ? '#E8EAED' : '#1A1C1E')
                 .backgroundColor(this.darkMode ? '#3A3A3A' : '#E8E8E8')
                 .borderRadius(10)
                 .padding({ left: 8, right: 8, top: 2, bottom: 2 })
                 .margin({ right: 8 })
             }
-            Text('→').fontFamily(this.appFont()).fontSize(20).fontColor(this.secondaryColor())
+            Text('→').fontFamily(this.appFont()).fontSize(this.fs(20)).fontColor(this.secondaryColor())
           }
           .width('100%')
           .padding({ left: 20, right: 20, top: 10, bottom: 10 })

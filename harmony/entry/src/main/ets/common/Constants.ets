@@ -10,6 +10,10 @@ export const ROUTE_SUBSCRIBE: string = 'SubscribePage';
 export const ROUTE_FEEDS: string = 'FeedsPage';
 export const ROUTE_ACCOUNTS: string = 'AccountsPage';
 export const ROUTE_ACCOUNT_EDITOR: string = 'AccountEditorPage';
+export const ROUTE_ARTICLE_LIST_STYLE: string = 'ArticleListStylePage';
+export const ROUTE_READER_STYLE: string = 'ReaderStylePage';
+export const ROUTE_FONT_PICKER: string = 'FontPickerPage';
+export const ROUTE_SYSTEM_STYLE: string = 'SystemStylePage';
 
 /** Empty Navigation parameter for routes that take no arguments. */
 export interface EmptyNavParam {}
@@ -20,10 +24,9 @@ export interface FlowParam {
   feedTitle: string;
 }
 
-/** fontSizeIndex → app-wide font scale (ApplicationContext.setFontSizeScale). */
-export function fontScaleForIndex(index: number): number {
-  const scales: number[] = [0.85, 1.0, 1.15, 1.3];
-  return index >= 0 && index < scales.length ? scales[index] : 1.0;
+/** Font picker target: which of the two contexts is being customised. */
+export interface FontPickerParam {
+  target: string; // 'article' | 'reader'
 }
 
 export const FILTER_UNREAD: string = 'unread';

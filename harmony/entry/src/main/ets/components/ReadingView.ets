@@ -4,24 +4,32 @@ import { common } from '@kit.AbilityKit';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { systemShare } from '@kit.ShareKit';
 import { uniformTypeDescriptor as utd } from '@kit.ArkData';
-import { BusinessError } from '@kit.BasicServicesKit';
 import { Article, ArticleNeighbors, Feed } from '../model/Models';
 import { rssRepository } from '../rss/RssRepository';
-import { settingsStore } from '../data/SettingsStore';
 import { HtmlBuilder } from '../rss/HtmlBuilder';
-import { goBack, openArticle } from '../common/NavigationService';
+import { settingsStore } from '../data/SettingsStore';
 import { Logger } from '../common/Logger';
 import { FontManager } from '../common/FontManager';
 import { FeedIcon } from '../common/FeedIcon';
 import { ArticleImageConverter } from '../common/ArticleImageConverter';
+import { ReaderFont } from '../common/ReaderFont';
 
 /** Reader screen. Uses the same WebView rendering approach as the Android app. */
 @Component
 export struct ReadingView {
+  @StorageProp('fontScale') uiFontScale: number = 1;
+  // Scale fixed UI font sizes with the system font size setting.
+  private fs(size: number): number { return size * this.uiFontScale; }
+
   @Prop articleId: string = '';
   @StorageLink('darkMode') darkMode: boolean = false;
   @StorageProp('fontDataTick') fontDataTick: number = 0;
+  @StorageProp('systemFontFamily') systemFontFamily: string = 'sans-serif';
   @StorageProp('topInset') topInset: number = 0;
+  @StorageProp('readerBodyFontSize') @Watch('onStyleChanged') readerBodyFontSize: number = 17;
+  @StorageProp('readerPageMargin') @Watch('onStyleChanged') readerPageMargin: number = 16;
+  @StorageProp('readerLineSpacing') @Watch('onStyleChanged') readerLineSpacing: number = 1.75;
+  @StorageProp('readerFontFamily') @Watch('onStyleChanged') readerFontFamily: string = 'sans-serif';
   @State article: Article | undefined = undefined;
   @State html: string = '';
   @State isStarred: boolean = false;
@@ -84,8 +92,41 @@ export struct ReadingView {
     this.nextId = neighbors.next;
   }
 
+  /** Re-render the reader when its appearance settings change. */
+  private async onStyleChanged(): Promise<void> {
+    if (!this.article) {
+      return;
+    }
+    this.html = await this.buildHtml(this.article);
+    this.pushHtml();
+  }
+
+  /** ArkUI's getFont().registerFont only affects native Text, not ArkWeb, and
+   *  data: URI fonts are not decoded here either. Load the font bytes into
+   *  memory and expose them through a same-origin virtual URL intercepted by
+   *  onInterceptRequest. */
+  private customFontCss(): string {
+    if (this.readerFontFamily !== 'custom') {
+      return '';
+    }
+    const path: string = settingsStore.get().customFontPath;
+    if (ReaderFont.load(path) === undefined) {
+      return '';
+    }
+    return `@font-face { font-family: 'ReadYouCustom'; ` +
+      `src: url('${ReaderFont.virtualUrl(this.article?.link ?? '')}') format('truetype'); }`;
+  }
+
   private async buildHtml(article: Article): Promise<string> {
-    const built: string = HtmlBuilder.build(article, this.darkMode, settingsStore.get().fontSizeIndex);
+    const built: string = HtmlBuilder.build(
+      article,
+      this.darkMode,
+      this.readerBodyFontSize,
+      this.readerPageMargin,
+      this.readerLineSpacing,
+      FontManager.familyFor(this.readerFontFamily),
+      this.customFontCss()
+    );
     return await ArticleImageConverter.convertAvif(built);
   }
 
@@ -188,7 +229,8 @@ export struct ReadingView {
 
   private appFont(): string {
     // Reading the tick here makes font changes trigger a component rebuild.
-    return this.fontDataTick >= 0 ? FontManager.family() : 'sans-serif';
+    return this.fontDataTick >= 0
+      ? FontManager.familyFor(this.systemFontFamily) : 'sans-serif';
   }
 
   private dateText(): string {
@@ -212,22 +254,21 @@ export struct ReadingView {
                 .borderRadius(3)
                 .margin({ right: 5 })
             } else {
-              Image($r('app.media.ic_feeds'))
+              Image($r('app.media.app_icon'))
                 .width(14)
                 .height(14)
-                .padding(2)
-                .fillColor(this.darkMode ? '#9AA0A6' : '#5E636A')
+                .borderRadius(3)
                 .margin({ right: 5 })
             }
             Text(this.article?.feedTitle ?? '').fontFamily(this.appFont())
-              .fontSize(12)
+              .fontSize(this.fs(12))
               .fontColor(this.darkMode ? '#9AA0A6' : '#5E636A')
               .maxLines(1)
               .textOverflow({ overflow: TextOverflow.Ellipsis })
               .constraintSize({ maxWidth: 160 })
             if (this.dateText().length > 0) {
               Text('  ·  ' + this.dateText()).fontFamily(this.appFont())
-                .fontSize(12)
+                .fontSize(this.fs(12))
                 .fontColor(this.darkMode ? '#9AA0A6' : '#5E636A')
             }
             Blank()
@@ -250,7 +291,7 @@ export struct ReadingView {
           }
           .width('100%')
           Text(this.article?.title ?? '').fontFamily(this.appFont())
-            .fontSize(20)
+            .fontSize(this.fs(20))
             .fontWeight(FontWeight.Medium)
             .fontColor(this.darkMode ? '#E8EAED' : '#1A1C1E')
             .width('100%')
@@ -264,6 +305,7 @@ export struct ReadingView {
           Web({ src: '', controller: this.controller })
             .javaScriptAccess(true)
             .domStorageAccess(true)
+            .fileAccess(true)
             .width('100%')
             .layoutWeight(1)
             .padding({ bottom: 16 })
@@ -285,12 +327,24 @@ export struct ReadingView {
                   return response;
                 }
               }
+              if (ReaderFont.isVirtualUrl(url)) {
+                const bytes: ArrayBuffer | undefined = ReaderFont.getBytes();
+                if (bytes) {
+                  const response: WebResourceResponse = new WebResourceResponse();
+                  response.setResponseData(bytes);
+                  response.setResponseMimeType('font/ttf');
+                  response.setResponseCode(200);
+                  response.setReasonMessage('OK');
+                  response.setResponseIsReady(true);
+                  return response;
+                }
+              }
               return null;
             })
         } else {
           Column() {
             Text('正在加载文章…').fontFamily(this.appFont())
-              .fontSize(15)
+              .fontSize(this.fs(15))
               .fontColor(this.darkMode ? '#9AA0A6' : '#5E636A')
           }
           .width('100%')

@@ -1,14 +1,18 @@
 import { Account, accountTypeName } from '../account/AccountModels';
 import { accountRepository } from '../account/AccountRepository';
-import { settingsStore } from '../data/SettingsStore';
 import { goBack, openAccountEditor } from '../common/NavigationService';
 import { FontManager } from '../common/FontManager';
 
 /** Account list: switch, edit, add and remove accounts. */
 @Component
 export struct AccountsView {
+  @StorageProp('fontScale') uiFontScale: number = 1;
+  // Scale fixed UI font sizes with the system font size setting.
+  private fs(size: number): number { return size * this.uiFontScale; }
+
   @StorageLink('darkMode') darkMode: boolean = false;
   @StorageProp('fontDataTick') fontDataTick: number = 0;
+  @StorageProp('systemFontFamily') systemFontFamily: string = 'sans-serif';
   @StorageProp('topInset') topInset: number = 0;
   @StorageLink('activeAccountId') activeAccountId: string = '1';
   @State accounts: Account[] = [];
@@ -70,7 +74,8 @@ export struct AccountsView {
 
   private appFont(): string {
     // Reading the tick here makes font changes trigger a component rebuild.
-    return this.fontDataTick >= 0 ? FontManager.family() : 'sans-serif';
+    return this.fontDataTick >= 0
+      ? FontManager.familyFor(this.systemFontFamily) : 'sans-serif';
   }
 
   build() {
@@ -90,12 +95,12 @@ export struct AccountsView {
           .margin({ right: 8 })
           .onClick(() => goBack())
           Text('账号管理').fontFamily(this.appFont())
-            .fontSize(18)
+            .fontSize(this.fs(19))
             .fontWeight(FontWeight.Medium)
             .fontColor(this.textColor())
           Blank()
           Text('+ 添加').fontFamily(this.appFont())
-            .fontSize(15)
+            .fontSize(this.fs(15))
             .fontColor('#2663D6')
             .padding({ right: 8 })
             .onClick(() => openAccountEditor(''))
@@ -104,7 +109,7 @@ export struct AccountsView {
         .padding({ left: 12, right: 16, top: 14, bottom: 20 })
 
         if (this.accounts.length === 0 && !this.isLoading) {
-          Text('暂无账号').fontFamily(this.appFont()).fontSize(15).fontColor(this.secondaryColor())
+          Text('暂无账号').fontFamily(this.appFont()).fontSize(this.fs(15)).fontColor(this.secondaryColor())
         } else {
           List() {
             ForEach(this.accounts, (account: Account) => {
@@ -113,12 +118,12 @@ export struct AccountsView {
                   Column() {
                     Row() {
                       Text(account.name).fontFamily(this.appFont())
-                        .fontSize(16)
+                        .fontSize(this.fs(16))
                         .fontWeight(FontWeight.Medium)
                         .fontColor(this.textColor())
                       if (this.activeAccountId === account.id) {
                         Text('当前').fontFamily(this.appFont())
-                          .fontSize(11)
+                          .fontSize(this.fs(11))
                           .fontColor(Color.White)
                           .backgroundColor('#2663D6')
                           .borderRadius(8)
@@ -127,7 +132,7 @@ export struct AccountsView {
                       }
                     }
                     Text(accountTypeName(account.type)).fontFamily(this.appFont())
-                      .fontSize(12)
+                      .fontSize(this.fs(12))
                       .fontColor(this.secondaryColor())
                       .margin({ top: 5 })
                   }
@@ -135,13 +140,13 @@ export struct AccountsView {
                   .alignItems(HorizontalAlign.Start)
 
                   Text('编辑').fontFamily(this.appFont())
-                    .fontSize(14)
+                    .fontSize(this.fs(14))
                     .fontColor('#2663D6')
                     .padding({ left: 10, right: 10 })
                     .onClick(() => openAccountEditor(account.id))
                   if (this.accounts.length > 1) {
                     Text('删除').fontFamily(this.appFont())
-                      .fontSize(14)
+                      .fontSize(this.fs(14))
                       .fontColor('#D93025')
                       .padding({ right: 8 })
                       .onClick(() => this.confirmDelete(account))
@@ -160,7 +165,7 @@ export struct AccountsView {
         }
 
         Text('本地账号直接抓取 RSS；Fever 与 Google Reader / FreshRSS 通过远程服务同步。').fontFamily(this.appFont())
-          .fontSize(12)
+          .fontSize(this.fs(12))
           .fontColor(this.secondaryColor())
           .padding(16)
 
@@ -168,22 +173,22 @@ export struct AccountsView {
           Column() {
             Column() {
               Text('删除账号').fontFamily(this.appFont())
-                .fontSize(18)
+                .fontSize(this.fs(18))
                 .fontWeight(FontWeight.Medium)
                 .fontColor(this.textColor())
               Text(`确定删除「${this.pendingDelete.name}」及其本地数据吗？`).fontFamily(this.appFont())
-                .fontSize(14)
+                .fontSize(this.fs(14))
                 .fontColor(this.secondaryColor())
                 .margin({ top: 12 })
               Row() {
                 Text('取消').fontFamily(this.appFont())
-                  .fontSize(15)
+                  .fontSize(this.fs(15))
                   .fontColor(this.secondaryColor())
                   .layoutWeight(1)
                   .textAlign(TextAlign.Center)
                   .onClick(() => { this.pendingDelete = undefined; })
                 Text('删除').fontFamily(this.appFont())
-                  .fontSize(15)
+                  .fontSize(this.fs(15))
                   .fontColor('#D93025')
                   .layoutWeight(1)
                   .textAlign(TextAlign.Center)

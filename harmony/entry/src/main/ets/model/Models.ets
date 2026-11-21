@@ -61,11 +61,25 @@ export interface AppSettings {
   darkMode: boolean;
   syncOnLaunch: boolean;
   markReadOnOpen: boolean;
-  fontSizeIndex: number;
-  customFontPath: string;
   markReadOnScroll: boolean;
   keepArticleDays: number;
   fetchBatchSize: number;
+  // Article list appearance.
+  articleTitleFontSize: number;
+  articleSummaryFontSize: number;
+  articleMetaFontSize: number;
+  articleFontFamily: string;
+  // Full-text reader appearance.
+  readerBodyFontSize: number;
+  readerPageMargin: number;
+  readerLineSpacing: number;
+  readerFontFamily: string;
+  // System-wide text scale and font family.
+  systemFontScale: number;
+  systemFontFamily: string;
+  // Shared installed custom font file (empty = none installed).
+  customFontPath: string;
+  customFontName: string;
 }
 
 export function defaultSettings(): AppSettings {
@@ -74,10 +88,20 @@ export function defaultSettings(): AppSettings {
     darkMode: false,
     syncOnLaunch: false,
     markReadOnOpen: true,
-    fontSizeIndex: 1,
-    customFontPath: '',
     markReadOnScroll: false,
     keepArticleDays: 30,
     fetchBatchSize: 100,
+    articleTitleFontSize: 17,
+    articleSummaryFontSize: 15,
+    articleMetaFontSize: 13,
+    articleFontFamily: 'sans-serif',
+    readerBodyFontSize: 17,
+    readerPageMargin: 16,
+    readerLineSpacing: 1.75,
+    readerFontFamily: 'sans-serif',
+    systemFontScale: 1.0,
+    systemFontFamily: 'sans-serif',
+    customFontPath: '',
+    customFontName: '',
   };
 }

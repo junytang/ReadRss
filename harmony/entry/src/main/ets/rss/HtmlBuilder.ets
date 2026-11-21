@@ -5,12 +5,10 @@ import { FULL_CONTENT_VERSION_MARKER } from './FullContentFetcher';
 
 /** Builds the reader HTML using the same template/CSS system as Android's WebViewHtml. */
 export class HtmlBuilder {
-  static build(article: Article, dark: boolean, fontSizeIndex: number): string {
-    const sizes: number[] = [15, 17, 20, 23];
-    const size: number = fontSizeIndex >= 0 && fontSizeIndex < sizes.length
-      ? sizes[fontSizeIndex]
-      : 17;
-
+  static build(
+    article: Article, dark: boolean, fontSize: number, pageMargin: number,
+    lineSpacing: number, fontFamily: string, extraCss: string = ''
+  ): string {
     // Android only renders the article body; title/time are native UI.
     // A fullContent that is only the version marker means extraction failed
     // (e.g. a JS-rendered site); fall back to the RSS content, which often has
@@ -29,8 +27,9 @@ export class HtmlBuilder {
     body = HtmlBuilder.collapseEmptyBreaks(body);
     body = body.replace(/(["'])(\/\/[^"']+)\1/g, '$1https:$2$1');
 
-    const fontFamily: string = '"HarmonyOS Sans SC", "Noto Sans CJK SC", sans-serif';
-    const style: string = WebViewStyle.get(dark, size, fontFamily);
+    const style: string = WebViewStyle.get(
+      dark, fontSize, fontFamily, pageMargin, lineSpacing
+    ) + extraCss;
     const baseHref: string = article.link.length > 0
       ? HtmlBuilder.escape(article.link)
       : '';

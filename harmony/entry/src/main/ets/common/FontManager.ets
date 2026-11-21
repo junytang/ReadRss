@@ -4,12 +4,19 @@ import { Logger } from './Logger';
 
 const FONT_NAME: string = 'ReadYouCustom';
 let activeFamily: string = 'sans-serif';
+let customRegistered: boolean = false;
+let customFontName: string = '';
 const FONT_FILE: string = 'readyou-custom-font.ttf';
 
 /** Custom font installation and registration (Android has no direct equivalent). */
 export class FontManager {
   static fontPath(context: common.Context): string {
     return `${context.filesDir}/${FONT_FILE}`;
+  }
+
+  /** Original file name of the installed custom font, for display in settings. */
+  static fontName(): string {
+    return customFontName;
   }
 
   /** Opens the system file picker, copies the chosen TTF/OTF into the app sandbox. */
@@ -24,6 +31,9 @@ export class FontManager {
       if (uris.length === 0) {
         return '';
       }
+      const rawName: string = decodeURIComponent(uris[0]);
+      const slash: number = rawName.lastIndexOf('/');
+      customFontName = slash >= 0 ? rawName.substring(slash + 1) : rawName;
       const source = fs.openSync(uris[0], fs.OpenMode.READ_ONLY);
       try {
         const destination = fs.openSync(
@@ -57,6 +67,7 @@ export class FontManager {
     try {
       const src: string = `file://${path}`;
       uiContext.getFont().registerFont({ familyName: FONT_NAME, familySrc: src });
+      customRegistered = true;
       activeFamily = FONT_NAME;
       Logger.info(`Custom font registered: ${path}`);
     } catch (error) {
@@ -65,6 +76,8 @@ export class FontManager {
   }
 
   static remove(context: common.Context): void {
+    customRegistered = false;
+    customFontName = '';
     activeFamily = 'sans-serif';
     try {
       fs.unlinkSync(FontManager.fontPath(context));
@@ -76,5 +89,23 @@ export class FontManager {
   /** Font family explicitly applied to every Text component. */
   static family(): string {
     return activeFamily;
+  }
+
+  /** Resolve a stored font key to an ArkUI family name. 'custom' maps to the
+   *  installed font, falling back to the system default when unavailable. */
+  static familyFor(key: string): string {
+    if (key === 'custom') {
+      return customRegistered ? FONT_NAME : 'sans-serif';
+    }
+    return key.length > 0 ? key : 'sans-serif';
+  }
+
+  static isCustomInstalled(): boolean {
+    return customRegistered;
+  }
+
+  /** Apply the chosen system-wide font family to all native Text components. */
+  static setSystemFamily(key: string): void {
+    activeFamily = FontManager.familyFor(key);
   }
 }

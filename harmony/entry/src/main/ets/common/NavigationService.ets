@@ -1,6 +1,11 @@
 import {
   AccountEditorParam,
   EmptyNavParam,
+  FontPickerParam,
+  ROUTE_ARTICLE_LIST_STYLE,
+  ROUTE_FONT_PICKER,
+  ROUTE_READER_STYLE,
+  ROUTE_SYSTEM_STYLE,
   FlowParam,
   ReadingParam,
   ROUTE_ACCOUNTS,
@@ -44,6 +49,23 @@ export function openFeeds(): void {
 
 export function openAccounts(): void {
   navStack.pushPathByName(ROUTE_ACCOUNTS, noParam);
+}
+
+export function openArticleListStyle(): void {
+  navStack.pushPathByName(ROUTE_ARTICLE_LIST_STYLE, noParam);
+}
+
+export function openReaderStyle(): void {
+  navStack.pushPathByName(ROUTE_READER_STYLE, noParam);
+}
+
+export function openSystemStyle(): void {
+  navStack.pushPathByName(ROUTE_SYSTEM_STYLE, noParam);
+}
+
+export function openFontPicker(target: string): void {
+  const param: FontPickerParam = { target: target };
+  navStack.pushPathByName(ROUTE_FONT_PICKER, param);
 }
 
 /** Empty accountId means "add a new account". */

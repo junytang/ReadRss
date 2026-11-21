@@ -2,13 +2,18 @@ import { common, ConfigurationConstant } from '@kit.AbilityKit';
 import {
   AccountEditorParam,
   FlowParam,
+  FontPickerParam,
   ReadingParam,
   ROUTE_ACCOUNTS,
   ROUTE_ACCOUNT_EDITOR,
+  ROUTE_ARTICLE_LIST_STYLE,
   ROUTE_FEEDS,
   ROUTE_FLOW,
+  ROUTE_FONT_PICKER,
   ROUTE_READING,
+  ROUTE_READER_STYLE,
   ROUTE_SETTINGS,
+  ROUTE_SYSTEM_STYLE,
   ROUTE_SUBSCRIBE,
 } from '../common/Constants';
 import { navStack } from '../common/NavigationService';
@@ -22,6 +27,10 @@ import { SettingsView } from '../components/SettingsView';
 import { SubscribeView } from '../components/SubscribeView';
 import { AccountsView } from '../components/AccountsView';
 import { AccountEditorView } from '../components/AccountEditorView';
+import { ArticleListStyleView } from '../components/ArticleListStyleView';
+import { ReaderStyleView } from '../components/ReaderStyleView';
+import { FontPickerView } from '../components/FontPickerView';
+import { SystemStyleView } from '../components/SystemStyleView';
 
 /** Root page: owns the Navigation container and the route table. */
 @Entry
@@ -53,6 +62,14 @@ struct Index {
       AccountsView();
     } else if (name === ROUTE_ACCOUNT_EDITOR) {
       AccountEditorView({ accountId: (param as AccountEditorParam).accountId });
+    } else if (name === ROUTE_ARTICLE_LIST_STYLE) {
+      ArticleListStyleView();
+    } else if (name === ROUTE_READER_STYLE) {
+      ReaderStyleView();
+    } else if (name === ROUTE_FONT_PICKER) {
+      FontPickerView({ target: (param as FontPickerParam).target });
+    } else if (name === ROUTE_SYSTEM_STYLE) {
+      SystemStyleView();
     }
   }
 
@@ -65,6 +82,8 @@ struct Index {
     AppStorage.setOrCreate<boolean>('darkMode', settings.darkMode);
     this.darkMode = settings.darkMode;
     FontManager.register(this.getUIContext(), settings.customFontPath);
+    FontManager.setSystemFamily(settings.systemFontFamily);
+    AppStorage.set<number>('fontScale', settings.systemFontScale);
     try {
       const hostContext = this.getUIContext().getHostContext();
       if (hostContext) {

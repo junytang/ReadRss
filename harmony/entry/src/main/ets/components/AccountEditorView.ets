@@ -30,9 +30,14 @@ const TYPES: TypeChoice[] = [
 /** Add/edit account form with credential validation. */
 @Component
 export struct AccountEditorView {
+  @StorageProp('fontScale') uiFontScale: number = 1;
+  // Scale fixed UI font sizes with the system font size setting.
+  private fs(size: number): number { return size * this.uiFontScale; }
+
   @Prop accountId: string = '';
   @StorageLink('darkMode') darkMode: boolean = false;
   @StorageProp('fontDataTick') fontDataTick: number = 0;
+  @StorageProp('systemFontFamily') systemFontFamily: string = 'sans-serif';
   @StorageProp('topInset') topInset: number = 0;
   @State type: AccountType = AccountType.LOCAL;
   @State name: string = '';
@@ -151,7 +156,8 @@ export struct AccountEditorView {
 
   private appFont(): string {
     // Reading the tick here makes font changes trigger a component rebuild.
-    return this.fontDataTick >= 0 ? FontManager.family() : 'sans-serif';
+    return this.fontDataTick >= 0
+      ? FontManager.familyFor(this.systemFontFamily) : 'sans-serif';
   }
 
   build() {
@@ -171,7 +177,7 @@ export struct AccountEditorView {
           .margin({ right: 8 })
           .onClick(() => goBack())
           Text(this.isNew() ? '添加账号' : '编辑账号').fontFamily(this.appFont())
-            .fontSize(18)
+            .fontSize(this.fs(19))
             .fontWeight(FontWeight.Medium)
             .fontColor(this.textColor())
         }
@@ -180,11 +186,11 @@ export struct AccountEditorView {
 
         Scroll() {
           Column() {
-            Text('账号类型').fontFamily(this.appFont()).fontSize(13).fontColor(this.secondaryColor()).alignSelf(ItemAlign.Start)
+            Text('账号类型').fontFamily(this.appFont()).fontSize(this.fs(13)).fontColor(this.secondaryColor()).alignSelf(ItemAlign.Start)
             Row() {
               ForEach(TYPES, (choice: TypeChoice) => {
                 Text(choice.label).fontFamily(this.appFont())
-                  .fontSize(13)
+                  .fontSize(this.fs(13))
                   .fontColor(this.type === choice.type ? Color.White : this.textColor())
                   .backgroundColor(this.type === choice.type ? '#2663D6' : (this.darkMode ? '#1F2226' : '#FFFFFF'))
                   .borderRadius(16)
@@ -197,9 +203,9 @@ export struct AccountEditorView {
             .margin({ top: 10 })
 
             Column() {
-              Text('名称').fontFamily(this.appFont()).fontSize(13).fontColor(this.secondaryColor()).alignSelf(ItemAlign.Start)
+              Text('名称').fontFamily(this.appFont()).fontSize(this.fs(13)).fontColor(this.secondaryColor()).alignSelf(ItemAlign.Start)
               TextInput({ text: this.name, placeholder: '可选' })
-                .width('100%').height(44).margin({ top: 8 }).fontSize(15)
+                .width('100%').height(44).margin({ top: 8 }).fontSize(this.fs(15))
                 .backgroundColor(this.darkMode ? '#1F2226' : '#FFFFFF')
                 .fontColor(this.textColor())
                 .onChange((value: string) => { this.name = value; })
@@ -208,14 +214,14 @@ export struct AccountEditorView {
 
             if (this.type !== AccountType.LOCAL) {
               Column() {
-                Text('服务器地址').fontFamily(this.appFont()).fontSize(13).fontColor(this.secondaryColor()).alignSelf(ItemAlign.Start)
+                Text('服务器地址').fontFamily(this.appFont()).fontSize(this.fs(13)).fontColor(this.secondaryColor()).alignSelf(ItemAlign.Start)
                 TextInput({
                   text: this.serverUrl,
                   placeholder: this.type === AccountType.FEVER
                     ? 'https://demo.freshrss.org/api/fever.php'
                     : 'https://demo.freshrss.org/api/greader.php',
                 })
-                  .width('100%').height(44).margin({ top: 8 }).fontSize(15)
+                  .width('100%').height(44).margin({ top: 8 }).fontSize(this.fs(15))
                   .backgroundColor(this.darkMode ? '#1F2226' : '#FFFFFF')
                   .fontColor(this.textColor())
                   .onChange((value: string) => { this.serverUrl = value; })
@@ -223,9 +229,9 @@ export struct AccountEditorView {
               .width('100%').margin({ top: 16 })
 
               Column() {
-                Text('用户名').fontFamily(this.appFont()).fontSize(13).fontColor(this.secondaryColor()).alignSelf(ItemAlign.Start)
+                Text('用户名').fontFamily(this.appFont()).fontSize(this.fs(13)).fontColor(this.secondaryColor()).alignSelf(ItemAlign.Start)
                 TextInput({ text: this.username })
-                  .width('100%').height(44).margin({ top: 8 }).fontSize(15)
+                  .width('100%').height(44).margin({ top: 8 }).fontSize(this.fs(15))
                   .backgroundColor(this.darkMode ? '#1F2226' : '#FFFFFF')
                   .fontColor(this.textColor())
                   .onChange((value: string) => { this.username = value; })
@@ -233,9 +239,9 @@ export struct AccountEditorView {
               .width('100%').margin({ top: 16 })
 
               Column() {
-                Text('密码').fontFamily(this.appFont()).fontSize(13).fontColor(this.secondaryColor()).alignSelf(ItemAlign.Start)
+                Text('密码').fontFamily(this.appFont()).fontSize(this.fs(13)).fontColor(this.secondaryColor()).alignSelf(ItemAlign.Start)
                 TextInput({ text: this.password })
-                  .width('100%').height(44).margin({ top: 8 }).fontSize(15)
+                  .width('100%').height(44).margin({ top: 8 }).fontSize(this.fs(15))
                   .type(InputType.Password)
                   .backgroundColor(this.darkMode ? '#1F2226' : '#FFFFFF')
                   .fontColor(this.textColor())
@@ -244,10 +250,10 @@ export struct AccountEditorView {
               .width('100%').margin({ top: 16 })
 
               Column() {
-                Text('客户端证书别名（可选）').fontFamily(this.appFont()).fontSize(13).fontColor(this.secondaryColor())
+                Text('客户端证书别名（可选）').fontFamily(this.appFont()).fontSize(this.fs(13)).fontColor(this.secondaryColor())
                   .alignSelf(ItemAlign.Start)
                 TextInput({ text: this.clientCertificateAlias })
-                  .width('100%').height(44).margin({ top: 8 }).fontSize(15)
+                  .width('100%').height(44).margin({ top: 8 }).fontSize(this.fs(15))
                   .backgroundColor(this.darkMode ? '#1F2226' : '#FFFFFF')
                   .fontColor(this.textColor())
                   .onChange((value: string) => { this.clientCertificateAlias = value; })
@@ -257,7 +263,7 @@ export struct AccountEditorView {
 
             if (this.errorMessage.length > 0) {
               Text(this.errorMessage).fontFamily(this.appFont())
-                .fontSize(13)
+                .fontSize(this.fs(13))
                 .fontColor('#D93025')
                 .margin({ top: 16 })
                 .alignSelf(ItemAlign.Start)
@@ -271,7 +277,7 @@ export struct AccountEditorView {
               .onClick(() => this.save())
 
             Text('Fever 的 API Key 由用户名与密码自动计算；Google Reader / FreshRSS 使用 ClientLogin + Token 鉴权。').fontFamily(this.appFont())
-              .fontSize(12)
+              .fontSize(this.fs(12))
               .fontColor(this.secondaryColor())
               .margin({ top: 20 })
           }

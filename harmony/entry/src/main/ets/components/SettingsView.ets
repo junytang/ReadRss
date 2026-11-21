@@ -1,20 +1,24 @@
-import { common, ConfigurationConstant } from '@kit.AbilityKit';
 import { settingsStore } from '../data/SettingsStore';
 import { rssRepository } from '../rss/RssRepository';
-import { goBack, openAccounts } from '../common/NavigationService';
+import {
+  goBack, openAccounts, openArticleListStyle, openReaderStyle, openSystemStyle,
+} from '../common/NavigationService';
 import { FontManager } from '../common/FontManager';
-import { fontScaleForIndex } from '../common/Constants';
 
 /** Minimal settings screen covering the preferences that affect the MVP. */
 @Component
 export struct SettingsView {
+  @StorageProp('fontScale') uiFontScale: number = 1;
+  // Scale fixed UI font sizes with the system font size setting.
+  private fs(size: number): number { return size * this.uiFontScale; }
+
   @StorageLink('darkMode') darkMode: boolean = false;
   @StorageProp('fontDataTick') fontDataTick: number = 0;
+  @StorageProp('systemFontFamily') systemFontFamily: string = 'sans-serif';
   @StorageProp('topInset') topInset: number = 0;
+  @StorageProp('bottomInset') bottomInset: number = 0;
   @State syncOnLaunch: boolean = true;
   @State markReadOnOpen: boolean = true;
-  @State fontSizeIndex: number = 1;
-  @State customFontPath: string = '';
   @State markReadOnScroll: boolean = false;
   @State keepArticleDays: number = 30;
   @State fetchBatchSize: number = 100;
@@ -35,20 +39,9 @@ export struct SettingsView {
     const settings = settingsStore.get();
     this.syncOnLaunch = settings.syncOnLaunch;
     this.markReadOnOpen = settings.markReadOnOpen;
-    this.fontSizeIndex = settings.fontSizeIndex;
-    this.customFontPath = settings.customFontPath;
     this.markReadOnScroll = settings.markReadOnScroll;
     this.keepArticleDays = settings.keepArticleDays;
     this.fetchBatchSize = settings.fetchBatchSize;
-  }
-
-  private applyFontSize(index: number): void {
-    const hostContext = this.getUIContext().getHostContext();
-    if (hostContext) {
-      (hostContext as common.Context).getApplicationContext()
-        .setFontSizeScale(fontScaleForIndex(index));
-    }
-    AppStorage.set<number>('fontScale', fontScaleForIndex(index));
   }
 
   private fetchBatchMenu(): Array<MenuElement> {
@@ -82,23 +75,6 @@ export struct SettingsView {
     return items;
   }
 
-  private fontSizeMenu(): Array<MenuElement> {
-    const items: Array<MenuElement> = [];
-    const labels: string[] = ['小', '中', '大', '特大'];
-    for (let i: number = 0; i < labels.length; i++) {
-      const index: number = i;
-      items.push({
-        value: labels[i],
-        action: () => {
-          this.fontSizeIndex = index;
-          settingsStore.setFontSizeIndex(index);
-          this.applyFontSize(index);
-        },
-      });
-    }
-    return items;
-  }
-
   private keepDaysLabel(): string {
     if (this.keepArticleDays === 7) return '1周';
     if (this.keepArticleDays === 14) return '2周';
@@ -107,59 +83,11 @@ export struct SettingsView {
     return `${this.keepArticleDays}天`;
   }
 
-  private fontSizeLabel(): string {
-    const labels: string[] = ['小', '中', '大', '特大'];
-    return this.fontSizeIndex >= 0 && this.fontSizeIndex < labels.length
-      ? labels[this.fontSizeIndex] : '中';
-  }
-
-  private async chooseFont(): Promise<void> {
-    const hostContext = this.getUIContext().getHostContext();
-    if (!hostContext) {
-      return;
-    }
-    const path: string = await FontManager.pickAndInstall(hostContext as common.Context);
-    if (path.length === 0) {
-      return;
-    }
-    await settingsStore.setCustomFontPath(path);
-    this.customFontPath = path;
-    FontManager.register(this.getUIContext(), path);
-    AppStorage.set<number>('fontDataTick', Date.now());
-    this.getUIContext().getPromptAction().showToast({ message: '自定义字体已启用' });
-  }
-
-  private async resetFont(): Promise<void> {
-    const hostContext = this.getUIContext().getHostContext();
-    if (hostContext) {
-      FontManager.remove(hostContext as common.Context);
-    }
-    await settingsStore.setCustomFontPath('');
-    this.customFontPath = '';
-    AppStorage.set<number>('fontDataTick', Date.now());
-    this.getUIContext().getPromptAction().showToast({ message: '已恢复默认字体' });
-  }
-
-  private applyColorMode(dark: boolean): void {
-    this.darkMode = dark;
-    try {
-      const hostContext = this.getUIContext().getHostContext();
-      if (hostContext) {
-        const context: common.UIAbilityContext = hostContext as common.UIAbilityContext;
-        context.getApplicationContext().setColorMode(
-          dark ? ConfigurationConstant.ColorMode.COLOR_MODE_DARK
-               : ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT
-        );
-      }
-    } catch (error) {
-      // Ignore on form factors without explicit color mode control.
-    }
-  }
-
 
   private appFont(): string {
     // Reading the tick here makes font changes trigger a component rebuild.
-    return this.fontDataTick >= 0 ? FontManager.family() : 'sans-serif';
+    return this.fontDataTick >= 0
+      ? FontManager.familyFor(this.systemFontFamily) : 'sans-serif';
   }
 
   build() {
@@ -179,56 +107,86 @@ export struct SettingsView {
           .margin({ right: 8 })
           .onClick(() => goBack())
           Text('设置').fontFamily(this.appFont())
-            .fontSize(18)
+            .fontSize(this.fs(19))
             .fontWeight(FontWeight.Medium)
             .fontColor(this.textColor())
         }
         .width('100%')
         .padding({ left: 12, right: 16, top: 14, bottom: 20 })
 
-        Row() {
-          Column() {
-            Text('账号管理').fontFamily(this.appFont()).fontSize(15).fontColor(this.textColor())
-            Text('本地 / Fever / Google Reader / FreshRSS').fontFamily(this.appFont())
-              .fontSize(12).fontColor(this.secondaryColor()).margin({ top: 3 })
-          }
-          .layoutWeight(1)
-          .alignItems(HorizontalAlign.Start)
-          Text('→').fontFamily(this.appFont()).fontSize(18).fontColor('#2663D6')
-        }
-        .width('100%')
-        .padding({ left: 16, right: 16, top: 14, bottom: 14 })
-        .backgroundColor(this.surfaceColor())
-        .margin({ bottom: 16 })
-        .onClick(() => openAccounts())
-
         Scroll() {
           Column() {
-            Text('外观').fontFamily(this.appFont()).fontSize(13).fontColor(this.secondaryColor())
-              .margin({ left: 4, bottom: 8 })
             Row() {
               Column() {
-                Text('深色模式').fontFamily(this.appFont()).fontSize(15).fontColor(this.textColor())
-                Text('跟随应用设置').fontFamily(this.appFont()).fontSize(12).fontColor(this.secondaryColor()).margin({ top: 3 })
+                Text('账号管理').fontFamily(this.appFont()).fontSize(this.fs(15)).fontColor(this.textColor())
+                Text('本地 / Fever / Google Reader / FreshRSS').fontFamily(this.appFont())
+                  .fontSize(this.fs(12)).fontColor(this.secondaryColor()).margin({ top: 3 })
               }
               .layoutWeight(1)
               .alignItems(HorizontalAlign.Start)
-              Toggle({ isOn: this.darkMode, type: ToggleType.Switch })
-                .onChange((value: boolean) => {
-                  settingsStore.setDarkMode(value);
-                  this.applyColorMode(value);
-                })
+              Text('→').fontFamily(this.appFont()).fontSize(this.fs(18)).fontColor('#2663D6')
             }
             .width('100%')
             .padding({ left: 16, right: 16, top: 14, bottom: 14 })
             .backgroundColor(this.surfaceColor())
+            .margin({ bottom: 16 })
+            .onClick(() => openAccounts())
 
-            Text('阅读').fontFamily(this.appFont()).fontSize(13).fontColor(this.secondaryColor())
+            Text('外观').fontFamily(this.appFont()).fontSize(this.fs(13)).fontColor(this.secondaryColor())
+              .alignSelf(ItemAlign.Start)
+              .margin({ left: 4, bottom: 8 })
+            Row() {
+              Column() {
+                Text('系统').fontFamily(this.appFont()).fontSize(this.fs(15)).fontColor(this.textColor())
+                Text('系统字号、字体与深色模式').fontFamily(this.appFont())
+                  .fontSize(this.fs(12)).fontColor(this.secondaryColor()).margin({ top: 3 })
+              }
+              .layoutWeight(1)
+              .alignItems(HorizontalAlign.Start)
+              Text('→').fontFamily(this.appFont()).fontSize(this.fs(18)).fontColor('#2663D6')
+            }
+            .width('100%')
+            .padding({ left: 16, right: 16, top: 14, bottom: 14 })
+            .backgroundColor(this.surfaceColor())
+            .onClick(() => openSystemStyle())
+
+            Row() {
+              Column() {
+                Text('文章列表').fontFamily(this.appFont()).fontSize(this.fs(15)).fontColor(this.textColor())
+                Text('标题、摘要、元信息的字号与字体').fontFamily(this.appFont())
+                  .fontSize(this.fs(12)).fontColor(this.secondaryColor()).margin({ top: 3 })
+              }
+              .layoutWeight(1)
+              .alignItems(HorizontalAlign.Start)
+              Text('→').fontFamily(this.appFont()).fontSize(this.fs(18)).fontColor('#2663D6')
+            }
+            .width('100%')
+            .padding({ left: 16, right: 16, top: 14, bottom: 14 })
+            .backgroundColor(this.surfaceColor())
+            .onClick(() => openArticleListStyle())
+
+            Row() {
+              Column() {
+                Text('全文阅读').fontFamily(this.appFont()).fontSize(this.fs(15)).fontColor(this.textColor())
+                Text('正文字号、页边距、行距与字体').fontFamily(this.appFont())
+                  .fontSize(this.fs(12)).fontColor(this.secondaryColor()).margin({ top: 3 })
+              }
+              .layoutWeight(1)
+              .alignItems(HorizontalAlign.Start)
+              Text('→').fontFamily(this.appFont()).fontSize(this.fs(18)).fontColor('#2663D6')
+            }
+            .width('100%')
+            .padding({ left: 16, right: 16, top: 14, bottom: 14 })
+            .backgroundColor(this.surfaceColor())
+            .onClick(() => openReaderStyle())
+
+            Text('阅读').fontFamily(this.appFont()).fontSize(this.fs(13)).fontColor(this.secondaryColor())
+              .alignSelf(ItemAlign.Start)
               .margin({ left: 4, top: 24, bottom: 8 })
             Row() {
               Column() {
-                Text('启动时同步').fontFamily(this.appFont()).fontSize(15).fontColor(this.textColor())
-                Text('打开应用时自动刷新订阅').fontFamily(this.appFont()).fontSize(12).fontColor(this.secondaryColor()).margin({ top: 3 })
+                Text('启动时同步').fontFamily(this.appFont()).fontSize(this.fs(15)).fontColor(this.textColor())
+                Text('打开应用时自动刷新订阅').fontFamily(this.appFont()).fontSize(this.fs(12)).fontColor(this.secondaryColor()).margin({ top: 3 })
               }
               .layoutWeight(1)
               .alignItems(HorizontalAlign.Start)
@@ -244,8 +202,8 @@ export struct SettingsView {
 
             Row() {
               Column() {
-                Text('打开文章即标已读').fontFamily(this.appFont()).fontSize(15).fontColor(this.textColor())
-                Text('进入阅读页后标记为已读').fontFamily(this.appFont()).fontSize(12).fontColor(this.secondaryColor()).margin({ top: 3 })
+                Text('打开文章即标已读').fontFamily(this.appFont()).fontSize(this.fs(15)).fontColor(this.textColor())
+                Text('进入阅读页后标记为已读').fontFamily(this.appFont()).fontSize(this.fs(12)).fontColor(this.secondaryColor()).margin({ top: 3 })
               }
               .layoutWeight(1)
               .alignItems(HorizontalAlign.Start)
@@ -261,9 +219,9 @@ export struct SettingsView {
 
             Row() {
               Column() {
-                Text('滚动标记已读').fontFamily(this.appFont()).fontSize(15).fontColor(this.textColor())
+                Text('滚动标记已读').fontFamily(this.appFont()).fontSize(this.fs(15)).fontColor(this.textColor())
                 Text('滚动出屏幕的文章自动标为已读').fontFamily(this.appFont())
-                  .fontSize(12).fontColor(this.secondaryColor()).margin({ top: 3 })
+                  .fontSize(this.fs(12)).fontColor(this.secondaryColor()).margin({ top: 3 })
               }
               .layoutWeight(1)
               .alignItems(HorizontalAlign.Start)
@@ -279,18 +237,18 @@ export struct SettingsView {
 
             Column() {
               Row() {
-                Text('每次拉取条数').fontFamily(this.appFont()).fontSize(15).fontColor(this.textColor())
+                Text('每次拉取条数').fontFamily(this.appFont()).fontSize(this.fs(15)).fontColor(this.textColor())
                   .layoutWeight(1)
                 Row() {
                   Text(`${this.fetchBatchSize}`).fontFamily(this.appFont())
-                    .fontSize(14).fontColor(this.secondaryColor())
-                  Text('›').fontSize(18).fontColor(this.secondaryColor()).margin({ left: 4 })
+                    .fontSize(this.fs(14)).fontColor(this.secondaryColor())
+                  Text('›').fontSize(this.fs(18)).fontColor(this.secondaryColor()).margin({ left: 4 })
                 }
                 .bindMenu(this.fetchBatchMenu(), { placement: Placement.BottomRight })
               }
               .width('100%')
               Text('同步时每批拉取并入库的文章数量')
-                .fontFamily(this.appFont()).fontSize(12).fontColor(this.secondaryColor())
+                .fontFamily(this.appFont()).fontSize(this.fs(12)).fontColor(this.secondaryColor())
                 .margin({ top: 6 })
                 .alignSelf(ItemAlign.Start)
             }
@@ -301,18 +259,18 @@ export struct SettingsView {
 
             Column() {
               Row() {
-                Text('保留文章时间').fontFamily(this.appFont()).fontSize(15).fontColor(this.textColor())
+                Text('保留文章时间').fontFamily(this.appFont()).fontSize(this.fs(15)).fontColor(this.textColor())
                   .layoutWeight(1)
                 Row() {
                   Text(this.keepDaysLabel()).fontFamily(this.appFont())
-                    .fontSize(14).fontColor(this.secondaryColor())
-                  Text('›').fontSize(18).fontColor(this.secondaryColor()).margin({ left: 4 })
+                    .fontSize(this.fs(14)).fontColor(this.secondaryColor())
+                  Text('›').fontSize(this.fs(18)).fontColor(this.secondaryColor()).margin({ left: 4 })
                 }
                 .bindMenu(this.keepDaysMenu(), { placement: Placement.BottomRight })
               }
               .width('100%')
               Text('清理超过该时间的文章')
-                .fontFamily(this.appFont()).fontSize(12).fontColor(this.secondaryColor())
+                .fontFamily(this.appFont()).fontSize(this.fs(12)).fontColor(this.secondaryColor())
                 .margin({ top: 6 })
                 .alignSelf(ItemAlign.Start)
             }
@@ -321,62 +279,20 @@ export struct SettingsView {
             .padding({ left: 16, right: 16, top: 14, bottom: 14 })
             .backgroundColor(this.surfaceColor())
 
-            Row() {
-              Text('正文字号').fontFamily(this.appFont()).fontSize(15).fontColor(this.textColor()).layoutWeight(1)
-              Row() {
-                Text(this.fontSizeLabel()).fontFamily(this.appFont())
-                  .fontSize(14).fontColor(this.secondaryColor())
-                Text('›').fontSize(18).fontColor(this.secondaryColor()).margin({ left: 4 })
-              }
-              .bindMenu(this.fontSizeMenu(), { placement: Placement.BottomRight })
-            }
-            .width('100%')
-            .padding({ left: 16, right: 16, top: 14, bottom: 14 })
-            .backgroundColor(this.surfaceColor())
-
             Column() {
-              Row() {
-                Column() {
-                  Text('自定义字体').fontFamily(this.appFont()).fontSize(15).fontColor(this.textColor())
-                  Text(this.customFontPath.length > 0 ? '已启用（重启应用完全生效）' : '当前使用系统默认字体').fontFamily(this.appFont())
-                    .fontSize(12).fontColor(this.secondaryColor()).margin({ top: 3 })
-                }
-                .layoutWeight(1)
-                .alignItems(HorizontalAlign.Start)
-                Text('选择').fontFamily(this.appFont())
-                  .fontSize(14)
-                  .fontColor('#2663D6')
-                  .padding({ left: 8, right: 8 })
-                  .onClick(() => this.chooseFont())
-                if (this.customFontPath.length > 0) {
-                  Text('恢复').fontFamily(this.appFont())
-                    .fontSize(14)
-                    .fontColor(this.secondaryColor())
-                    .padding({ right: 8 })
-                    .onClick(() => this.resetFont())
-                }
-              }
-              .width('100%')
-              .padding({ left: 16, right: 16, top: 14, bottom: 14 })
-              .backgroundColor(this.surfaceColor())
-              .margin({ top: 16 })
-            }
-            .width('100%')
-
-            Column() {
-              Text('调试').fontFamily(this.appFont()).fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.textColor())
+              Text('调试').fontFamily(this.appFont()).fontSize(this.fs(15)).fontWeight(FontWeight.Medium).fontColor(this.textColor())
               Text('清除全文缓存（重新打开文章将使用新的提取算法）')
                 .fontFamily(this.appFont())
-                .fontSize(13).fontColor('#2663D6')
+                .fontSize(this.fs(13)).fontColor('#2663D6')
                 .margin({ top: 10 })
                 .onClick(async () => {
                   await rssRepository.clearFullContentCache();
                   this.getUIContext().getPromptAction().showToast({ message: '全文缓存已清除' });
                 })
-              Text('关于').fontFamily(this.appFont()).fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.textColor())
+              Text('关于').fontFamily(this.appFont()).fontSize(this.fs(15)).fontWeight(FontWeight.Medium).fontColor(this.textColor())
                 .margin({ top: 20 })
               Text('ReadYou HarmonyOS 版 · v0.1.0').fontFamily(this.appFont())
-                .fontSize(13).fontColor(this.secondaryColor()).margin({ top: 10 })
+                .fontSize(this.fs(13)).fontColor(this.secondaryColor()).margin({ top: 10 })
                 .margin({ bottom: 16 })
             }
             .width('100%')
@@ -385,7 +301,7 @@ export struct SettingsView {
             .margin({ top: 24 })
           }
           .width('100%')
-          .padding({ left: 12, right: 12, bottom: 32 })
+          .padding({ left: 12, right: 12, bottom: 32 + this.bottomInset })
         }
         .width('100%')
         .layoutWeight(1)

@@ -1,20 +1,31 @@
 /** ArkTS port of Android's WebViewStyle.get() CSS variable system. */
 export class WebViewStyle {
-  static get(dark: boolean, fontSize: number, fontFamily: string): string {
+  static get(
+    dark: boolean, fontSize: number, fontFamily: string,
+    pageMargin: number, lineSpacing: number
+  ): string {
     const textColor: string = dark ? '#E8EAED' : '#191C1E';
     const boldColor: string = dark ? '#FFFFFF' : '#111417';
     const linkColor: string = dark ? '#8AB4F8' : '#2663D6';
     const codeColor: string = dark ? '#E8EAED' : '#202124';
     const codeBg: string = dark ? '#2A2E33' : '#F1F3F4';
     const selectionBg: string = dark ? '#5E636A' : '#C8E6C9';
+    // CSS generic keywords must stay unquoted; only custom named fonts need
+    // quoting. Quoting "sans-serif" turns it into a literal (missing) family.
+    const generic: boolean = fontFamily === 'sans-serif' || fontFamily === 'serif'
+      || fontFamily === 'monospace';
+    const familyCss: string = generic
+      ? `${fontFamily}, "HarmonyOS Sans SC", sans-serif`
+      : `"${fontFamily}", "HarmonyOS Sans SC", sans-serif`;
 
     return `
 :root {
-    --font-family: ${fontFamily};
+    --font-family: ${familyCss};
     --font-size: ${fontSize}px;
-    --line-height: 1.75;
+    --line-height: ${lineSpacing};
     --letter-spacing: 0px;
-    --text-margin: 16px;
+    --paragraph-gap: 1em;
+    --text-margin: ${pageMargin}px;
     --text-color: ${textColor};
     --text-bold: normal;
     --text-align: left;
@@ -69,6 +80,11 @@ p {
     line-height: var(--line-height) !important;
     letter-spacing: var(--letter-spacing) !important;
     text-align: var(--text-align) !important;
+    /* Explicit paragraph spacing so it matches the preview exactly.
+       Adjacent margins collapse in CSS, so bottom 1em + next top 0 gives a
+       reliable 1em gap between paragraphs. */
+    margin-top: 0 !important;
+    margin-bottom: var(--paragraph-gap) !important;
 }
 /* Empty paragraphs from feeds render as several blank lines in ArkWeb. */
 p:empty { margin: 0 !important; line-height: 0 !important; }
