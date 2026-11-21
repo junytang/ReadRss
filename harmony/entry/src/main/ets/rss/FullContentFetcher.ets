@@ -4,7 +4,7 @@ import { Logger } from '../common/Logger';
 import { HtmlDom, HtmlNode } from './HtmlDom';
 
 /** Bumped whenever the extraction algorithm changes so stale cached bodies are re-fetched. */
-export const FULL_CONTENT_VERSION_MARKER: string = '<!--ry-extract-v11-->';
+export const FULL_CONTENT_VERSION_MARKER: string = '<!--ry-extract-v16-->';
 
 /**
  * Lightweight stand-in for Android's Readability4J-based article extraction.

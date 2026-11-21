@@ -22,3 +22,4 @@ python3 verify.py
 1. 修改 ArkTS 提取算法（`HtmlDom.bestContentNode` / `drillToContent`、`FullContentFetcher.clean`）时，同步更新 `verify.py` 里的 `best` / `drill` / `clean` 逻辑，保持两边一致。
 2. 新增站点出问题时，先在这里补一个用例并让 `verify.py` 失败，再改算法，避免改坏已通过的站点。
 3. `cases.json` 里的 `container` 用容器 `class` 或 `id` 的一段稳定特征即可，不需要精确匹配整个属性串。
+4. **每次改动提取算法后，必须递增 `FullContentFetcher.ets` 里的 `FULL_CONTENT_VERSION_MARKER`**（如 v12→v13）。已缓存的 `full_content` 带旧标记会被 `hasCurrentFullContent()` 判定为最新而跳过重抓；不升标记则真机一直看到旧结果，测试却通过。

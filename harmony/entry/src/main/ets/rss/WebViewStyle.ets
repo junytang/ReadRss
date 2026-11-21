@@ -83,7 +83,9 @@ a, a > strong {
     font-weight: 600 !important;
     color: var(--link-text-color) !important;
 }
-div > a {
+/* Only a link that is the sole content of its div is treated as a block
+   (e.g. a "read more" link). Inline links mixed with text and <br> stay inline. */
+div > a:only-child {
     display: block;
     -webkit-tap-highlight-color: rgba(0,0,0,0);
     font-weight: 600 !important;

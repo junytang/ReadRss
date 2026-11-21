@@ -94,5 +94,23 @@
     "file": "scien_1.html",
     "container": "blog_article",
     "note": "同上站点不同文章：正文含图片/小标题/列表/表格"
+  },
+  {
+    "name": "okjike_1",
+    "file": "okjike_1.html",
+    "container": "jsx-3930310120 wrap",
+    "note": "即刻镇小报：文字与 <br>/<a> 交替，验证文本与内联标签的顺序保留，<br> 不被挤到末尾"
+  },
+  {
+    "name": "okjike_2",
+    "file": "okjike_2.html",
+    "container": "jsx-1330250023 wrap",
+    "note": "即刻帖子：正文为 div 内的文字+<br>+链接+图片区块，期望连图片一起抓取"
+  },
+  {
+    "name": "okjike_3",
+    "file": "okjike_3.html",
+    "container": "jsx-1330250023 wrap",
+    "note": "即刻帖子：正文为 div 内的文字+<br>+链接+图片区块，期望连图片一起抓取"
   }
 ]

@@ -12,6 +12,7 @@ interface ContentStats {
   linkText: number;
   paragraphs: number;
   images: number;
+  breaks: number;
 }
 
 /** Lenient HTML parser: enough structure for article-body extraction. */
@@ -33,7 +34,10 @@ export class HtmlDom {
         const raw: string = next < 0 ? html.substring(i) : html.substring(i, next);
         const text: string = raw.replace(/\s+/g, ' ').trim();
         if (text.length > 0) {
-          stack[stack.length - 1].text += text;
+          // Keep text as an ordered child so inline <br>/<a> keep their position.
+          const textNode: HtmlNode = HtmlDom.node('#text');
+          textNode.text = text;
+          stack[stack.length - 1].children.push(textNode);
         }
         i = next < 0 ? html.length : next;
         continue;
@@ -156,6 +160,7 @@ export class HtmlDom {
     let linkText: number = 0;
     let paragraphs: number = 0;
     let images: number = 0;
+    let breaks: number = 0;
     if (node.tag === 'a') {
       linkText = HtmlDom.textLength(node);
     }
@@ -165,14 +170,21 @@ export class HtmlDom {
     if (node.tag === 'img') {
       images = 1;
     }
+    if (node.tag === 'br') {
+      breaks = 1;
+    }
     for (const child of node.children) {
       const childStats: ContentStats = HtmlDom.stats(child);
       text += childStats.text;
       linkText += childStats.linkText;
       paragraphs += childStats.paragraphs;
       images += childStats.images;
+      breaks += childStats.breaks;
     }
-    return { text: text, linkText: linkText, paragraphs: paragraphs, images: images };
+    return {
+      text: text, linkText: linkText, paragraphs: paragraphs,
+      images: images, breaks: breaks,
+    };
   }
 
   private static classAndId(node: HtmlNode): string {
@@ -193,13 +205,19 @@ export class HtmlDom {
     let penalty: number =
       /header|footer|nav|sidebar|rightbar|leftbar|menu|comment|share|related|recommend|advert|promo|pagination|breadcrumb|toolbar|login|copyright|meta|notice|guide|ads|tools|pro-campaign|pro-unit|campaign|adsbygoogle/.test(chrome)
         ? 200 : 0;
-    // Navigation/footer bars are link-heavy with no paragraphs. Article bodies
-    // almost always contain <p> elements, so penalise the opposite pattern.
-    const linkRatio: number = stats.text > 0 ? stats.linkText / stats.text : 0;
-    if (stats.paragraphs === 0 && linkRatio > 0.2) {
-      penalty += 200;
+    // Rich-text signals: <p> paragraphs, several <br>, or multiple images.
+    // Link-heavy nodes with none of these are chrome (nav/footer). A single
+    // small icon in a footer is not enough to count as article content.
+    const rich: boolean = stats.paragraphs > 0 || stats.breaks >= 2 || stats.images >= 2;
+    if (!rich) {
+      const linkRatio: number = stats.text > 0 ? stats.linkText / stats.text : 0;
+      if (stats.paragraphs === 0 && linkRatio > 0.2) {
+        penalty += 200;
+      }
     }
-    return stats.text - stats.linkText * 2 + stats.paragraphs * 30 + stats.images * 10 - penalty;
+    const breakBonus: number = stats.breaks >= 2 ? stats.breaks * 15 : 0;
+    return stats.text - stats.linkText * 2 + stats.paragraphs * 30 +
+      stats.images * 10 + breakBonus - penalty;
   }
 
   private static isBlock(node: HtmlNode): boolean {
@@ -252,7 +270,33 @@ export class HtmlDom {
           bestChild = child;
         }
       }
-      if (bestChild === undefined || bestScore < currentScore * 0.7) {
+      const childStats: ContentStats = bestChild === undefined
+        ? { text: 0, linkText: 0, paragraphs: 0, images: 0, breaks: 0 }
+        : HtmlDom.stats(bestChild);
+      // If the best child is text-only but a sibling is a pure image block
+      // (>=1 image, almost no text), stay on the parent: it already holds the
+      // complete text+image article body. The <10-char text check excludes
+      // author lines/avatars, so even a single article image is kept.
+      if (childStats.images === 0) {
+        let siblingImageGroup: boolean = false;
+        for (const child of current.children) {
+          if (!HtmlDom.isBlock(child)) {
+            continue;
+          }
+          const sib: ContentStats = HtmlDom.stats(child);
+          if (sib.images >= 1 && sib.text < 10) {
+            siblingImageGroup = true;
+            break;
+          }
+        }
+        if (siblingImageGroup) {
+          break;
+        }
+      }
+      // A child holding multiple images is a strong sign of the real article
+      // body; allow descending even when its score is somewhat lower.
+      const threshold: number = childStats.images >= 2 ? 0.5 : 0.7;
+      if (bestChild === undefined || bestScore < currentScore * threshold) {
         break;
       }
       current = bestChild;
@@ -268,15 +312,20 @@ export class HtmlDom {
     return root;
   }
 
+  private static readonly VOID_TAGS: string[] =
+    ['br', 'hr', 'img', 'input', 'meta', 'link', 'source', 'wbr'];
+
   static toHtml(node: HtmlNode): string {
-    if (node.tag === '#document') {
+    if (node.tag === '#document' || node.tag === '#text') {
       let out: string = node.text;
       for (const child of node.children) out += HtmlDom.toHtml(child);
       return out;
     }
     let out: string = `<${node.tag}${node.attrs}>` + node.text;
     for (const child of node.children) out += HtmlDom.toHtml(child);
-    out += `</${node.tag}>`;
+    if (HtmlDom.VOID_TAGS.indexOf(node.tag) < 0) {
+      out += `</${node.tag}>`;
+    }
     return out;
   }
 }

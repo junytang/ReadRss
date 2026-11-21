@@ -44,7 +44,9 @@ def parse(html):
             raw = html[i:nxt] if nxt >= 0 else html[i:]
             text = re.sub(r'\s+', ' ', raw).strip()
             if text:
-                stack[-1].text += text
+                tn = Node('#text')
+                tn.text = text
+                stack[-1].children.append(tn)
             i = nxt if nxt >= 0 else len(html)
             continue
         gt = html.find('>', i + 1)
@@ -115,21 +117,26 @@ def stats(n):
         tc = 1
     if n.tag == 'img':
         img = 1
+    br = 1 if n.tag == 'br' else 0
     for c in n.children:
         s = stats(c)
-        t += s[0]; lt += s[1]; tc += s[2]; img += s[3]
-    return (t, lt, tc, img)
+        t += s[0]; lt += s[1]; tc += s[2]; img += s[3]; br += s[4]
+    return (t, lt, tc, img, br)
 
 
 def content_score(n):
-    t, lt, tc, img = stats(n)
+    t, lt, tc, img, br = stats(n)
     penalty = 200 if CHROME_CLASS.search(class_id(n)) else 0
-    # Navigation/footer bars are link-heavy with no paragraphs. Real article
-    # bodies almost always have <p> elements, so penalise the opposite case.
-    link_ratio = lt / t if t > 0 else 0
-    if tc == 0 and link_ratio > 0.2:
-        penalty += 200
-    return t - lt * 2 + tc * 30 + img * 10 - penalty
+    # <br>-rich inline text is a strong article signal; it also exempts the
+    # link-heavy penalty because link lists inside posts are normal.
+    # Rich-text signals: <p> paragraphs, several <br>, or embedded images.
+    # Only penalise link-heavy no-paragraph nodes when none of these apply.
+    rich = tc > 0 or br >= 2 or img >= 2
+    if not rich:
+        link_ratio = lt / t if t > 0 else 0
+        if tc == 0 and link_ratio > 0.2:
+            penalty += 200
+    return t - lt * 2 + tc * 30 + img * 10 + (br * 15 if br >= 3 else 0) - penalty
 
 
 def strip_chrome(n):
@@ -181,11 +188,37 @@ def drill(n):
             s = content_score(c)
             if s > bs:
                 bs, bc = s, c
-        if bc is None or bs < cur_score * 0.7:
+        # If the best child is text-only while a sibling holds images, stop on
+        # the parent: it already contains the complete text+image article body.
+        best_img = stats(bc)[3] if bc is not None else 0
+        if best_img == 0:
+            # A sibling holding a group of images (>=2) means this parent is
+            # the text+image article body; a lone icon (avatar/logo) is not.
+            sibling_image_group = any(
+                c.tag in BLOCK and stats(c)[3] >= 1 and stats(c)[0] < 10
+                for c in cur.children)
+            if sibling_image_group:
+                break
+        # A child with embedded images is a strong sign of the real article
+        # body; allow descending even when its score is somewhat lower.
+        threshold = 0.5 if best_img >= 2 else 0.7
+        if bc is None or bs < cur_score * threshold:
             break
         cur, cur_score = bc, bs
     return cur
 
+
+VOID_TAGS = {'br', 'hr', 'img', 'input', 'meta', 'link', 'source', 'wbr'}
+
+def tohtml(n):
+    if n.tag == '#text':
+        return n.text
+    out = '<' + n.tag + n.attrs + '>' + n.text
+    for c in n.children:
+        out += tohtml(c)
+    if n.tag not in VOID_TAGS:
+        out += '</' + n.tag + '>'
+    return out
 
 def extract(html):
     cleaned = re.sub(r'<!--[\s\S]*?-->', '', html)
