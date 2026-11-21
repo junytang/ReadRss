@@ -80,7 +80,9 @@ class ReadYouFullContentPrefetcher {
       // First make sure the remote body is cached (read-only articles may not have it).
       let article: Article | undefined = await rssRepository.ensureArticleContent(id);
       if (article) {
-        article = await rssRepository.ensureFullContent(id) ?? article;
+        // List rows are lightweight (no full text), so pass the loaded article
+        // straight through instead of re-reading it from the database.
+        article = await rssRepository.ensureFullContentFor(article) ?? article;
       }
       if (article && article.fullContent.length > 0) {
         this.done.add(id);

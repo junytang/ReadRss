@@ -13,6 +13,16 @@ import { FeedIcon } from '../common/FeedIcon';
 import { accountRepository } from '../account/AccountRepository';
 import { accountTypeShortName } from '../account/AccountModels';
 
+/** Offscreen distance (vp) used by the filter/feed slide transition. */
+const DISTANCE: number = 1000;
+/** Slide duration (ms). Shared by the animation and its cleanup timer so the
+ *  snapshot is never removed before the animation actually finishes. */
+const SLIDE_DURATION: number = 250;
+/** Full initial dataset, loaded in a deferred second batch. */
+const FULL_PAGE_SIZE: number = 500;
+/** Rows added per chunk of the deferred batch, to avoid one long build frame. */
+const EXPAND_CHUNK: number = 100;
+
 /** Article list for one feed (or all feeds when feedId is empty). */
 @Component
 export struct ArticleListView {
@@ -23,6 +33,11 @@ export struct ArticleListView {
   @StorageLink('darkMode') darkMode: boolean = false;
   @StorageProp('fontDataTick') fontDataTick: number = 0;
   @StorageProp('topInset') topInset: number = 0;
+  @StorageProp('bottomInset') bottomInset: number = 0;
+  // Fallback only; the real value is read directly from AppStorage. Keeping this
+  // as @StorageProp would create the key with 800 and overwrite the real height
+  // published by EntryAbility.
+  private windowHeightVp: number = 800;
   @StorageProp('fontScale') fontScale: number = 1;
   @StorageProp('readStatusTick') @Watch('onReadStatusChanged') readStatusTick: number = 0;
   @StorageProp('feedIconTick') @Watch('onFeedIconChanged') feedIconTick: number = 0;
@@ -67,6 +82,24 @@ export struct ArticleListView {
   @State globalStarred: number = 0;
   @State globalAll: number = 0;
   @State showMarkAllConfirm: boolean = false;
+  // Slide transition between filter/feed contexts: the previous list slides out
+  // while the new one slides in from the opposite edge.
+  @State prevArticles: Article[] = [];
+  @State curOffset: number = 0;
+  @State prevOffset: number = 0;
+  @State prevTopSpacer: number = 0; // height of rows scrolled above the snapshot
+  private scrollOffset: number = 0;
+  // Target offsets frozen at prepareSlide time so a late replayed onChange
+  // cannot reverse the direction mid-transition.
+  private targetCurOffset: number = 0;
+  private targetPrevOffset: number = 0;
+  // Direction source that only ever changes inside onFilterChange. It is not
+  // tied to AppStorage propagation, so it cannot desync from the visible tab.
+  private selectedFilterIndex: number = 0;
+  private slideTimer: number = 0;
+  private slideAnimating: boolean = false;
+  // Deferred second batch: fill the rest of the list after the first paint.
+  private expandTimer: number = 0;
   @State showSearch: boolean = false;
   @State accountName: string = '';
   @State accountTypeLabel: string = '';
@@ -135,6 +168,69 @@ export struct ArticleListView {
     this.globalAll = await rssRepository.articleCount(FILTER_ALL);
   }
 
+  /** First batch size: roughly two screens of rows, adapted to the device.
+   *  Once the list has rendered we use the real measured visible-row count,
+   *  which automatically accounts for screen height, font scale, orientation
+   *  and split view. Before the first render we fall back to an estimate. */
+  private firstPageSize(): number {
+    const stored: number | undefined = AppStorage.get<number>('windowHeightVp');
+    const winH: number = stored !== undefined && stored > 0 ? stored : this.windowHeightVp;
+    const chrome: number = this.topInset + this.bottomInset + 160;
+    const usable: number = Math.max(240, winH - chrome);
+    const estimatedRows: number = Math.max(5, Math.floor(usable / (120 * this.fontScale)));
+    const perScreen: number = this.visibleCount > 0 ? this.visibleCount : estimatedRows;
+    return Math.min(80, Math.max(20, perScreen * 2));
+  }
+
+  /** Begin a slide transition: snapshot old rows on top, covering the list. */
+  private prepareSlide(direction: number): void {
+    // Even when the current list is empty we still run the transition: the new
+    // list slides in from the correct edge, there is just no outgoing snapshot.
+    // Freeze the direction into concrete offsets now. A later replayed onChange
+    // must not be able to change these.
+    this.targetCurOffset = 0;
+    this.targetPrevOffset = direction > 0 ? -DISTANCE : DISTANCE;
+    // Snapshot only the visible rows (+ a small buffer), not all 500. Rows
+    // scrolled above the viewport are represented by a single spacer so the
+    // outgoing frame still matches what the user was looking at.
+    const start: number = this.firstVisibleIndex;
+    const end: number = Math.min(
+      this.articles.length,
+      start + this.visibleCount + 2
+    );
+    this.prevArticles = this.articles.slice(start, end);
+    this.prevTopSpacer = this.scrollOffset > 0 ? this.scrollOffset : 0;
+    this.slideAnimating = true;
+    this.prevOffset = 0;
+    // New list starts offscreen on the opposite side; it animates in with the
+    // new content once loading completes.
+    this.curOffset = direction > 0 ? DISTANCE : -DISTANCE;
+  }
+
+  /** Slide old rows out and new rows in using the offsets frozen at prepare. */
+  private finishSlide(): void {
+    if (!this.slideAnimating) {
+      return;
+    }
+    this.slideAnimating = false;
+    this.getUIContext().animateTo({ duration: SLIDE_DURATION, curve: Curve.EaseOut }, () => {
+      this.curOffset = this.targetCurOffset;
+      this.prevOffset = this.targetPrevOffset;
+    });
+    if (this.slideTimer !== 0) {
+      clearTimeout(this.slideTimer);
+    }
+    this.slideTimer = setTimeout(() => {
+      this.prevArticles = [];
+      this.prevOffset = 0;
+    }, SLIDE_DURATION);
+  }
+
+  /** Notify the subscription page to refresh its banner totals after a mark. */
+  private notifyBannerTick(): void {
+    AppStorage.set<number>('bannerTick', Date.now());
+  }
+
   /** Refresh the drawer's per-feed unread badges after a read-state change. */
   private async refreshFeeds(): Promise<void> {
     const allFeeds: Feed[] = await rssRepository.listFeeds();
@@ -158,7 +254,6 @@ export struct ArticleListView {
    *  new articles appear at once (the batch is already committed). The "同步完成"
    *  toast still comes at sync end; later batches only refresh counts/badges. */
   onSyncFirstBatch(): void {
-    Logger.info(`SYNCDBG onSyncFirstBatch isSyncing=${this.isSyncing}`);
     if (this.isSyncing) {
       this.isRefreshing = false;
     }
@@ -171,7 +266,6 @@ export struct ArticleListView {
   /** A full sync finished. Reload the article list with everything committed so
    *  far, preserving paging depth (covers first-install sync from EntryAbility). */
   onSyncFinished(): void {
-    Logger.info('SYNCDBG home onSyncFinished -> reload list');
     this.load(false, true);
     // A page-level pull refresh (isSyncing=true) shows its own toast; this covers
     // syncs started elsewhere (first install / launch sync from EntryAbility).
@@ -184,7 +278,6 @@ export struct ArticleListView {
    *  itself is reloaded once by onSyncFirstBatch and again by onSyncFinished;
    *  reloading on every batch would interrupt reading. */
   onSyncBatch(): void {
-    Logger.info(`SYNCDBG home onSyncBatch articles=${this.articles.length} isSyncing=${this.isSyncing}`);
     this.refreshCounts();
     this.refreshFeeds();
   }
@@ -256,6 +349,9 @@ export struct ArticleListView {
     if (this.scrollMarksPending) {
       this.scrollMarksPending = false;
       this.articles = this.articles.slice();
+      // Marking-on-scroll changes unread totals; refresh counts and banners.
+      this.refreshCounts();
+      this.notifyBannerTick();
     }
   }
 
@@ -320,7 +416,14 @@ export struct ArticleListView {
     // triggered load would read an intermediate state and reset paging/scroll
     // markers, so ignore it. The sync's own refreshes pass fromSync=true.
     if (this.isSyncing && !fromSync) {
-      Logger.info('SYNCDBG home load skipped during sync');
+      // A slide was prepared for this load; cancel it so the list is not stuck
+      // offscreen.
+      if (this.slideAnimating) {
+        this.slideAnimating = false;
+        this.prevArticles = [];
+        this.curOffset = 0;
+        this.prevOffset = 0;
+      }
       return;
     }
     // Discard results from an older load: selecting a feed then tapping a filter
@@ -331,7 +434,7 @@ export struct ArticleListView {
     // Reset to the first page only on a genuine context switch (filter/feed/search).
     // A sync-completed refresh passes false to preserve how deep the user scrolled.
     if (resetPaging) {
-      this.displayLimit = 500;
+      this.displayLimit = this.firstPageSize();
     }
     this.markReadOnScroll = settingsStore.get().markReadOnScroll;
     const allFeeds: Feed[] = await rssRepository.listFeeds();
@@ -346,11 +449,13 @@ export struct ArticleListView {
     );
     FeedIcon.prefetch(this.getUIContext().getHostContext() as common.Context, this.feeds);
     const articles: Article[] = await rssRepository.listArticles(
-      this.currentFeedId, this.currentFilter, this.displayLimit, this.currentGroupId, false, this.searchText
+      this.currentFeedId, this.currentFilter, this.displayLimit,
+      this.currentGroupId, false, this.searchText, true
     );
     if (seq !== this.loadSeq) return;
     this.articles = articles;
-    Logger.info(`SYNCDBG home load done articles=${articles.length} displayLimit=${this.displayLimit}`);
+    this.finishSlide();
+    this.scheduleExpand(seq);
     this.lastMarkedIndex = 0;
     this.lastPrefetchIndex = 0;
     this.scrollMarksPending = false;
@@ -370,6 +475,82 @@ export struct ArticleListView {
     fullContentPrefetcher.ensureWindow(
       this.articles, this.firstVisibleIndex, this.visibleCount
     );
+  }
+
+  /** Filter-tab switch: only the article list changes. Skip the feed/group/count
+   *  queries and the icon prefetch, which are unaffected by the filter. */
+  private async reloadForFilterSwitch(): Promise<void> {
+    const seq: number = ++this.loadSeq;
+    this.pageLoadSeq++;
+    this.displayLimit = this.firstPageSize();
+    this.feeds = filterFeedsByDrawer(this.iconFeeds, this.currentFilter);
+    const articles: Article[] = await rssRepository.listArticles(
+      this.currentFeedId, this.currentFilter, this.displayLimit,
+      this.currentGroupId, false, this.searchText, true
+    );
+    if (seq !== this.loadSeq) return;
+    this.articles = articles;
+    this.lastMarkedIndex = 0;
+    this.lastPrefetchIndex = 0;
+    this.scrollMarksPending = false;
+    this.finishSlide();
+    fullContentPrefetcher.ensureWindow(this.articles, this.firstVisibleIndex, this.visibleCount);
+    this.scheduleExpand(seq);
+  }
+
+  /** Load the remaining (up to FULL_PAGE_SIZE) lightweight rows after the first
+   *  batch has painted and the slide finished. Keeps the tab switch snappy. */
+  private scheduleExpand(seq: number): void {
+    if (this.displayLimit >= FULL_PAGE_SIZE) {
+      return;
+    }
+    if (this.expandTimer !== 0) {
+      clearTimeout(this.expandTimer);
+      this.expandTimer = 0;
+    }
+    this.expandTimer = setTimeout(() => {
+      this.expandTimer = 0;
+      this.expandToFullPage(seq);
+    }, SLIDE_DURATION + 20);
+  }
+
+  private async expandToFullPage(seq: number): Promise<void> {
+    if (seq !== this.loadSeq || this.displayLimit >= FULL_PAGE_SIZE || this.isLoadingMore) {
+      return;
+    }
+    let from: number = this.articles.length;
+    while (from < FULL_PAGE_SIZE) {
+      // A newer switch or a user-driven loadMore takes precedence.
+      if (seq !== this.loadSeq || this.isLoadingMore) {
+        return;
+      }
+      const limit: number = Math.min(from + EXPAND_CHUNK, FULL_PAGE_SIZE);
+      const rows: Article[] = await rssRepository.listArticles(
+        this.currentFeedId, this.currentFilter, limit,
+        this.currentGroupId, false, this.searchText, true
+      );
+      if (seq !== this.loadSeq || this.isLoadingMore) {
+        return;
+      }
+      // `rows` is the prefix up to `limit`. Append only the new tail so existing
+      // rows keep their identity and ArkUI only builds the newly added items.
+      const added: number = Math.max(0, rows.length - this.articles.length);
+      if (added > 0) {
+        this.articles = this.articles.concat(rows.slice(rows.length - added));
+      }
+      this.displayLimit = limit;
+      if (rows.length < limit) {
+        break;
+      }
+      from = this.articles.length;
+      if (from >= FULL_PAGE_SIZE) {
+        break;
+      }
+      // Yield to the render loop so each chunk paints in its own frame instead
+      // of one long 500-row build.
+      await new Promise<void>((resolve: () => void) => { setTimeout(resolve, 16); });
+    }
+    fullContentPrefetcher.ensureWindow(this.articles, this.firstVisibleIndex, this.visibleCount);
   }
 
   /** Load the next page when scrolling reaches the end. Appends to keep the
@@ -393,7 +574,8 @@ export struct ArticleListView {
     try {
       const nextLimit: number = this.displayLimit + 500;
       const rows: Article[] = await rssRepository.listArticles(
-        this.currentFeedId, this.currentFilter, nextLimit, this.currentGroupId, false, this.searchText
+        this.currentFeedId, this.currentFilter, nextLimit,
+        this.currentGroupId, false, this.searchText, true
       );
       // A newer load()/loadMore() Invalidated this request; discard it so stale
       // rows cannot overwrite the current list or reorder it.
@@ -446,20 +628,16 @@ export struct ArticleListView {
     }
     this.isSyncing = true;
     this.isRefreshing = true;
-    Logger.info('SYNCDBG sync start');
     try {
       await rssRepository.syncAll();
-      Logger.info('SYNCDBG syncAll resolved');
       // No load() here: syncAll emits syncFinishedTick internally, whose watcher
       // (onSyncFinished) already reloaded the list while preserving paging depth.
-      Logger.info('SYNCDBG toast 同步完成');
       this.getUIContext().getPromptAction().showToast({ message: '同步完成' });
     } catch (error) {
       this.getUIContext().getPromptAction().showToast({ message: `同步失败：${(error as Error).message}` });
     } finally {
       this.isSyncing = false;
       this.isRefreshing = false;
-      Logger.info('SYNCDBG sync finally (spinner stopped)');
     }
   }
 
@@ -482,9 +660,11 @@ export struct ArticleListView {
     const previousUnread: number = this.unreadCount;
     this.setLocalRead(ids, true);
     this.unreadCount = 0;
+    this.notifyBannerTick();
     rssRepository.markAllRead(this.currentFeedId, this.currentGroupId).then(() => { this.refreshFeeds(); }).catch((error: Error) => {
       this.setLocalRead(ids, false);
       this.unreadCount = previousUnread;
+      this.notifyBannerTick();
       Logger.error(`Mark all read failed: ${error.message}`);
     });
   }
@@ -515,9 +695,11 @@ export struct ArticleListView {
           // UI first; the server is only asked to correct the state afterwards.
           this.setLocalRead([article.id], read);
           this.unreadCount = Math.max(0, this.unreadCount + (read ? -1 : 1));
+          this.notifyBannerTick();
           rssRepository.markRead(article.id, read).then(() => { this.refreshFeeds(); }).catch((error: Error) => {
             this.setLocalRead([article.id], !read);
             this.unreadCount = Math.max(0, this.unreadCount + (read ? 1 : -1));
+            this.notifyBannerTick();
             Logger.error(`Mark read failed: ${error.message}`);
           });
         })
@@ -549,11 +731,13 @@ export struct ArticleListView {
               .width(14)
               .height(14)
               .borderRadius(3)
+              .syncLoad(true)
               .margin({ right: 4 })
           } else {
             Image($r('app.media.ic_feeds'))
               .width(14)
               .height(14)
+              .syncLoad(true)
               .padding(2)
               .fillColor(article.isRead ? this.readColor() : this.secondaryColor())
               .margin({ right: 4 })
@@ -615,9 +799,11 @@ export struct ArticleListView {
     const previousUnread: number = this.unreadCount;
     this.setLocalRead(ids, true);
     this.unreadCount = Math.max(0, previousUnread - ids.length);
+    this.notifyBannerTick();
     rssRepository.markReadBatch(ids, true).then(() => { this.refreshFeeds(); }).catch((error: Error) => {
       this.setLocalRead(ids, false);
       this.unreadCount = previousUnread;
+      this.notifyBannerTick();
       Logger.error(`Mark by date failed: ${error.message}`);
     });
   }
@@ -628,9 +814,11 @@ export struct ArticleListView {
     this.setLocalRead([id], read);
     this.menuArticleRead = read;
     this.unreadCount = Math.max(0, this.unreadCount + (read ? -1 : 1));
+    this.notifyBannerTick();
     rssRepository.markRead(id, read).then(() => { this.refreshFeeds(); }).catch((error: Error) => {
       this.setLocalRead([id], !read);
       this.unreadCount = Math.max(0, this.unreadCount + (read ? 1 : -1));
+      this.notifyBannerTick();
       Logger.error(`Toggle read failed: ${error.message}`);
     });
   }
@@ -641,9 +829,11 @@ export struct ArticleListView {
     this.setLocalStarred(id, starred);
     this.menuArticleStarred = starred;
     this.starredCount = Math.max(0, this.starredCount + (starred ? 1 : -1));
+    this.notifyBannerTick();
     rssRepository.markStarred(id, starred).catch((error: Error) => {
       this.setLocalStarred(id, !starred);
       this.starredCount = Math.max(0, this.starredCount + (starred ? -1 : 1));
+      this.notifyBannerTick();
       Logger.error(`Toggle starred failed: ${error.message}`);
     });
   }
@@ -694,6 +884,40 @@ export struct ArticleListView {
     return this.feeds.filter((feed: Feed) => ids.indexOf(feed.groupId) < 0);
   }
 
+  /** Selection keys in the exact order shown in the drawer: top banner first,
+   *  then each group followed by its feeds, then ungrouped feeds. */
+  private drawerOrder(): string[] {
+    const order: string[] = ['__global__'];
+    for (const group of this.groups) {
+      order.push(`g:${group.id}`);
+      for (const feed of this.feedsInGroup(group.id)) {
+        order.push(`f:${feed.id}`);
+      }
+    }
+    for (const feed of this.ungroupedFeeds()) {
+      order.push(`f:${feed.id}`);
+    }
+    return order;
+  }
+
+  private currentSelectionKey(): string {
+    if (this.currentGroupId.length > 0) {
+      return `g:${this.currentGroupId}`;
+    }
+    if (this.currentFeedId.length > 0) {
+      return `f:${this.currentFeedId}`;
+    }
+    return '__global__';
+  }
+
+  /** Below the current selection -> up (1); above or the top banner -> down (-1). */
+  private drawerSlideDirection(key: string): number {
+    const order: string[] = this.drawerOrder();
+    const from: number = order.indexOf(this.currentSelectionKey());
+    const to: number = order.indexOf(key);
+    return to > from ? 1 : -1;
+  }
+
   @Builder
   drawerGroupItem(group: FeedGroup): void {
     Row() {
@@ -709,6 +933,10 @@ export struct ArticleListView {
       ? (this.darkMode ? '#3A4657' : '#E8F0FE')
       : Color.Transparent)
     .onClick(() => {
+      const key: string = `g:${group.id}`;
+      if (key !== this.currentSelectionKey()) {
+        this.prepareSlide(this.drawerSlideDirection(key));
+      }
       this.currentFeedId = '';
       this.currentGroupId = group.id;
       this.getUIContext().animateTo({ duration: 240, curve: Curve.EaseInOut }, () => { this.showFeedDrawer = false; });
@@ -772,6 +1000,10 @@ export struct ArticleListView {
         : Color.Transparent
     )
     .onClick(() => {
+      const key: string = feedId.length === 0 ? '__global__' : `f:${feedId}`;
+      if (key !== this.currentSelectionKey()) {
+        this.prepareSlide(this.drawerSlideDirection(key));
+      }
       this.currentFeedId = feedId;
       this.currentGroupId = '';
       this.getUIContext().animateTo({ duration: 240, curve: Curve.EaseInOut }, () => { this.showFeedDrawer = false; });
@@ -899,53 +1131,85 @@ export struct ArticleListView {
         }
 
         Refresh({ refreshing: $$this.isRefreshing }) {
-          List() {
-            ForEach(this.articles, (article: Article) => {
-              ListItem() {
-                this.articleItem(article)
+          Stack() {
+            // Previous snapshot slides out; non-interactive during the transition.
+            // Keep this List in the tree at all times (hide it with Visibility
+            // when idle) — conditionally inserting it shifts the current list
+            // from child 0 to child 1 and ArkUI's component reuse then mixes up
+            // which translate binding belongs to which list.
+            List() {
+              if (this.prevTopSpacer > 0) {
+                ListItem() {
+                  Row().width('100%').height(this.prevTopSpacer)
+                }
               }
-              .onClick(() => this.open(article))
-              .swipeAction({
-                end: {
-                  builder: () => { this.swipeMark(article); },
-                },
-              })
-            }, (article: Article) => `${article.id}-${article.isRead}-${article.isStarred}`)
+              ForEach(this.prevArticles, (article: Article) => {
+                ListItem() {
+                  this.articleItem(article)
+                }
+              }, (article: Article) => `${article.id}`)
+            }
+            .visibility(this.prevArticles.length > 0 ? Visibility.Visible : Visibility.None)
+            .width('100%')
+            .height('100%')
+            .translate({ y: this.prevOffset })
+            .hitTestBehavior(HitTestMode.None)
+            .divider({ strokeWidth: 1, color: this.darkMode ? '#2A2D31' : '#ECEFF2' })
 
-            if (this.isRoot) {
-              // Trailing spacer: the floating HdsTabs capsule sits ~64vp above
-              // the bottom, so keep enough room for the last row to scroll fully
-              // above it instead of being covered.
-              ListItem() {
-                Row().width('100%').height(144)
+            // Current list slides in from the opposite edge.
+            List() {
+              ForEach(this.articles, (article: Article) => {
+                ListItem() {
+                  this.articleItem(article)
+                }
+                .onClick(() => this.open(article))
+                .swipeAction({
+                  end: {
+                    builder: () => { this.swipeMark(article); },
+                  },
+                })
+              }, (article: Article) => `${article.id}-${article.isRead}-${article.isStarred}`)
+
+              if (this.isRoot) {
+                // Trailing spacer: the floating HdsTabs capsule sits ~64vp above
+                // the bottom, so keep enough room for the last row to scroll fully
+                // above it instead of being covered.
+                ListItem() {
+                  Row().width('100%').height(144)
+                }
               }
             }
+            .width('100%')
+            .height('100%')
+            .translate({ y: this.curOffset })
+            .divider({ strokeWidth: 1, color: this.darkMode ? '#2A2D31' : '#ECEFF2' })
+            .onReachEnd(() => { this.loadMore(); })
+            .onScrollIndex((start: number, end: number) => {
+              this.firstVisibleIndex = start;
+              this.visibleCount = end >= start ? end - start + 1 : 0;
+              if (start > 0 && this.showSearch) {
+                this.showSearch = false;
+              }
+              // Throttle prefetch: only recompute the window after the visible
+              // item moved a few rows, not on every index tick.
+              if (Math.abs(start - this.lastPrefetchIndex) >= 3) {
+                this.lastPrefetchIndex = start;
+                fullContentPrefetcher.ensureWindow(this.articles, start, this.visibleCount);
+              }
+              this.markScrolledArticles(start);
+            })
+            // Flush the deferred row rebuilds when scrolling settles, so the
+            // ForEach is rebuilt once instead of on every scroll frame.
+            .onScroll((offset: number, scrollState: ScrollState) => {
+              this.scrollOffset = offset;
+              if (scrollState === ScrollState.Idle) {
+                this.flushScrollMarks();
+              }
+            })
           }
           .width('100%')
           .height('100%')
-          .divider({ strokeWidth: 1, color: this.darkMode ? '#2A2D31' : '#ECEFF2' })
-          .onReachEnd(() => { this.loadMore(); })
-          .onScrollIndex((start: number, end: number) => {
-            this.firstVisibleIndex = start;
-            this.visibleCount = end >= start ? end - start + 1 : 0;
-            if (start > 0 && this.showSearch) {
-              this.showSearch = false;
-            }
-            // Throttle prefetch: only recompute the window after the visible
-            // item moved a few rows, not on every index tick.
-            if (Math.abs(start - this.lastPrefetchIndex) >= 3) {
-              this.lastPrefetchIndex = start;
-              fullContentPrefetcher.ensureWindow(this.articles, start, this.visibleCount);
-            }
-            this.markScrolledArticles(start);
-          })
-          // Flush the deferred row rebuilds when scrolling settles, so the
-          // ForEach is rebuilt once instead of on every scroll frame.
-          .onScroll((offset: number, scrollState: ScrollState) => {
-            if (scrollState === ScrollState.Idle) {
-              this.flushScrollMarks();
-            }
-          })
+          .clip(true)
         }
         .width('100%')
         .layoutWeight(1)
@@ -961,8 +1225,16 @@ export struct ArticleListView {
           onFilterChange: (filter: string) => {
             // Switching the bottom filter keeps the current feed/group scope,
             // matching Android's changeFilter(filterState.copy(filter = it)).
+            if (this.currentFilter === filter) {
+              return;
+            }
+            const order: string[] = [FILTER_UNREAD, FILTER_STARRED, FILTER_ALL];
+            const newIndex: number = order.indexOf(filter);
+            const direction: number = newIndex > this.selectedFilterIndex ? 1 : -1;
+            this.selectedFilterIndex = newIndex;
             this.currentFilter = filter;
-            this.load();
+            this.prepareSlide(direction);
+            this.reloadForFilterSwitch();
           },
         })
       }

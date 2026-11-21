@@ -9,7 +9,6 @@ import { FILTER_ALL, FILTER_STARRED, FILTER_UNREAD } from '../common/Constants';
 import { FilterBarView } from './FilterBarView';
 import { FeedIcon } from '../common/FeedIcon';
 import { FontManager } from '../common/FontManager';
-import { Logger } from '../common/Logger';
 
 /** Home screen: subscription list with pull-to-refresh and unread counts. */
 @Component
@@ -21,8 +20,12 @@ export struct FeedListView {
   @StorageProp('feedIconTick') @Watch('onFeedIconChanged') feedIconTick: number = 0;
   @StorageProp('topInset') topInset: number = 0;
   @StorageProp('readStatusTick') @Watch('onReadStatusChanged') readStatusTick: number = 0;
+  @StorageProp('bannerTick') @Watch('onBannerTick') bannerTick: number = 0;
   @State feeds: Feed[] = [];
   @State groups: FeedGroup[] = [];
+  // Full lists cached for instant filter switching.
+  private allFeeds: Feed[] = [];
+  private allGroups: FeedGroup[] = [];
   @State isRefreshing: boolean = false;
   @State isSyncing: boolean = false;
   @State isLoading: boolean = true;
@@ -43,14 +46,12 @@ export struct FeedListView {
   }
 
   onSyncFirstBatch(): void {
-    Logger.info(`SYNCDBG feeds onSyncFirstBatch isSyncing=${this.isSyncing}`);
     if (this.isSyncing) {
       this.isRefreshing = false;
     }
   }
 
   onFeedDataChanged(): void {
-    Logger.info(`SYNCDBG feeds onFeedDataChanged isSyncing=${this.isSyncing}`);
     this.load();
   }
 
@@ -60,6 +61,15 @@ export struct FeedListView {
 
   onReadStatusChanged(): void {
     this.load();
+  }
+
+  /** Only the banner totals changed (a read/star mark elsewhere); avoid a full reload. */
+  private async onBannerTick(): Promise<void> {
+    this.unreadTotal = await rssRepository.articleCount(FILTER_UNREAD);
+    this.starredTotal = await rssRepository.articleCount(FILTER_STARRED);
+    this.allTotal = await rssRepository.articleCount(FILTER_ALL);
+    this.bannerCount = this.currentFilter === FILTER_STARRED ? this.starredTotal
+      : (this.currentFilter === FILTER_ALL ? this.allTotal : this.unreadTotal);
   }
 
   onFeedIconChanged(): void {
@@ -96,8 +106,10 @@ export struct FeedListView {
   private async load(): Promise<void> {
     try {
       const allFeeds: Feed[] = await rssRepository.listFeeds();
+      this.allFeeds = allFeeds;
       this.feeds = filterFeedsByDrawer(allFeeds, this.currentFilter);
       const allGroups: FeedGroup[] = await rssRepository.listGroups();
+      this.allGroups = allGroups;
       // Hide groups that have no visible feeds.
       this.groups = allGroups.filter((group: FeedGroup) =>
         this.feeds.some((feed: Feed) => feed.groupId === group.id)
@@ -142,12 +154,9 @@ export struct FeedListView {
     }
     this.isSyncing = true;
     this.isRefreshing = true;
-    Logger.info('SYNCDBG feeds sync start');
     try {
       const result = await rssRepository.syncAll();
-      Logger.info('SYNCDBG feeds syncAll resolved');
       await this.load();
-      Logger.info('SYNCDBG feeds toast 同步完成');
       this.getUIContext().getPromptAction().showToast({
         message: `同步完成：${result.succeeded} 个源，新增 ${result.newArticles} 篇，失败 ${result.failed} 个`,
       });
@@ -156,7 +165,6 @@ export struct FeedListView {
     } finally {
       this.isSyncing = false;
       this.isRefreshing = false;
-      Logger.info('SYNCDBG feeds sync finally (spinner stopped)');
     }
   }
 
@@ -481,8 +489,18 @@ export struct FeedListView {
       if (!this.asDestination) {
         FilterBarView({
           onFilterChange: (filter: string) => {
+            if (this.currentFilter === filter) {
+              return;
+            }
             this.currentFilter = filter;
-            this.load();
+            // Filter change only affects which feeds are shown and the banner
+            // total; skip the icon prefetch and reuse the already-loaded feeds.
+            this.feeds = filterFeedsByDrawer(this.allFeeds, this.currentFilter);
+            this.groups = this.allGroups.filter((group: FeedGroup) =>
+              this.feeds.some((feed: Feed) => feed.groupId === group.id)
+            );
+            this.bannerCount = this.currentFilter === FILTER_STARRED ? this.starredTotal
+              : (this.currentFilter === FILTER_ALL ? this.allTotal : this.unreadTotal);
           },
         })
       }

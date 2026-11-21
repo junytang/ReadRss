@@ -60,6 +60,7 @@ struct Index {
     // Publish insets one last time right before the UI tree is built.
     AppStorage.set<number>('topInset', WindowInsets.top);
     AppStorage.set<number>('bottomInset', WindowInsets.bottom);
+    AppStorage.set<number>('windowHeightVp', WindowInsets.height);
     const settings = settingsStore.get();
     AppStorage.setOrCreate<boolean>('darkMode', settings.darkMode);
     this.darkMode = settings.darkMode;

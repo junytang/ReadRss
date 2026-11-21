@@ -26,6 +26,17 @@ export default class EntryAbility extends UIAbility {
     WindowInsets.bottom = bottom > 0 ? bottom : 16;
     AppStorage.set<number>('topInset', WindowInsets.top);
     AppStorage.set<number>('bottomInset', WindowInsets.bottom);
+    // Publish the usable window height so the article list can size its first
+    // batch to roughly two screens instead of a hard-coded row count.
+    try {
+      const heightVp: number = this.pxToVp(win.getWindowProperties().windowRect.height);
+      const published: number = heightVp > 0 ? heightVp : 800;
+      WindowInsets.height = published;
+      AppStorage.set<number>('windowHeightVp', published);
+    } catch (error) {
+      Logger.warn(`window height unavailable: ${(error as Error).message}`);
+      AppStorage.set<number>('windowHeightVp', 800);
+    }
   }
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
@@ -93,6 +104,7 @@ export default class EntryAbility extends UIAbility {
         AppStorage.setOrCreate<number>('navBackTick', 0);
         AppStorage.setOrCreate<number>('fontDataTick', 0);
         AppStorage.setOrCreate<number>('readStatusTick', 0);
+        AppStorage.setOrCreate<number>('bannerTick', 0);
         AppStorage.setOrCreate<number>('feedIconTick', 0);
         AppStorage.setOrCreate<string>('lastChangedArticle', '');
         AppStorage.setOrCreate<number>('fontScale',

@@ -376,12 +376,20 @@ class ReadYouDatabase {
   /** Android pullArticles: scope × filter, with optional ascending sort and search. */
   async listArticles(
     accountId: string, feedId: string, filter: string, limit: number,
-    groupId?: string, sortAscending?: boolean, searchContent?: string
+    groupId?: string, sortAscending?: boolean, searchContent?: string,
+    lightweight: boolean = false
   ): Promise<Article[]> {
-    let sql: string =
-      `SELECT a.id, a.feed_id, a.feed_title, a.title, a.author, a.link,
-              a.summary, a.content, a.full_content, a.image_url, a.published_at, a.is_read, a.is_starred
-       FROM article a WHERE a.account_id = ?`;
+    // The article list only renders title/summary/metadata. Reading `content`
+    // and `full_content` here would marshal every article's full HTML body into
+    // memory just to show a row — the main cause of the stutter when switching
+    // to the "all" filter (up to 500 bodies at once). Those columns are loaded
+    // on demand by getArticle / the prefetcher instead.
+    const columns: string = lightweight
+      ? `a.id, a.feed_id, a.feed_title, a.title, a.author, a.link,
+              a.summary, a.image_url, a.published_at, a.is_read, a.is_starred`
+      : `a.id, a.feed_id, a.feed_title, a.title, a.author, a.link,
+              a.summary, a.content, a.full_content, a.image_url, a.published_at, a.is_read, a.is_starred`;
+    let sql: string = `SELECT ${columns} FROM article a WHERE a.account_id = ?`;
     const args: Array<string | number> = [accountId];
     if (feedId.length > 0) {
       sql += ' AND a.feed_id = ?';
@@ -413,7 +421,7 @@ class ReadYouDatabase {
     const rs = await this.query(sql, args);
     try {
       while (this.nextRow(rs)) {
-        result.push(this.readArticle(rs));
+        result.push(this.readArticle(rs, !lightweight));
       }
     } finally {
       this.closeRs(rs);
@@ -454,7 +462,7 @@ class ReadYouDatabase {
     return undefined;
   }
 
-  private readArticle(rs: relationalStore.ResultSet): Article {
+  private readArticle(rs: relationalStore.ResultSet, includeBody: boolean = true): Article {
     return {
       id: this.str(rs, this.colIndex(rs, 'id')),
       feedId: this.str(rs, this.colIndex(rs, 'feed_id')),
@@ -463,8 +471,8 @@ class ReadYouDatabase {
       author: this.str(rs, this.colIndex(rs, 'author')),
       link: this.str(rs, this.colIndex(rs, 'link')),
       summary: this.str(rs, this.colIndex(rs, 'summary')),
-      content: this.str(rs, this.colIndex(rs, 'content')),
-      fullContent: this.readText(rs, 'full_content', ''),
+      content: includeBody ? this.str(rs, this.colIndex(rs, 'content')) : '',
+      fullContent: includeBody ? this.readText(rs, 'full_content', '') : '',
       imageUrl: this.str(rs, this.colIndex(rs, 'image_url')),
       publishedAt: this.lng(rs, this.colIndex(rs, 'published_at')),
       isRead: this.lng(rs, this.colIndex(rs, 'is_read')) === 1,

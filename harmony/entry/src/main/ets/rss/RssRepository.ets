@@ -66,10 +66,13 @@ class FeedRepository {
 
   async listArticles(
     feedId: string, filter: string, limit: number,
-    groupId?: string, sortAscending?: boolean, searchContent?: string
+    groupId?: string, sortAscending?: boolean, searchContent?: string,
+    lightweight: boolean = false
   ): Promise<Article[]> {
     const account: Account = await this.activeAccount();
-    return database.listArticles(account.id, feedId, filter, limit, groupId, sortAscending, searchContent);
+    return database.listArticles(
+      account.id, feedId, filter, limit, groupId, sortAscending, searchContent, lightweight
+    );
   }
 
   /** Android prefetchArticleId: previous/next article in the same feed. */
@@ -144,13 +147,19 @@ class FeedRepository {
 
   async ensureFullContent(articleId: string): Promise<Article | undefined> {
     const article: Article | undefined = await database.getArticle(articleId);
+    return this.ensureFullContentFor(article);
+  }
+
+  /** Ensure full text for an already-loaded article, avoiding a second DB read.
+   *  Used by the prefetcher, whose list rows carry only summary fields. */
+  async ensureFullContentFor(article?: Article): Promise<Article | undefined> {
     // Re-fetch when the cached body came from an older extraction algorithm.
     if (!article || article.link.length === 0 || this.hasCurrentFullContent(article)) {
       return article;
     }
     const content: string = await FullContentFetcher.fetch(article.link, article.title);
     if (content.length > 0) {
-      await database.updateArticleFullContent(articleId, content);
+      await database.updateArticleFullContent(article.id, content);
       article.fullContent = content;
     }
     return article;
