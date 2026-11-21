@@ -33,6 +33,9 @@ class ReadStatusBatcher {
       // markReadBatch chunks at 500 internally and pushes through the active service.
       await rssRepository.markReadBatch(ids, true);
       Logger.info(`Flushed ${ids.length} read-status changes`);
+      // Only now the database reflects the optimistic marks. Notify views to
+      // re-read counts; before this they must keep their local optimistic values.
+      AppStorage.setOrCreate<number>('readStatusFlushedTick', Date.now());
     } catch (error) {
       Logger.error(`Flush read status failed: ${(error as Error).message}`);
     }

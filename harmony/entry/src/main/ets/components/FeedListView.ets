@@ -70,7 +70,12 @@ export struct FeedListView {
 
   /** Only the banner totals changed (a read/star mark elsewhere); avoid a full reload. */
   private async onBannerTick(): Promise<void> {
-    this.unreadTotal = await rssRepository.articleCount(FILTER_UNREAD);
+    const dbUnread: number = await rssRepository.articleCount(FILTER_UNREAD);
+    // During mark-on-scroll the batcher writes to the DB 10s later. Apply the
+    // optimistic delta so the banner reflects marks immediately instead of
+    // jumping back to the stale DB value. The delta resets on the flush tick.
+    const delta: number = AppStorage.get<number>('optimisticUnreadDelta') ?? 0;
+    this.unreadTotal = Math.max(0, dbUnread - delta);
     this.starredTotal = await rssRepository.articleCount(FILTER_STARRED);
     this.allTotal = await rssRepository.articleCount(FILTER_ALL);
     this.bannerCount = this.currentFilter === FILTER_STARRED ? this.starredTotal

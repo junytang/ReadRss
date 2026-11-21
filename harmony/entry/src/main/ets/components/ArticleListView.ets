@@ -22,6 +22,8 @@ const SLIDE_DURATION: number = 200;
 const FULL_PAGE_SIZE: number = 500;
 /** Rows added per chunk of the deferred batch, to avoid one long build frame. */
 const EXPAND_CHUNK: number = 100;
+/** Rows added per loadMore page when scrolling past the expanded batch. */
+const LOAD_MORE_STEP: number = 200;
 
 /** Article list for one feed (or all feeds when feedId is empty). */
 @Component
@@ -47,6 +49,7 @@ export struct ArticleListView {
   @StorageProp('articleMetaFontSize') articleMetaFontSize: number = 13;
   @StorageProp('articleFontFamily') articleFontFamily: string = 'sans-serif';
   @StorageProp('readStatusTick') @Watch('onReadStatusChanged') readStatusTick: number = 0;
+  @StorageProp('readStatusFlushedTick') @Watch('onReadStatusFlushed') readStatusFlushedTick: number = 0;
   @StorageProp('feedIconTick') @Watch('onFeedIconChanged') feedIconTick: number = 0;
   @StorageProp('accountSwitchTick') @Watch('onAccountSwitched') accountSwitchTick: number = 0;
   @StorageProp('feedDataTick') @Watch('onSyncBatch') syncBatchTick: number = 0;
@@ -79,6 +82,11 @@ export struct ArticleListView {
   private displayLimit: number = 500;
   private isLoadingMore: boolean = false;
   private pageLoadSeq: number = 0;
+  // True while more rows may exist beyond the currently loaded prefix.
+  private hasMore: boolean = true;
+  // Unread rows optimistically marked read in the CURRENT scope but not yet
+  // written to the DB by the batcher. Used to correct DB-based count re-reads.
+  private scopeUnreadDelta: number = 0;
   @State markReadOnScroll: boolean = false;
   @State unreadCount: number = 0;
   @State starredCount: number = 0;
@@ -161,16 +169,23 @@ export struct ArticleListView {
       }
     }
     // Counts and the drawer's unread badges still come from the database.
-    this.refreshCounts();
     this.refreshFeeds();
+    // Reading a article marks it read in the DB; refresh the subscription banner
+    // so its unread total reflects the change too.
+    this.notifyBannerTick();
   }
 
   private async refreshCounts(): Promise<void> {
-    this.unreadCount = await rssRepository.unreadCount(this.currentFeedId, this.currentGroupId);
+    // Subtract the not-yet-persisted optimistic marks so a DB re-read never
+    // jumps back to the stale (higher) unread value while the batcher is pending.
+    const globalDelta: number = AppStorage.get<number>('optimisticUnreadDelta') ?? 0;
+    const scoped: number = await rssRepository.unreadCount(this.currentFeedId, this.currentGroupId);
+    this.unreadCount = Math.max(0, scoped - this.scopeUnreadDelta);
     this.starredCount = await rssRepository.articleCount(FILTER_STARRED, this.currentFeedId, this.currentGroupId);
     this.allCount = await rssRepository.articleCount(FILTER_ALL, this.currentFeedId, this.currentGroupId);
     // Global totals for the drawer top row, never scoped by feed/group.
-    this.globalUnread = await rssRepository.unreadCount();
+    const global: number = await rssRepository.unreadCount();
+    this.globalUnread = Math.max(0, global - globalDelta);
     this.globalStarred = await rssRepository.articleCount(FILTER_STARRED);
     this.globalAll = await rssRepository.articleCount(FILTER_ALL);
   }
@@ -235,10 +250,12 @@ export struct ArticleListView {
 
   /** Notify the subscription page to refresh its banner totals after a mark. */
   private notifyBannerTick(): void {
-    AppStorage.set<number>('bannerTick', Date.now());
+    AppStorage.setOrCreate<number>('bannerTick', Date.now());
   }
 
-  /** Refresh the drawer's per-feed unread badges after a read-state change. */
+  /** Refresh the drawer's per-feed unread badges and global totals after a
+   *  read/star change, so both the per-source badges and the top banner count
+   *  stay in sync with the database. */
   private async refreshFeeds(): Promise<void> {
     const allFeeds: Feed[] = await rssRepository.listFeeds();
     this.iconFeeds = allFeeds;
@@ -248,6 +265,8 @@ export struct ArticleListView {
     this.groups = allGroups.filter((group: FeedGroup) =>
       this.feeds.some((feed: Feed) => feed.groupId === group.id)
     );
+    // Global totals drive the drawer's top "全部/未读/星标" row.
+    await this.refreshCounts();
   }
 
   onFeedIconChanged(): void {
@@ -285,7 +304,6 @@ export struct ArticleListView {
    *  itself is reloaded once by onSyncFirstBatch and again by onSyncFinished;
    *  reloading on every batch would interrupt reading. */
   onSyncBatch(): void {
-    this.refreshCounts();
     this.refreshFeeds();
   }
 
@@ -346,20 +364,56 @@ export struct ArticleListView {
     this.lastMarkedIndex = start;
     if (markedCount > 0) {
       this.scrollMarksPending = true;
-      this.unreadCount = Math.max(0, this.unreadCount - markedCount);
+      // Optimistic local updates only. The batcher writes to the DB 10s later;
+      // re-reading from the DB now would return the stale (unread) counts and
+      // make the number jump back. Keep the local value until the flush tick.
+      this.scopeUnreadDelta += markedCount;
+      this.optimisticUnreadChange(-markedCount);
       Logger.info(`Marked ${markedCount} articles read on scroll`);
     }
   }
 
-  /** Apply deferred visual updates once, after scrolling stops. */
+  /** Apply an optimistic unread-count change across every view that shows it:
+   *  this page's scoped+global counts, and the subscription page's banner via a
+   *  shared delta. `delta` is the change in unread count (negative = marked read).
+   *  The DB write that follows will re-read authoritative values via refreshFeeds. */
+  private optimisticUnreadChange(delta: number): void {
+    this.unreadCount = Math.max(0, this.unreadCount + delta);
+    this.globalUnread = Math.max(0, this.globalUnread + delta);
+    // optimisticUnreadDelta counts rows marked read but not yet in the DB. A
+    // negative unread delta (marked read) increases it.
+    const prev: number = AppStorage.get<number>('optimisticUnreadDelta') ?? 0;
+    AppStorage.setOrCreate<number>('optimisticUnreadDelta', prev - delta);
+    AppStorage.setOrCreate<number>('bannerTick', Date.now());
+  }
+
+  /** Undo the optimistic delta contribution of a completed/failed mark, without
+   *  clearing deltas belonging to other pending marks (e.g. scroll batching). */
+  private decrementOptimisticDelta(unreadDelta: number): void {
+    const prev: number = AppStorage.get<number>('optimisticUnreadDelta') ?? 0;
+    AppStorage.setOrCreate<number>('optimisticUnreadDelta', Math.max(0, prev + unreadDelta));
+  }
+
+  /** Apply deferred visual updates once, after scrolling stops. Do not re-read
+   *  counts from the DB here — the batcher has not flushed yet. */
   private flushScrollMarks(): void {
     if (this.scrollMarksPending) {
       this.scrollMarksPending = false;
       this.articles = this.articles.slice();
-      // Marking-on-scroll changes unread totals; refresh counts and banners.
-      this.refreshCounts();
-      this.notifyBannerTick();
     }
+  }
+
+  /** The batcher has written to the DB: now counting is safe and authoritative. */
+  private onReadStatusFlushed(): void {
+    // Clear the pending deltas BEFORE re-reading so refreshCounts sees the real
+    // DB values (no double subtraction).
+    this.scopeUnreadDelta = 0;
+    AppStorage.setOrCreate<number>('optimisticUnreadDelta', 0);
+    if (this.articles.length > 0) {
+      this.refreshCounts();
+      this.refreshFeeds();
+    }
+    AppStorage.setOrCreate<number>('bannerTick', Date.now());
   }
 
   /** Create a fresh instance so ForEach detects the change (ArkTS has no object spread). */
@@ -442,6 +496,8 @@ export struct ArticleListView {
     // A sync-completed refresh passes false to preserve how deep the user scrolled.
     if (resetPaging) {
       this.displayLimit = this.firstPageSize();
+      // A scope switch invalidates the old scope's pending scroll marks.
+      this.scopeUnreadDelta = 0;
     }
     this.markReadOnScroll = settingsStore.get().markReadOnScroll;
     const allFeeds: Feed[] = await rssRepository.listFeeds();
@@ -461,6 +517,7 @@ export struct ArticleListView {
     );
     if (seq !== this.loadSeq) return;
     this.articles = articles;
+    this.hasMore = articles.length >= this.displayLimit;
     this.finishSlide();
     this.scheduleExpand(seq);
     this.lastMarkedIndex = 0;
@@ -490,6 +547,7 @@ export struct ArticleListView {
     const seq: number = ++this.loadSeq;
     this.pageLoadSeq++;
     this.displayLimit = this.firstPageSize();
+    this.scopeUnreadDelta = 0;
     this.feeds = filterFeedsByDrawer(this.iconFeeds, this.currentFilter);
     const articles: Article[] = await rssRepository.listArticles(
       this.currentFeedId, this.currentFilter, this.displayLimit,
@@ -497,6 +555,7 @@ export struct ArticleListView {
     );
     if (seq !== this.loadSeq) return;
     this.articles = articles;
+    this.hasMore = articles.length >= this.displayLimit;
     this.lastMarkedIndex = 0;
     this.lastPrefetchIndex = 0;
     this.scrollMarksPending = false;
@@ -521,40 +580,57 @@ export struct ArticleListView {
     }, SLIDE_DURATION + 20);
   }
 
+  /** Append rows from the DB up to `targetLimit`, keeping existing rows so the
+   *  list identity and scroll position stay intact. Rows are deduplicated by id
+   *  instead of assuming `articles` is a strict prefix of the query result —
+   *  under the unread/starred filters, marking a row read/starred removes it from
+   *  the query while the optimistic (grayed-out) row stays in the list, so the
+   *  two prefixes diverge. Returns true if any genuinely new row was appended. */
+  private async fetchAppend(targetLimit: number, seq: number, pageSeq: number): Promise<boolean> {
+    const rows: Article[] = await rssRepository.listArticles(
+      this.currentFeedId, this.currentFilter, targetLimit,
+      this.currentGroupId, false, this.searchText, true
+    );
+    if (seq !== this.loadSeq || pageSeq !== this.pageLoadSeq) {
+      return false;
+    }
+    // Fewer rows than requested means the data source is exhausted.
+    this.hasMore = rows.length >= targetLimit;
+    const known: Set<string> = new Set<string>();
+    for (const article of this.articles) {
+      known.add(article.id);
+    }
+    const fresh: Article[] = [];
+    for (const row of rows) {
+      if (!known.has(row.id)) {
+        known.add(row.id);
+        fresh.push(row);
+      }
+    }
+    if (fresh.length > 0) {
+      this.articles = this.articles.concat(fresh);
+    }
+    this.displayLimit = targetLimit;
+    return fresh.length > 0;
+  }
+
   private async expandToFullPage(seq: number): Promise<void> {
     if (seq !== this.loadSeq || this.displayLimit >= FULL_PAGE_SIZE || this.isLoadingMore) {
       return;
     }
-    let from: number = this.articles.length;
-    while (from < FULL_PAGE_SIZE) {
-      // A newer switch or a user-driven loadMore takes precedence.
-      if (seq !== this.loadSeq || this.isLoadingMore) {
+    const pageSeq: number = this.pageLoadSeq;
+    while (this.displayLimit < FULL_PAGE_SIZE && this.hasMore) {
+      if (seq !== this.loadSeq || pageSeq !== this.pageLoadSeq || this.isLoadingMore) {
         return;
       }
-      const limit: number = Math.min(from + EXPAND_CHUNK, FULL_PAGE_SIZE);
-      const rows: Article[] = await rssRepository.listArticles(
-        this.currentFeedId, this.currentFilter, limit,
-        this.currentGroupId, false, this.searchText, true
-      );
-      if (seq !== this.loadSeq || this.isLoadingMore) {
-        return;
-      }
-      // `rows` is the prefix up to `limit`. Append only the new tail so existing
-      // rows keep their identity and ArkUI only builds the newly added items.
-      const added: number = Math.max(0, rows.length - this.articles.length);
-      if (added > 0) {
-        this.articles = this.articles.concat(rows.slice(rows.length - added));
-      }
-      this.displayLimit = limit;
-      if (rows.length < limit) {
+      const target: number = Math.min(this.displayLimit + EXPAND_CHUNK, FULL_PAGE_SIZE);
+      const appended: boolean = await this.fetchAppend(target, seq, pageSeq);
+      if (!appended) {
+        // No genuinely new rows: either data is exhausted (hasMore now false) or
+        // a concurrent load invalidated this page. Stop expanding in both cases.
         break;
       }
-      from = this.articles.length;
-      if (from >= FULL_PAGE_SIZE) {
-        break;
-      }
-      // Yield to the render loop so each chunk paints in its own frame instead
-      // of one long 500-row build.
+      // Yield to the render loop so each chunk paints in its own frame.
       await new Promise<void>((resolve: () => void) => { setTimeout(resolve, 16); });
     }
     fullContentPrefetcher.ensureWindow(this.articles, this.firstVisibleIndex, this.visibleCount);
@@ -569,30 +645,15 @@ export struct ArticleListView {
     // While a sync is committing batches the DB holds an intermediate state;
     // loading another page now could mix partial rows into the list. Triggered
     // automatically by scrolling, so ignore silently (no toast) to avoid spam.
-    if (this.isSyncing) {
+    if (this.isSyncing || !this.hasMore) {
       return;
     }
-    // No more rows if the last page was not full.
-    if (this.articles.length < this.displayLimit) {
-      return;
-    }
+    const seq: number = this.loadSeq;
     this.isLoadingMore = true;
     const pageSeq: number = ++this.pageLoadSeq;
     try {
-      const nextLimit: number = this.displayLimit + 500;
-      const rows: Article[] = await rssRepository.listArticles(
-        this.currentFeedId, this.currentFilter, nextLimit,
-        this.currentGroupId, false, this.searchText, true
-      );
-      // A newer load()/loadMore() Invalidated this request; discard it so stale
-      // rows cannot overwrite the current list or reorder it.
-      if (pageSeq !== this.pageLoadSeq) {
-        return;
-      }
-      this.displayLimit = nextLimit;
-      // Re-assign the full (now larger) set; ForEach keys keep existing rows,
-      // so scroll position and read state are preserved.
-      this.articles = rows;
+      const nextLimit: number = this.displayLimit + LOAD_MORE_STEP;
+      await this.fetchAppend(nextLimit, seq, pageSeq);
     } catch (error) {
       Logger.error(`Load more failed: ${(error as Error).message}`);
     } finally {
@@ -666,11 +727,21 @@ export struct ArticleListView {
     }
     const previousUnread: number = this.unreadCount;
     this.setLocalRead(ids, true);
-    this.unreadCount = 0;
-    this.notifyBannerTick();
-    rssRepository.markAllRead(this.currentFeedId, this.currentGroupId).then(() => { this.refreshFeeds(); }).catch((error: Error) => {
+    // Marking all currently-unread rows: unreadCount drops to zero in this scope.
+    this.scopeUnreadDelta += previousUnread;
+    this.optimisticUnreadChange(-previousUnread);
+    rssRepository.markAllRead(this.currentFeedId, this.currentGroupId).then(() => {
+      // DB is authoritative now; drop only this mark's optimistic contribution.
+      if (this.scopeUnreadDelta >= previousUnread) { this.scopeUnreadDelta -= previousUnread; }
+      this.decrementOptimisticDelta(-previousUnread);
+      this.refreshFeeds();
+      this.notifyBannerTick();
+    }).catch((error: Error) => {
       this.setLocalRead(ids, false);
+      if (this.scopeUnreadDelta >= previousUnread) { this.scopeUnreadDelta -= previousUnread; }
+      this.decrementOptimisticDelta(-previousUnread);
       this.unreadCount = previousUnread;
+      this.refreshCounts();
       this.notifyBannerTick();
       Logger.error(`Mark all read failed: ${error.message}`);
     });
@@ -701,11 +772,20 @@ export struct ArticleListView {
           const read: boolean = !article.isRead;
           // UI first; the server is only asked to correct the state afterwards.
           this.setLocalRead([article.id], read);
-          this.unreadCount = Math.max(0, this.unreadCount + (read ? -1 : 1));
-          this.notifyBannerTick();
-          rssRepository.markRead(article.id, read).then(() => { this.refreshFeeds(); }).catch((error: Error) => {
+          const delta: number = read ? -1 : 1;
+          if (read) { this.scopeUnreadDelta += 1; }
+          this.optimisticUnreadChange(delta);
+          rssRepository.markRead(article.id, read).then(() => {
+            if (read && this.scopeUnreadDelta > 0) { this.scopeUnreadDelta -= 1; }
+            this.decrementOptimisticDelta(delta);
+            this.refreshFeeds();
+            this.notifyBannerTick();
+          }).catch((error: Error) => {
             this.setLocalRead([article.id], !read);
-            this.unreadCount = Math.max(0, this.unreadCount + (read ? 1 : -1));
+            if (read && this.scopeUnreadDelta > 0) { this.scopeUnreadDelta -= 1; }
+            this.decrementOptimisticDelta(delta);
+            this.unreadCount = Math.max(0, this.unreadCount - delta);
+            this.refreshCounts();
             this.notifyBannerTick();
             Logger.error(`Mark read failed: ${error.message}`);
           });
@@ -804,11 +884,19 @@ export struct ArticleListView {
     // Turn the rows gray immediately; the server only corrects state on failure.
     const previousUnread: number = this.unreadCount;
     this.setLocalRead(ids, true);
-    this.unreadCount = Math.max(0, previousUnread - ids.length);
-    this.notifyBannerTick();
-    rssRepository.markReadBatch(ids, true).then(() => { this.refreshFeeds(); }).catch((error: Error) => {
+    this.scopeUnreadDelta += ids.length;
+    this.optimisticUnreadChange(-ids.length);
+    rssRepository.markReadBatch(ids, true).then(() => {
+      if (this.scopeUnreadDelta >= ids.length) { this.scopeUnreadDelta -= ids.length; }
+      this.decrementOptimisticDelta(-ids.length);
+      this.refreshFeeds();
+      this.notifyBannerTick();
+    }).catch((error: Error) => {
       this.setLocalRead(ids, false);
+      if (this.scopeUnreadDelta >= ids.length) { this.scopeUnreadDelta -= ids.length; }
+      this.decrementOptimisticDelta(-ids.length);
       this.unreadCount = previousUnread;
+      this.refreshCounts();
       this.notifyBannerTick();
       Logger.error(`Mark by date failed: ${error.message}`);
     });
@@ -819,11 +907,20 @@ export struct ArticleListView {
     const read: boolean = !this.menuArticleRead;
     this.setLocalRead([id], read);
     this.menuArticleRead = read;
-    this.unreadCount = Math.max(0, this.unreadCount + (read ? -1 : 1));
-    this.notifyBannerTick();
-    rssRepository.markRead(id, read).then(() => { this.refreshFeeds(); }).catch((error: Error) => {
+    const delta: number = read ? -1 : 1;
+    if (read) { this.scopeUnreadDelta += 1; }
+    this.optimisticUnreadChange(delta);
+    rssRepository.markRead(id, read).then(() => {
+      if (read && this.scopeUnreadDelta > 0) { this.scopeUnreadDelta -= 1; }
+      this.decrementOptimisticDelta(delta);
+      this.refreshFeeds();
+      this.notifyBannerTick();
+    }).catch((error: Error) => {
       this.setLocalRead([id], !read);
-      this.unreadCount = Math.max(0, this.unreadCount + (read ? 1 : -1));
+      if (read && this.scopeUnreadDelta > 0) { this.scopeUnreadDelta -= 1; }
+      this.decrementOptimisticDelta(delta);
+      this.unreadCount = Math.max(0, this.unreadCount - delta);
+      this.refreshCounts();
       this.notifyBannerTick();
       Logger.error(`Toggle read failed: ${error.message}`);
     });
@@ -835,10 +932,14 @@ export struct ArticleListView {
     this.setLocalStarred(id, starred);
     this.menuArticleStarred = starred;
     this.starredCount = Math.max(0, this.starredCount + (starred ? 1 : -1));
-    this.notifyBannerTick();
-    rssRepository.markStarred(id, starred).catch((error: Error) => {
+    rssRepository.markStarred(id, starred).then(() => {
+      // DB now has the new star state; re-read authoritative counts.
+      this.refreshFeeds();
+      this.notifyBannerTick();
+    }).catch((error: Error) => {
       this.setLocalStarred(id, !starred);
       this.starredCount = Math.max(0, this.starredCount + (starred ? -1 : 1));
+      this.refreshCounts();
       this.notifyBannerTick();
       Logger.error(`Toggle starred failed: ${error.message}`);
     });
@@ -1314,8 +1415,9 @@ export struct ArticleListView {
 
           Column() {
             Row() {
-              Text(this.menuArticleRead ? '○' : '●').fontSize(this.fs(18))
-                .fontColor(this.textColor()).width(32).textAlign(TextAlign.Center)
+              Image(this.menuArticleRead ? $r('app.media.ic_filter_unread') : $r('app.media.ic_mark_read'))
+                .width(24).height(24).fillColor(this.textColor())
+                .margin({ right: 12 })
               Text(this.menuArticleRead ? '标记为未读' : '标记为已读').fontFamily(this.appFont())
                 .fontSize(this.fs(16)).fontColor(this.textColor()).layoutWeight(1)
             }
@@ -1327,9 +1429,10 @@ export struct ArticleListView {
             })
 
             Row() {
-              Text(this.menuArticleStarred ? '☆' : '★').fontSize(this.fs(18))
-                .fontColor(this.menuArticleStarred ? this.secondaryColor() : '#F9A825')
-                .width(32).textAlign(TextAlign.Center)
+              Image(this.menuArticleStarred ? $r('app.media.ic_star_outline') : $r('app.media.ic_filter_star'))
+                .width(24).height(24)
+                .fillColor(this.menuArticleStarred ? this.secondaryColor() : '#F9A825')
+                .margin({ right: 12 })
               Text(this.menuArticleStarred ? '取消收藏' : '标记为收藏').fontFamily(this.appFont())
                 .fontSize(this.fs(16)).fontColor(this.textColor()).layoutWeight(1)
             }
@@ -1341,7 +1444,9 @@ export struct ArticleListView {
             })
 
             Row() {
-              Text('↑').fontSize(this.fs(18)).fontColor(this.textColor()).width(32).textAlign(TextAlign.Center)
+              Image($r('app.media.ic_arrow_up'))
+                .width(24).height(24).fillColor(this.textColor())
+                .margin({ right: 12 })
               Text('标记上面文章为已读').fontFamily(this.appFont())
                 .fontSize(this.fs(16)).fontColor(this.textColor()).layoutWeight(1)
             }
@@ -1353,7 +1458,9 @@ export struct ArticleListView {
             })
 
             Row() {
-              Text('↓').fontSize(this.fs(18)).fontColor(this.textColor()).width(32).textAlign(TextAlign.Center)
+              Image($r('app.media.ic_arrow_down'))
+                .width(24).height(24).fillColor(this.textColor())
+                .margin({ right: 12 })
               Text('标记下面文章为已读').fontFamily(this.appFont())
                 .fontSize(this.fs(16)).fontColor(this.textColor()).layoutWeight(1)
             }
