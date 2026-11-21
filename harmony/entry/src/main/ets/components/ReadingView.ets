@@ -7,6 +7,7 @@ import { uniformTypeDescriptor as utd } from '@kit.ArkData';
 import { Article, ArticleNeighbors, Feed } from '../model/Models';
 import { rssRepository } from '../rss/RssRepository';
 import { HtmlBuilder } from '../rss/HtmlBuilder';
+import { goBack } from '../common/NavigationService';
 import { settingsStore } from '../data/SettingsStore';
 import { Logger } from '../common/Logger';
 import { FontManager } from '../common/FontManager';
@@ -247,6 +248,18 @@ export struct ReadingView {
       Column() {
         Column() {
           Row() {
+            Button() {
+              Image($r('app.media.ic_back'))
+                .width(19)
+                .height(19)
+                .fillColor('#1A1C1E')
+            }
+            .type(ButtonType.Circle)
+            .width(38)
+            .height(38)
+            .backgroundColor(Color.White)
+            .margin({ right: 8 })
+            .onClick(() => goBack())
             if (this.feedIconUrl.length > 0) {
               Image(this.feedIconUrl)
                 .width(14)
@@ -274,32 +287,43 @@ export struct ReadingView {
             Blank()
             Button() {
               Image($r('app.media.ic_more'))
-                .width(20)
-                .height(20)
-                .fillColor(this.darkMode ? '#E8EAED' : '#1A1C1E')
+                .width(19)
+                .height(19)
+                .fillColor('#1A1C1E')
             }
             .type(ButtonType.Circle)
-            .width(32)
-            .height(32)
-            .backgroundColor(Color.Transparent)
-            .margin({ left: 4 })
+            .width(38)
+            .height(38)
+            .backgroundColor(Color.White)
+            .margin({ left: 8 })
             .bindMenu([
-              { value: '用浏览器打开', action: () => this.openOriginal() },
-              { value: '复制链接', action: () => this.copyLink() },
-              { value: '分享', action: () => this.shareArticle() },
+              {
+                value: this.isStarred ? '取消收藏' : '标记为收藏',
+                icon: $r('app.media.ic_filter_star'),
+                action: () => this.toggleStar(),
+              },
+              {
+                value: '用浏览器打开',
+                icon: $r('app.media.ic_open_browser'),
+                action: () => this.openOriginal(),
+              },
+              {
+                value: '复制链接',
+                icon: $r('app.media.ic_copy_link'),
+                action: () => this.copyLink(),
+              },
+              {
+                value: '分享',
+                icon: $r('app.media.ic_share'),
+                action: () => this.shareArticle(),
+              },
             ])
           }
           .width('100%')
-          Text(this.article?.title ?? '').fontFamily(this.appFont())
-            .fontSize(this.fs(20))
-            .fontWeight(FontWeight.Medium)
-            .fontColor(this.darkMode ? '#E8EAED' : '#1A1C1E')
-            .width('100%')
-            .margin({ top: 12 })
         }
         .width('100%')
         .alignItems(HorizontalAlign.Start)
-        .padding({ left: 18, right: 18, top: 12, bottom: 12 })
+        .padding({ left: 12, right: 16, top: 14, bottom: 20 })
 
         if (this.html.length > 0) {
           Web({ src: '', controller: this.controller })

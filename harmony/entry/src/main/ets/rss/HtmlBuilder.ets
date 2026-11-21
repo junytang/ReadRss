@@ -20,6 +20,10 @@ export class HtmlBuilder {
     if (body.length === 0) {
       body = HtmlBuilder.escape(article.summary).replace(/\n/g, '<br/>');
     }
+    // Render the article title inside the WebView (centered, above the body).
+    if (article.title.length > 0) {
+      body = `<h1 class="article-title">${HtmlBuilder.escape(article.title)}</h1>` + body;
+    }
     // IT之家等站点用占位 src + data-original 保存真实图片地址。
     // 必须替换现有 src 的值，而不是追加第二个 src 属性（否则 WebView 取占位图）。
     body = HtmlBuilder.normalizeImages(body);

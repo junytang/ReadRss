@@ -73,6 +73,13 @@ h1, h2, h3, h4, h5, h6 {
     color: var(--bold-text-color) !important;
     text-align: var(--text-align) !important;
 }
+/* Article title rendered above the body in the WebView. */
+h1.article-title {
+    font-size: calc(var(--font-size) * 1.2) !important;
+    text-align: center !important;
+    margin-top: 0 !important;
+    margin-bottom: 1em !important;
+}
 p {
     max-width: 100% !important;
     word-wrap: break-word !important;
