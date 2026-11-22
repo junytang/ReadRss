@@ -197,6 +197,22 @@ export struct FeedListView {
     .padding({ left: 16, right: 16, top: 10, bottom: 10 })
   }
 
+  /** Shared badge so the banner count and per-feed counts use identical
+   *  styling and margins — with the same parent right padding (16vp) their
+   *  right edges land on the same vertical line. */
+  @Builder
+  countBadge(count: number, leadingGap: number): void {
+    if (count > 0) {
+      Text(`${count}`).fontFamily(this.appFont())
+        .fontSize(this.fs(12))
+        .fontColor(this.darkMode ? '#E8EAED' : '#1A1C1E')
+        .backgroundColor(this.darkMode ? '#3A3A3A' : '#E8E8E8')
+        .borderRadius(10)
+        .padding({ left: 7, right: 7, top: 2, bottom: 2 })
+        .margin({ left: leadingGap })
+    }
+  }
+
   @Builder
   banner(): void {
     Row() {
@@ -205,15 +221,7 @@ export struct FeedListView {
         .fontWeight(FontWeight.Medium)
         .fontColor(this.textColor())
         .layoutWeight(1)
-      if (this.bannerCount > 0) {
-        Text(`${this.bannerCount}`).fontFamily(this.appFont())
-          .fontSize(this.fs(12))
-          .fontColor(this.darkMode ? '#E8EAED' : '#1A1C1E')
-          .backgroundColor(this.darkMode ? '#3A3A3A' : '#E8E8E8')
-          .borderRadius(10)
-          .padding({ left: 7, right: 7, top: 2, bottom: 2 })
-          .margin({ right: 8 })
-      }
+      this.countBadge(this.bannerCount, 0)
     }
     .width('100%')
     .padding({ left: 16, right: 16, top: 14, bottom: 14 })
@@ -282,15 +290,7 @@ export struct FeedListView {
             .layoutWeight(1)
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
-          if (this.badgeCount(row.feed!) > 0) {
-            Text(`${this.badgeCount(row.feed!)}`).fontFamily(this.appFont())
-              .fontSize(this.fs(12))
-              .fontColor(this.darkMode ? '#E8EAED' : '#1A1C1E')
-              .backgroundColor(this.darkMode ? '#3A3A3A' : '#E8E8E8')
-              .borderRadius(10)
-              .padding({ left: 7, right: 7, top: 2, bottom: 2 })
-              .margin({ left: 6 })
-          }
+          this.countBadge(this.badgeCount(row.feed!), 6)
         }
         .width('100%')
         .height(44)
