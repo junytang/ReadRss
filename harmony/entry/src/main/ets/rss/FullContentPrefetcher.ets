@@ -14,11 +14,22 @@ class ReadYouFullContentPrefetcher {
   private static readonly MAX_BUFFER: number = 60;
   private static readonly CONCURRENCY: number = 3;
 
+  // Cap the tracking sets. They only exist to avoid duplicate fetches; once a
+  // user scrolls far, old ids are irrelevant. Clearing them bounds memory at the
+  // cost of at most one redundant fetch for a distant article.
+  private static readonly MAX_TRACKED: number = 600;
   private done: Set<string> = new Set<string>();
   private failed: Set<string> = new Set<string>();
   private inFlight: Set<string> = new Set<string>();
   private running: boolean = false;
   private pending: string[] = [];
+
+  private trimTracking(): void {
+    if (this.done.size + this.failed.size > ReadYouFullContentPrefetcher.MAX_TRACKED) {
+      this.done.clear();
+      this.failed.clear();
+    }
+  }
 
   /**
    * @param visibleCount number of items currently on screen (from onScrollIndex end - start + 1).
@@ -52,6 +63,7 @@ class ReadYouFullContentPrefetcher {
     for (let i = newly.length - 1; i >= 0; i--) {
       this.pending.unshift(newly[i]);
     }
+    this.trimTracking();
     this.drain();
   }
 

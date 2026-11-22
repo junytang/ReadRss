@@ -175,7 +175,24 @@ class FeedRepository {
     return database.countArticles(account.id, filter, feedId, groupId);
   }
 
+  // A single in-flight sync serves all callers. Multiple pages (and the
+  // first-launch sync) can request a sync at once; sharing the promise avoids
+  // duplicate network requests against the server.
+  private syncInFlight: Promise<SyncResult> | undefined = undefined;
+
   async syncAll(): Promise<SyncResult> {
+    if (this.syncInFlight !== undefined) {
+      return this.syncInFlight;
+    }
+    this.syncInFlight = this.doSync();
+    try {
+      return await this.syncInFlight;
+    } finally {
+      this.syncInFlight = undefined;
+    }
+  }
+
+  private async doSync(): Promise<SyncResult> {
     const account: Account = await this.activeAccount();
     try {
       const result: SyncResult = await syncServiceFor(account).sync(account);

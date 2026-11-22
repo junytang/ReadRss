@@ -13,10 +13,36 @@ export class ArticleImageConverter {
   // A path marker on a resolvable host. onInterceptRequest matches this exact
   // prefix; the host itself resolves so the request reaches the interceptor.
   private static readonly VIRTUAL: string = 'https://static3cdn.appinn.com/__ry_avif__/';
+  // Cap cached JPEG bytes: a reader can open hundreds of articles, and each
+  // converted image is tens of KB. Without a bound this map grows unbounded.
+  private static readonly MAX_CACHED_IMAGES: number = 20;
   private static readonly bytes: Map<string, ArrayBuffer> = new Map();
 
   static getBytes(key: string): ArrayBuffer | undefined {
-    return ArticleImageConverter.bytes.get(key);
+    const map: Map<string, ArrayBuffer> = ArticleImageConverter.bytes;
+    const bytes: ArrayBuffer | undefined = map.get(key);
+    if (bytes !== undefined && map.size > 1) {
+      // Touch to keep frequently viewed images near the end (LRU).
+      map.delete(key);
+      map.set(key, bytes);
+    }
+    return bytes;
+  }
+
+  /** Insert with simple LRU eviction: delete + re-set moves the key to the end. */
+  private static putBytes(key: string, bytes: ArrayBuffer): void {
+    const map: Map<string, ArrayBuffer> = ArticleImageConverter.bytes;
+    if (map.has(key)) {
+      map.delete(key);
+    }
+    map.set(key, bytes);
+    while (map.size > ArticleImageConverter.MAX_CACHED_IMAGES) {
+      const oldest: string | undefined = map.keys().next().value;
+      if (oldest === undefined) {
+        break;
+      }
+      map.delete(oldest);
+    }
   }
 
   static isVirtualUrl(url: string): boolean {
@@ -58,7 +84,7 @@ export class ArticleImageConverter {
         return tag;
       }
       const key: string = ArticleImageConverter.hash(url) + '.jpg';
-      ArticleImageConverter.bytes.set(key, bytes);
+      ArticleImageConverter.putBytes(key, bytes);
       // Strip srcset/sizes so the browser uses src (our virtual URL) instead of
       // the original .avif candidates.
       let clean: string = tag.replace(/\ssrcset\s*=\s*(["'])[^"']*\1/gi, '')
