@@ -7,7 +7,6 @@ import {
   ROUTE_ACCOUNTS,
   ROUTE_ACCOUNT_EDITOR,
   ROUTE_ARTICLE_LIST_STYLE,
-  ROUTE_FEEDS,
   ROUTE_FLOW,
   ROUTE_FONT_PICKER,
   ROUTE_READING,
@@ -20,7 +19,6 @@ import { navStack } from '../common/NavigationService';
 import { FontManager } from '../common/FontManager';
 import { WindowInsets } from '../common/WindowInsets';
 import { settingsStore } from '../data/SettingsStore';
-import { FeedListView } from '../components/FeedListView';
 import { ArticleListView } from '../components/ArticleListView';
 import { ReadingView } from '../components/ReadingView';
 import { SettingsView } from '../components/SettingsView';
@@ -53,11 +51,6 @@ struct Index {
       SettingsView();
     } else if (name === ROUTE_SUBSCRIBE) {
       SubscribeView();
-    } else if (name === ROUTE_FEEDS) {
-      NavDestination() {
-        FeedListView({ asDestination: true })
-      }
-      .hideTitleBar(true);
     } else if (name === ROUTE_ACCOUNTS) {
       AccountsView();
     } else if (name === ROUTE_ACCOUNT_EDITOR) {
@@ -76,8 +69,8 @@ struct Index {
   aboutToAppear(): void {
     // Publish insets one last time right before the UI tree is built.
     AppStorage.set<number>('topInset', WindowInsets.top);
-    AppStorage.set<number>('bottomInset', WindowInsets.bottom);
-    AppStorage.set<number>('windowHeightVp', WindowInsets.height);
+    AppStorage.setOrCreate<number>('bottomInset', WindowInsets.bottom);
+    AppStorage.setOrCreate<number>('windowHeightVp', WindowInsets.height);
     const settings = settingsStore.get();
     AppStorage.setOrCreate<boolean>('darkMode', settings.darkMode);
     this.darkMode = settings.darkMode;

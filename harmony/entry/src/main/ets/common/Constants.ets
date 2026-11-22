@@ -7,7 +7,6 @@ export const ROUTE_FLOW: string = 'FlowPage';
 export const ROUTE_READING: string = 'ReadingPage';
 export const ROUTE_SETTINGS: string = 'SettingsPage';
 export const ROUTE_SUBSCRIBE: string = 'SubscribePage';
-export const ROUTE_FEEDS: string = 'FeedsPage';
 export const ROUTE_ACCOUNTS: string = 'AccountsPage';
 export const ROUTE_ACCOUNT_EDITOR: string = 'AccountEditorPage';
 export const ROUTE_ARTICLE_LIST_STYLE: string = 'ArticleListStylePage';

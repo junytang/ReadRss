@@ -10,7 +10,6 @@ import {
   ReadingParam,
   ROUTE_ACCOUNTS,
   ROUTE_ACCOUNT_EDITOR,
-  ROUTE_FEEDS,
   ROUTE_FLOW,
   ROUTE_READING,
   ROUTE_SETTINGS,
@@ -41,10 +40,6 @@ export function openSettings(): void {
 
 export function openSubscribe(): void {
   navStack.pushPathByName(ROUTE_SUBSCRIBE, noParam);
-}
-
-export function openFeeds(): void {
-  navStack.pushPathByName(ROUTE_FEEDS, noParam);
 }
 
 export function openAccounts(): void {

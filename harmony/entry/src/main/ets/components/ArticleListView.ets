@@ -12,18 +12,21 @@ import { FontManager } from '../common/FontManager';
 import { FeedIcon } from '../common/FeedIcon';
 import { accountRepository } from '../account/AccountRepository';
 import { accountTypeShortName } from '../account/AccountModels';
+import { FeedListView } from './FeedListView';
 
 /** Offscreen distance (vp) used by the filter/feed slide transition. */
 const DISTANCE: number = 1000;
 /** Slide duration (ms). Shared by the animation and its cleanup timer so the
  *  snapshot is never removed before the animation actually finishes. */
 const SLIDE_DURATION: number = 200;
-/** Full initial dataset, loaded in a deferred second batch. */
-const FULL_PAGE_SIZE: number = 500;
+/** Row count the deferred second batch fills to. Kept modest (Android pages
+ *  on demand); scrolling past it triggers loadMore, so there is no need to
+ *  eagerly materialize 500 ForEach rows and their component nodes. */
+const FULL_PAGE_SIZE: number = 100;
 /** Rows added per chunk of the deferred batch, to avoid one long build frame. */
 const EXPAND_CHUNK: number = 100;
 /** Rows added per loadMore page when scrolling past the expanded batch. */
-const LOAD_MORE_STEP: number = 200;
+const LOAD_MORE_STEP: number = 100;
 
 /** Article list for one feed (or all feeds when feedId is empty). */
 @Component
@@ -67,6 +70,9 @@ export struct ArticleListView {
   // Avoids a linear scan on every article row render.
   private iconSrcMap: Map<string, string> = new Map();
   @State groups: FeedGroup[] = [];
+  // Unfiltered group list; used to re-derive `groups` on filter switch without
+  // an async DB read (which would momentarily pair new feeds with stale groups).
+  private allGroups: FeedGroup[] = [];
   @State currentFeedId: string = '';
   @State currentGroupId: string = '';
   @State showFeedDrawer: boolean = false;
@@ -79,6 +85,9 @@ export struct ArticleListView {
   private scrollMarksPending: boolean = false;
   private lastPrefetchIndex: number = 0;
   private loadSeq: number = 0;
+  // Separate guard for badge/count refreshes so overlapping Watch callbacks
+  // cannot pair feeds from one filter with groups from another.
+  private feedRefreshSeq: number = 0;
   private displayLimit: number = 500;
   private isLoadingMore: boolean = false;
   private pageLoadSeq: number = 0;
@@ -253,18 +262,28 @@ export struct ArticleListView {
     AppStorage.setOrCreate<number>('bannerTick', Date.now());
   }
 
+  /** Set feeds + groups together from the cached unfiltered lists, keeping the
+   *  drawer group headers and their feeds consistent for the active filter. */
+  private applyFeedFilter(): void {
+    this.feeds = filterFeedsByDrawer(this.iconFeeds, this.currentFilter);
+    this.groups = this.allGroups.filter((group: FeedGroup) =>
+      this.feeds.some((feed: Feed) => feed.groupId === group.id)
+    );
+  }
+
   /** Refresh the drawer's per-feed unread badges and global totals after a
    *  read/star change, so both the per-source badges and the top banner count
    *  stay in sync with the database. */
   private async refreshFeeds(): Promise<void> {
+    const seq: number = ++this.feedRefreshSeq;
     const allFeeds: Feed[] = await rssRepository.listFeeds();
+    if (seq !== this.feedRefreshSeq) return;
     this.iconFeeds = allFeeds;
     this.rebuildIconMap();
-    this.feeds = filterFeedsByDrawer(allFeeds, this.currentFilter);
     const allGroups: FeedGroup[] = await rssRepository.listGroups();
-    this.groups = allGroups.filter((group: FeedGroup) =>
-      this.feeds.some((feed: Feed) => feed.groupId === group.id)
-    );
+    if (seq !== this.feedRefreshSeq) return;
+    this.allGroups = allGroups;
+    this.applyFeedFilter();
     // Global totals drive the drawer's top "全部/未读/星标" row.
     await this.refreshCounts();
   }
@@ -504,12 +523,10 @@ export struct ArticleListView {
     if (seq !== this.loadSeq) return;
     this.iconFeeds = allFeeds;
     this.rebuildIconMap();
-    this.feeds = filterFeedsByDrawer(allFeeds, this.currentFilter);
     const allGroups: FeedGroup[] = await rssRepository.listGroups();
     if (seq !== this.loadSeq) return;
-    this.groups = allGroups.filter((group: FeedGroup) =>
-      this.feeds.some((feed: Feed) => feed.groupId === group.id)
-    );
+    this.allGroups = allGroups;
+    this.applyFeedFilter();
     FeedIcon.prefetch(this.getUIContext().getHostContext() as common.Context, this.feeds);
     const articles: Article[] = await rssRepository.listArticles(
       this.currentFeedId, this.currentFilter, this.displayLimit,
@@ -548,7 +565,9 @@ export struct ArticleListView {
     this.pageLoadSeq++;
     this.displayLimit = this.firstPageSize();
     this.scopeUnreadDelta = 0;
-    this.feeds = filterFeedsByDrawer(this.iconFeeds, this.currentFilter);
+    // Re-derive BOTH feeds and groups from the cached unfiltered lists. Leaving
+    // groups stale here is what shows empty groups when switching to starred.
+    this.applyFeedFilter();
     const articles: Article[] = await rssRepository.listArticles(
       this.currentFeedId, this.currentFilter, this.displayLimit,
       this.currentGroupId, false, this.searchText, true
@@ -1025,107 +1044,6 @@ export struct ArticleListView {
     return to > from ? 1 : -1;
   }
 
-  @Builder
-  drawerGroupItem(group: FeedGroup): void {
-    Row() {
-      Text(group.name)
-        .fontFamily(this.appFont())
-        .fontSize(this.fs(13))
-        .fontWeight(FontWeight.Medium)
-        .fontColor(this.textColor())
-        .layoutWeight(1)
-    }
-    .width('100%')
-    .padding({ left: 16, right: 16, top: 12, bottom: 12 })
-    .backgroundColor(this.currentFeedId.length === 0 && this.currentGroupId === group.id
-      ? (this.darkMode ? '#3A4657' : '#E8F0FE')
-      : Color.Transparent)
-    .onClick(() => {
-      const key: string = `g:${group.id}`;
-      if (key !== this.currentSelectionKey()) {
-        this.prepareSlide(this.drawerSlideDirection(key));
-      }
-      this.currentFeedId = '';
-      this.currentGroupId = group.id;
-      this.getUIContext().animateTo({ duration: 240, curve: Curve.EaseInOut }, () => { this.showFeedDrawer = false; });
-      this.load();
-    })
-  }
-
-  @Builder
-  drawerFeedItem(feedId: string, title: string, unreadCount: number): void {
-    Row() {
-      if (feedId.length === 0) {
-        // Top "全部/未读/星标" row uses the same icon as the HdsTabs tab.
-        Image(this.filterIcon())
-          .width(20)
-          .height(20)
-          .padding(3)
-          .fillColor(this.darkMode ? '#E8EAED' : '#1A1C1E')
-          .margin({ right: 8 })
-      } else if (this.iconForFeed(feedId).length > 0) {
-        Image(this.iconForFeed(feedId))
-          .width(20)
-          .height(20)
-          .borderRadius(4)
-          .margin({ right: 8 })
-      } else {
-        Image($r('app.media.app_icon'))
-          .width(20)
-          .height(20)
-          .borderRadius(4)
-          .margin({ right: 8 })
-      }
-      Text(title)
-        .fontFamily(this.appFont())
-        // Source rows use the base 15vp; the top all-articles row is +2vp.
-        .fontSize((feedId.length === 0 ? 17 : 15) * this.fontScale)
-        .fontColor(this.textColor())
-        .layoutWeight(1)
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-      if (unreadCount > 0) {
-        Text(`${unreadCount}`)
-          .fontFamily(this.appFont())
-          .fontSize(this.fs(12))
-          .fontColor(this.darkMode ? '#E8EAED' : '#1A1C1E')
-          .backgroundColor(this.darkMode ? '#3A3A3A' : '#E8E8E8')
-          .borderRadius(10)
-          .padding({ left: 7, right: 7, top: 2, bottom: 2 })
-          .margin({ left: 6 })
-      }
-    }
-    .width('100%')
-    .padding({
-      left: feedId.length === 0 ? 16 : 28,
-      right: 16,
-      top: feedId.length === 0 ? 18 : 12,
-      bottom: feedId.length === 0 ? 18 : 12,
-    })
-    .backgroundColor(
-      (feedId.length === 0
-        ? (this.currentFeedId.length === 0 && this.currentGroupId.length === 0)
-        : this.currentFeedId === feedId)
-        ? (this.darkMode ? '#3A4657' : '#E8F0FE')
-        : Color.Transparent
-    )
-    .onClick(() => {
-      const key: string = feedId.length === 0 ? '__global__' : `f:${feedId}`;
-      if (key !== this.currentSelectionKey()) {
-        this.prepareSlide(this.drawerSlideDirection(key));
-      }
-      this.currentFeedId = feedId;
-      this.currentGroupId = '';
-      this.getUIContext().animateTo({ duration: 240, curve: Curve.EaseInOut }, () => { this.showFeedDrawer = false; });
-      this.load();
-    })
-  }
-
-  /** Badge count follows the active filter: starred uses starredCount, others unread. */
-  private drawerBadgeCount(feed: Feed): number {
-    return this.currentFilter === FILTER_STARRED ? feed.starredCount : feed.unreadCount;
-  }
-
   /** Total article count for the active filter (shown on the drawer "全部" row). */
   private drawerTotalCount(): number {
     if (this.currentFilter === FILTER_STARRED) return this.globalStarred;
@@ -1139,11 +1057,50 @@ export struct ArticleListView {
     return '未读';
   }
 
-  /** Same icons as the HdsTabs bottom bar, used for the drawer top row. */
-  private filterIcon(): Resource {
-    if (this.currentFilter === FILTER_STARRED) return $r('app.media.ic_filter_star');
-    if (this.currentFilter === FILTER_ALL) return $r('app.media.ic_filter_all');
-    return $r('app.media.ic_filter_unread');
+  /** Drawer callbacks. The drawer panel (FeedListView) reports the selection;
+   *  this view keeps the slide animation and scope switching. */
+  private onDrawerSelectGlobal(): void {
+    const key: string = '__global__';
+    if (key !== this.currentSelectionKey()) {
+      this.prepareSlide(this.drawerSlideDirection(key));
+    }
+    this.currentFeedId = '';
+    this.currentGroupId = '';
+    this.closeDrawer();
+    this.load();
+  }
+
+  private onDrawerSelectFeed(feedId: string): void {
+    const key: string = `f:${feedId}`;
+    if (key !== this.currentSelectionKey()) {
+      this.prepareSlide(this.drawerSlideDirection(key));
+    }
+    this.currentFeedId = feedId;
+    this.currentGroupId = '';
+    this.closeDrawer();
+    this.load();
+  }
+
+  private onDrawerSelectGroup(groupId: string): void {
+    const key: string = `g:${groupId}`;
+    if (key !== this.currentSelectionKey()) {
+      this.prepareSlide(this.drawerSlideDirection(key));
+    }
+    this.currentFeedId = '';
+    this.currentGroupId = groupId;
+    this.closeDrawer();
+    this.load();
+  }
+
+  private closeDrawer(): void {
+    this.getUIContext().animateTo({ duration: 240, curve: Curve.EaseInOut }, () => {
+      this.showFeedDrawer = false;
+    });
+  }
+
+  private onDrawerDeletedFeed(): void {
+    this.refreshFeeds();
+    this.load();
   }
 
   private appFont(): string {
@@ -1494,78 +1451,24 @@ export struct ArticleListView {
             .animation({ duration: 240, curve: Curve.EaseInOut })
             .onClick(() => { this.getUIContext().animateTo({ duration: 240, curve: Curve.EaseInOut }, () => { this.showFeedDrawer = false; }); })
 
-          Column() {
-            Row() {
-              Column() {
-                Text(this.accountName.length > 0 ? this.accountName : '订阅源')
-                  .fontSize(this.fs(18))
-                  .fontWeight(FontWeight.Medium)
-                  .fontColor(this.textColor())
-                  .maxLines(1)
-                  .textOverflow({ overflow: TextOverflow.Ellipsis })
-                Text(this.accountTypeLabel)
-                  .fontFamily(this.appFont())
-                  .fontSize(this.fs(12))
-                  .fontColor(this.secondaryColor())
-                  .margin({ top: 2 })
-              }
-              .alignItems(HorizontalAlign.Start)
-              .layoutWeight(1)
-              Text('✕')
-                .fontFamily(this.appFont())
-                .fontSize(this.fs(18))
-                .fontColor(this.secondaryColor())
-                .onClick(() => { this.getUIContext().animateTo({ duration: 240, curve: Curve.EaseInOut }, () => { this.showFeedDrawer = false; }); })
-            }
-            .width('100%')
-            .padding({ left: 16, right: 16, top: 12, bottom: 4 })
-
-            List() {
-              ListItem() {
-                this.drawerFeedItem('', this.filterName(), this.drawerTotalCount())
-              }
-
-              // Blank row separating the "全部" summary from the source list.
-              ListItem() {
-                Row().width('100%').height(12)
-              }
-
-              if (this.feeds.length === 0) {
-                ListItem() {
-                  Text(this.currentFilter === FILTER_ALL ? '还没有订阅源' : '该筛选下没有订阅源')
-                    .fontFamily(this.appFont())
-                    .fontSize(this.fs(13))
-                    .fontColor(this.secondaryColor())
-                    .margin({ left: 16, top: 10 })
-                }
-              }
-
-              ForEach(this.groups, (group: FeedGroup) => {
-                ListItem() {
-                  this.drawerGroupItem(group)
-                }
-                ForEach(this.feedsInGroup(group.id), (feed: Feed) => {
-                  ListItem() {
-                    this.drawerFeedItem(feed.id, feed.title, this.drawerBadgeCount(feed))
-                  }
-                }, (feed: Feed) => feed.id)
-              }, (group: FeedGroup) => group.id)
-              ForEach(this.ungroupedFeeds(), (feed: Feed) => {
-                ListItem() {
-                  this.drawerFeedItem(feed.id, feed.title, this.drawerBadgeCount(feed))
-                }
-              }, (feed: Feed) => feed.id)
-            }
-            .width('100%')
-            .layoutWeight(1)
-            // Padding on the List reserves space at the bottom even when
-            // scrolled to the end, so the last source never sits on the edge.
-            .padding({ bottom: 50 })
-          }
+          FeedListView({
+            feeds: this.feeds,
+            groups: this.groups,
+            currentFilter: this.currentFilter,
+            accountName: this.accountName,
+            accountTypeLabel: this.accountTypeLabel,
+            bannerLabel: this.filterName(),
+            bannerCount: this.drawerTotalCount(),
+            selectedFeedId: this.currentFeedId,
+            selectedGroupId: this.currentGroupId,
+            onSelectFeed: (feedId: string) => this.onDrawerSelectFeed(feedId),
+            onSelectGroup: (groupId: string) => this.onDrawerSelectGroup(groupId),
+            onSelectGlobal: () => this.onDrawerSelectGlobal(),
+            onClose: () => this.closeDrawer(),
+            onDeletedFeed: () => this.onDrawerDeletedFeed(),
+          })
           .width('66%')
           .height('100%')
-          .backgroundColor(this.surfaceColor())
-          .padding({ bottom: 16 })
           .transition(TransitionEffect.translate({ x: -240 }))
           .animation({ duration: 240, curve: Curve.EaseInOut })
 
