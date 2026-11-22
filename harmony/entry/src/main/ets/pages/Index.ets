@@ -1,6 +1,7 @@
 import { common, ConfigurationConstant } from '@kit.AbilityKit';
 import {
   AccountEditorParam,
+  ArticleScope,
   FlowParam,
   FontPickerParam,
   ReadingParam,
@@ -46,7 +47,12 @@ struct Index {
         feedTitle: (param as FlowParam).feedTitle,
       });
     } else if (name === ROUTE_READING) {
-      ReadingView({ articleId: (param as ReadingParam).articleId });
+      ReadingView({
+        articleId: (param as ReadingParam).articleId,
+        scope: (param as ReadingParam).scope ?? {
+          feedId: '', groupId: '', filter: '', searchText: '',
+        } as ArticleScope,
+      });
     } else if (name === ROUTE_SETTINGS) {
       SettingsView();
     } else if (name === ROUTE_SUBSCRIBE) {

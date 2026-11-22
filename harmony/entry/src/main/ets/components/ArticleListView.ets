@@ -114,6 +114,8 @@ export struct ArticleListView {
   @State prevOffset: number = 0;
   @State prevTopSpacer: number = 0; // height of rows scrolled above the snapshot
   private scrollOffset: number = 0;
+  // Drives the visible article list; used by the title-bar tap to scroll to top.
+  private listScroller: Scroller = new Scroller();
   // Target offsets frozen at prepareSlide time so a late replayed onChange
   // cannot reverse the direction mid-transition.
   private targetCurOffset: number = 0;
@@ -126,6 +128,10 @@ export struct ArticleListView {
   // Deferred second batch: fill the rest of the list after the first paint.
   private expandTimer: number = 0;
   @State showSearch: boolean = false;
+  // Android FlowPage scrolls to the top before revealing the search bar. This
+  // flag defers showing it until onScrollIndex reports index 0, so the list
+  // reflow caused by inserting the bar cannot immediately auto-hide it again.
+  private pendingShowSearch: boolean = false;
   @State accountName: string = '';
   @State accountTypeLabel: string = '';
   @State showArticleMenu: boolean = false;
@@ -740,7 +746,14 @@ export struct ArticleListView {
     if (this.showArticleMenu) {
       return;
     }
-    openArticle(article.id);
+    // Carry the visible list scope so prev/next in the reader stay inside it
+    // (e.g. the "全部" tab spans every feed, not just this article's feed).
+    openArticle(article.id, {
+      feedId: this.currentFeedId,
+      groupId: this.currentGroupId,
+      filter: this.currentFilter,
+      searchText: this.searchText,
+    });
   }
 
   private doMarkAllRead(): void {
@@ -1129,6 +1142,49 @@ export struct ArticleListView {
     }
   }
 
+  /** Tap the title bar to smoothly scroll the article list back to the top.
+    *  Index 0 is always the first article: the top spacer lives only in the
+    *  outgoing snapshot list, not in the current list. */
+  private scrollToTop(): void {
+    try {
+      this.listScroller.scrollToIndex(0, true, ScrollAlign.START);
+    } catch (error) {
+      // List may not have laid out yet (e.g. tapped before the first paint).
+    }
+  }
+
+  /** Search button, mirroring Android FlowPage.kt: when scrolled down, animate
+    *  the list to the top first and only then reveal the search bar. Showing it
+    *  while scrolled makes the list reflow and emit onScrollIndex(start > 0),
+    *  whose auto-hide would make the bar flash and vanish. */
+  private toggleSearch(): void {
+    if (this.showSearch) {
+      this.showSearch = false;
+      this.pendingShowSearch = false;
+      return;
+    }
+    if (this.firstVisibleIndex > 0) {
+      this.pendingShowSearch = true;
+      this.scrollToTop();
+      // Safety net: if the smooth scroll never reports index 0 (e.g. before
+      // first layout), snap to the top instantly before revealing the bar so
+      // the reflow can't re-trigger the auto-hide. Also covers an empty list.
+      setTimeout(() => {
+        if (this.pendingShowSearch) {
+          this.pendingShowSearch = false;
+          try {
+            this.listScroller.scrollToIndex(0, false, ScrollAlign.START);
+          } catch (error) {
+            // List may not be laid out yet; revealing the bar is still useful.
+          }
+          this.showSearch = true;
+        }
+      }, 800);
+    } else {
+      this.showSearch = true;
+    }
+  }
+
   build() {
     NavDestination() {
       Stack() {
@@ -1192,7 +1248,7 @@ export struct ArticleListView {
           .height(38)
           .backgroundColor(Color.White)
           .margin({ left: 8 })
-          .onClick(() => { this.showSearch = !this.showSearch; })
+          .onClick(() => this.toggleSearch())
 
           Button() {
             Image($r('app.media.ic_mark_read'))
@@ -1209,6 +1265,9 @@ export struct ArticleListView {
         }
         .width('100%')
         .padding({ left: 12, right: 16, top: 14, bottom: 14 })
+        // Tapping the title bar scrolls the list back to the top. Buttons in
+        // this row consume their own clicks, so they don't trigger this.
+        .onClick(() => this.scrollToTop())
 
         if (this.showSearch) {
           Column() {
@@ -1245,7 +1304,7 @@ export struct ArticleListView {
             .divider({ strokeWidth: 1, color: this.darkMode ? '#2A2D31' : '#ECEFF2' })
 
             // Current list slides in from the opposite edge.
-            List() {
+            List({ scroller: this.listScroller }) {
               ForEach(this.articles, (article: Article) => {
                 ListItem() {
                   this.articleItem(article)
@@ -1275,6 +1334,12 @@ export struct ArticleListView {
             .onScrollIndex((start: number, end: number) => {
               this.firstVisibleIndex = start;
               this.visibleCount = end >= start ? end - start + 1 : 0;
+              // Deferred reveal from toggleSearch: the list is now at the top,
+              // so inserting the search bar cannot trigger the auto-hide below.
+              if (start === 0 && this.pendingShowSearch) {
+                this.pendingShowSearch = false;
+                this.showSearch = true;
+              }
               if (start > 0 && this.showSearch) {
                 this.showSearch = false;
               }

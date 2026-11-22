@@ -8,12 +8,38 @@ import { Article, ArticleNeighbors } from '../model/Models';
 import { rssRepository } from '../rss/RssRepository';
 import { HtmlBuilder } from '../rss/HtmlBuilder';
 import { goBack } from '../common/NavigationService';
+import { ArticleScope } from '../common/Constants';
 import { settingsStore } from '../data/SettingsStore';
 import { Logger } from '../common/Logger';
 import { FontManager } from '../common/FontManager';
 import { FeedIcon } from '../common/FeedIcon';
 import { ArticleImageConverter } from '../common/ArticleImageConverter';
 import { ReaderFont } from '../common/ReaderFont';
+
+/** Minimum vertical pull (vp) at a scroll edge that switches articles. Applies
+ *  to both pull-down (previous) and pull-up (next). Large enough that ordinary
+ *  overscroll bounces never switch articles. */
+const PULL_TRIGGER_VP: number = 140;
+
+/** Extra lift (vp) for the bottom hint so its centred position stays clear of
+ *  the system navigation bar even when the exposed gap is shallow. */
+const PULL_HINT_LIFT: number = 24;
+
+/** The page reports its own exact scroll boundaries to ArkTS. This avoids
+ *  guessing from getPageHeight()/yOffset, which could mark mid-article as the
+ *  bottom and make a normal scroll switch articles. A class (not an interface
+ *  literal) is required so ArkTS accepts it as a JS bridge target. */
+class ScrollBoundaryHandler {
+  private readonly onBoundary: (atTop: boolean, atBottom: boolean) => void;
+
+  constructor(callback: (atTop: boolean, atBottom: boolean) => void) {
+    this.onBoundary = callback;
+  }
+
+  onScrollBoundary(atTop: boolean, atBottom: boolean): void {
+    this.onBoundary(atTop, atBottom);
+  }
+}
 
 /** Reader screen. Uses the same WebView rendering approach as the Android app. */
 @Component
@@ -23,10 +49,13 @@ export struct ReadingView {
   private fs(size: number): number { return size * this.uiFontScale; }
 
   @Prop articleId: string = '';
+  // Scope of the list this article was opened from; prev/next follow it.
+  @Prop scope: ArticleScope = { feedId: '', groupId: '', filter: '', searchText: '' };
   @StorageLink('darkMode') darkMode: boolean = false;
   @StorageProp('fontDataTick') fontDataTick: number = 0;
   @StorageProp('systemFontFamily') systemFontFamily: string = 'sans-serif';
   @StorageProp('topInset') topInset: number = 0;
+  @StorageProp('bottomInset') bottomInset: number = 0;
   @StorageProp('readerBodyFontSize') @Watch('onStyleChanged') readerBodyFontSize: number = 17;
   @StorageProp('readerPageMargin') @Watch('onStyleChanged') readerPageMargin: number = 16;
   @StorageProp('readerLineSpacing') @Watch('onStyleChanged') readerLineSpacing: number = 1.75;
@@ -37,19 +66,53 @@ export struct ReadingView {
   @State previousId: string = '';
   @State nextId: string = '';
   @State feedIconUrl: string = '';
+  // Pull-to-switch state: only a pull starting at the WebView's very top or
+  // very bottom is eligible, and only a large enough release switches article.
+  @State pullHint: string = '';
+  // Which edge the hint is shown at. Short articles are at top AND bottom at
+  // once, so this must follow the gesture direction, not the boundary flags.
+  @State pullAtBottom: boolean = false;
+  // Rubber-band offset of the whole WebView, so the page follows the finger.
+  @State pullOffset: number = 0;
+  private webHeight: number = 0;
+  private pageMaxScroll: number = 0;
+  private atTopNow: boolean = true;
+  private atBottomNow: boolean = false;
+  private boundaryReported: boolean = false;
+  private boundaryBridge: ScrollBoundaryHandler = new ScrollBoundaryHandler(
+    (atTop: boolean, atBottom: boolean): void => {
+      this.boundaryReported = true;
+      this.atTopNow = atTop;
+      this.atBottomNow = atBottom;
+    }
+  );
+  private pullStartY: number = 0;
+  private lastPullY: number = 0;
+  private pullFromTop: boolean = false;
+  private pullFromBottom: boolean = false;
+  private pullTracking: boolean = false;
+  // The route param seeds this, but prev/next switches articles in place
+  // (like Android) instead of pushing a new destination. @Prop is one-way
+  // synced from the parent, so keep a local mutable copy for in-place switches.
+  @State currentArticleId: string = '';
 
   private controller: webview.WebviewController = new webview.WebviewController();
   // buildHtml is async (AVIF conversion). Guard so a stale render (e.g. an
   // older style change finishing after a newer one) cannot overwrite the HTML.
   private htmlSeq: number = 0;
+  // Guard rapid prev/next taps: discard results from a superseded article load.
+  private loadSeq: number = 0;
 
   aboutToAppear(): void {
+    this.currentArticleId = this.articleId;
     this.load();
   }
 
   private async load(): Promise<void> {
-    let article: Article | undefined = await rssRepository.ensureArticleContent(this.articleId);
-    if (!article) {
+    const seq: number = ++this.loadSeq;
+    const articleId: string = this.currentArticleId;
+    let article: Article | undefined = await rssRepository.ensureArticleContent(articleId);
+    if (!article || seq !== this.loadSeq) {
       return;
     }
     // Render immediately from whatever body is cached; full content arrives in background.
@@ -57,6 +120,9 @@ export struct ReadingView {
     this.isStarred = article.isStarred;
     // One row lookup instead of listing every feed to find this article's icon.
     this.feedIconUrl = FeedIcon.src(await rssRepository.feedIconUrl(article.feedId));
+    if (seq !== this.loadSeq) {
+      return;
+    }
     await this.renderHtml(article);
     Logger.info(`Open article: cachedFull=${article.fullContent.length} cachedBody=${article.content.length}`);
 
@@ -64,6 +130,9 @@ export struct ReadingView {
       // Pass the loaded article through: re-reading it by id would marshal the
       // whole body a second time.
       rssRepository.ensureFullContentFor(article).then(async (updated: Article | undefined) => {
+        if (seq !== this.loadSeq) {
+          return; // user already switched to another article
+        }
         if (updated && updated.fullContent.length > 0) {
           this.article = updated;
           await this.renderHtml(updated);
@@ -73,9 +142,10 @@ export struct ReadingView {
       });
     }
 
-    // Mark read optimistically: the list turns gray before the server replies.
+    // Mark read optimistically, but only when the "打开文章即标已读" setting is on.
+    // The list turns gray before the server replies; failure rolls it back.
     const currentArticle: Article = article;
-    if (!currentArticle.isRead) {
+    if (settingsStore.get().markReadOnOpen && !currentArticle.isRead) {
       currentArticle.isRead = true;
       AppStorage.set<string>('lastChangedArticle', `${currentArticle.id}|read|true`);
       AppStorage.set<number>('readStatusTick', Date.now());
@@ -86,9 +156,155 @@ export struct ReadingView {
         Logger.error(`Mark read on open failed: ${error.message}`);
       });
     }
-    const neighbors: ArticleNeighbors = await rssRepository.neighborIds(currentArticle);
+    const neighbors: ArticleNeighbors = await rssRepository.neighborIds(
+      currentArticle, this.scope.feedId, this.scope.filter,
+      this.scope.groupId, this.scope.searchText
+    );
+    if (seq !== this.loadSeq) {
+      return;
+    }
     this.previousId = neighbors.previous;
     this.nextId = neighbors.next;
+  }
+
+  /** Switch to an adjacent article in place, matching Android's onLoadArticle:
+   *  keep the same NavDestination so Back always returns to the article list
+   *  instead of stepping back through every article the user opened. */
+  private async openNeighbor(id: string): Promise<void> {
+    if (id.length === 0 || id === this.currentArticleId) {
+      return;
+    }
+    this.currentArticleId = id;
+    this.previousId = '';
+    this.nextId = '';
+    this.isStarred = false;
+    this.pageMaxScroll = 0;
+    this.atTopNow = true;
+    this.atBottomNow = false;
+    this.boundaryReported = false;
+    this.pullHint = '';
+    this.pullOffset = 0;
+    await this.load();
+  }
+
+  /** Fallback only: used until the page's own JS bridge reports a boundary.
+   *  Once reported, the precise DOM-based state always wins — a rough native
+   *  estimate here could otherwise mark mid-article as "bottom" and make a
+   *  normal scroll switch articles. */
+  private onWebScroll(event: OnScrollEvent): void {
+    if (this.boundaryReported) {
+      return;
+    }
+    const y: number = event.yOffset;
+    if (this.pageMaxScroll <= 0) {
+      try {
+        this.pageMaxScroll = Math.max(0, this.controller.getPageHeight() - this.webHeight);
+      } catch (error) {
+        this.pageMaxScroll = 0;
+      }
+    }
+    this.atTopNow = y <= 20;
+    this.atBottomNow = this.pageMaxScroll <= 40
+      ? true
+      : y >= this.pageMaxScroll - 40;
+  }
+
+  /** Inject a scroll listener once per loaded page. The page knows its own
+   *  scrollTop/scrollHeight exactly and reports real edge state via the bridge,
+   *  so pull-to-switch can only be armed at a genuine top or bottom. */
+  private onWebPageEnd(): void {
+    const script: string =
+      '(function(){' +
+      'if(window.__ryBoundaryReady)return;' +
+      'window.__ryBoundaryReady=true;' +
+      'function u(){' +
+      'var d=document.documentElement,b=document.body;' +
+      'var t=window.pageYOffset||d.scrollTop||b.scrollTop||0;' +
+      'var h=window.innerHeight;' +
+      'var s=Math.max(d.scrollHeight,b.scrollHeight);' +
+      'if(window.readYouBridge&&window.readYouBridge.onScrollBoundary){' +
+      'window.readYouBridge.onScrollBoundary(t<=2,t+h>=s-2);' +
+      '}}' +
+      'window.addEventListener("scroll",u,{passive:true});' +
+      'window.addEventListener("resize",u,{passive:true});' +
+      'u();' +
+      '})();';
+    this.controller.runJavaScript(script).catch(() => {
+      // JS bridge unavailable; onWebScroll keeps the native fallback working.
+    });
+  }
+
+  /** Pull down at the top -> previous (newer) article; pull up at the bottom ->
+   *  next (older) article. The page follows the finger with damping, and only
+   *  a release beyond PULL_TRIGGER_VP switches articles. */
+  private onWebTouch(event: TouchEvent): void {
+    const touches: TouchObject[] = event.changedTouches;
+    // On Up some WebViews report an empty changedTouches; use the last known
+    // position so the release is still evaluated instead of being dropped.
+    const y: number = touches.length > 0 ? touches[0].y : this.lastPullY;
+    if (event.type === TouchType.Down) {
+      // A fresh gesture must start from a clean state. A previous spring-back
+      // animation may still be running during rapid consecutive pulls; let the
+      // new gesture own pullOffset instead of fighting the old animation.
+      this.pullOffset = 0;
+      this.pullStartY = y;
+      this.lastPullY = y;
+      // A short article is simultaneously at top and bottom. Keep both flags
+      // independent so pull-down still means "previous" and pull-up "next";
+      // the gesture direction decides which one applies.
+      this.pullFromTop = this.atTopNow;
+      this.pullFromBottom = this.atBottomNow;
+      this.pullTracking = this.pullFromTop || this.pullFromBottom;
+      // Do not show the hint at touch-down: pullOffset is still 0, so a bottom
+      // hint would sit at the very bottom of the screen (over the nav bar) with
+      // no exposed gap yet. The first Move reveals the direction and position.
+      this.pullHint = '';
+    } else if (event.type === TouchType.Move && this.pullTracking) {
+      this.lastPullY = y;
+      const delta: number = y - this.pullStartY;
+      let hint: string = '';
+      if (this.pullFromTop && delta > 0) {
+        this.pullAtBottom = false;
+        this.pullOffset = Math.min(delta * 0.5, 160);
+        hint = delta >= PULL_TRIGGER_VP ? '释放查看上一篇' : '下拉查看上一篇';
+      } else if (this.pullFromBottom && delta < 0) {
+        this.pullAtBottom = true;
+        this.pullOffset = Math.max(delta * 0.5, -160);
+        hint = -delta >= PULL_TRIGGER_VP ? '释放查看下一篇' : '上拉查看下一篇';
+      } else {
+        // Direction reversed: the user resumed normal reading, so stop the pull.
+        this.pullOffset = 0;
+      }
+      if (this.pullHint !== hint) {
+        this.pullHint = hint;
+      }
+    } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+      const delta: number = y - this.pullStartY;
+      const wasTracking: boolean = this.pullTracking;
+      const fromTop: boolean = this.pullFromTop;
+      const fromBottom: boolean = this.pullFromBottom;
+      this.pullHint = '';
+      this.pullTracking = false;
+      if (event.type === TouchType.Cancel || !wasTracking) {
+        this.pullOffset = 0;
+        return;
+      }
+      const switchPrev: boolean =
+        fromTop && delta >= PULL_TRIGGER_VP && this.previousId.length > 0;
+      const switchNext: boolean =
+        fromBottom && delta <= -PULL_TRIGGER_VP && this.nextId.length > 0;
+      if (switchPrev || switchNext) {
+        // Reset immediately. Animating here would keep mutating pullOffset for
+        // 220ms and wipe the hint of a quickly-following consecutive pull.
+        this.pullOffset = 0;
+        this.openNeighbor(switchPrev ? this.previousId : this.nextId);
+      } else {
+        // Not far enough: spring the page back with an animation.
+        this.getUIContext().animateTo({ duration: 220, curve: Curve.EaseOut }, () => {
+          this.pullOffset = 0;
+        });
+      }
+    }
   }
 
   /** Re-render the reader when its appearance settings change. */
@@ -166,13 +382,14 @@ export struct ReadingView {
 
   private toggleStar(): void {
     const next: boolean = !this.isStarred;
+    const id: string = this.currentArticleId;
     this.isStarred = next;
-    AppStorage.set<string>('lastChangedArticle', `${this.articleId}|starred|${next}`);
+    AppStorage.set<string>('lastChangedArticle', `${id}|starred|${next}`);
     AppStorage.set<number>('readStatusTick', Date.now());
     this.getUIContext().getPromptAction().showToast({ message: next ? '已收藏' : '已取消收藏' });
-    rssRepository.markStarred(this.articleId, next).catch((error: Error) => {
+    rssRepository.markStarred(id, next).catch((error: Error) => {
       this.isStarred = !next;
-      AppStorage.set<string>('lastChangedArticle', `${this.articleId}|starred|${!next}`);
+      AppStorage.set<string>('lastChangedArticle', `${id}|starred|${!next}`);
       AppStorage.set<number>('readStatusTick', Date.now());
       Logger.error(`Toggle starred failed: ${error.message}`);
     });
@@ -334,17 +551,32 @@ export struct ReadingView {
         .padding({ left: 12, right: 16, top: 14, bottom: 20 })
 
         if (this.html.length > 0) {
-          Web({ src: '', controller: this.controller })
-            .javaScriptAccess(true)
-            .domStorageAccess(true)
-            .fileAccess(true)
-            .width('100%')
-            .layoutWeight(1)
-            .padding({ bottom: 16 })
-            .backgroundColor(this.darkMode ? '#15171A' : '#FFFFFF')
-            .onAppear(() => this.pushHtml())
-            .onControllerAttached(() => this.pushHtml())
-            .onInterceptRequest((event) => {
+          Stack() {
+            // Inner layer follows the finger; the outer layer stays fixed so
+            // the hint sits in the exposed space instead of covering text.
+            Stack() {
+              Web({ src: '', controller: this.controller })
+              .javaScriptAccess(true)
+              .domStorageAccess(true)
+              .fileAccess(true)
+              .width('100%')
+              .height('100%')
+              .padding({ bottom: 16 })
+              .backgroundColor(this.darkMode ? '#15171A' : '#FFFFFF')
+              .onAppear(() => this.pushHtml())
+              .onControllerAttached(() => {
+                this.controller.registerJavaScriptProxy(
+                  this.boundaryBridge, 'readYouBridge', ['onScrollBoundary']
+                );
+                this.pushHtml();
+              })
+              .onAreaChange((oldValue: Area, newValue: Area) => {
+                this.webHeight = newValue.height as number;
+              })
+              .onTouch((event: TouchEvent) => this.onWebTouch(event))
+              .onScroll((event: OnScrollEvent) => this.onWebScroll(event))
+              .onPageEnd(() => this.onWebPageEnd())
+              .onInterceptRequest((event) => {
               const url: string = event ? event.request.getRequestUrl() : '';
               if (ArticleImageConverter.isVirtualUrl(url)) {
                 const key: string = ArticleImageConverter.keyFromUrl(url);
@@ -382,6 +614,48 @@ export struct ReadingView {
               }
               return null;
             })
+            }
+            .width('100%')
+            .height('100%')
+            .translate({ y: this.pullOffset })
+
+            // Pull hint, like pull-to-refresh. Non-interactive so the touch
+            // still reaches the WebView underneath. It lives in the fixed
+            // outer Stack, centred in the space exposed by the rubber band.
+            if (this.pullHint.length > 0) {
+              Column() {
+                Text(this.pullHint)
+                  .fontFamily(this.appFont())
+                  .fontSize(this.fs(14))
+                  .fontColor(this.darkMode ? '#E8EAED' : '#1A1C1E')
+                  .padding({ left: 16, right: 16, top: 8, bottom: 8 })
+                  .borderRadius(18)
+                  .backgroundColor(this.darkMode ? '#2A2D31' : '#FFFFFF')
+              }
+              .width('100%')
+              .height('100%')
+              .justifyContent(this.pullAtBottom ? FlexAlign.End : FlexAlign.Start)
+              .alignItems(HorizontalAlign.Center)
+              // Both directions centre the hint in the exposed gap by following
+              // pullOffset with the same |offset|/2 - halfHeight formula.
+              // Pull-up additionally keeps a floor at bottomInset + 48 (the
+              // known-good spot above the nav bar) plus a manual lift, so a
+              // shallow early gap can never drop the hint behind the nav bar.
+              .padding({
+                top: this.pullAtBottom ? 0 : Math.max(0, this.pullOffset / 2 - 16),
+                bottom: this.pullAtBottom
+                  ? Math.max(
+                      this.bottomInset + 48,
+                      -this.pullOffset / 2 - 16 + PULL_HINT_LIFT
+                    )
+                  : 0,
+              })
+              .hitTestBehavior(HitTestMode.None)
+            }
+          }
+          .width('100%')
+          .layoutWeight(1)
+          .backgroundColor(this.darkMode ? '#15171A' : '#FFFFFF')
         } else {
           Column() {
             Text('正在加载文章…').fontFamily(this.appFont())

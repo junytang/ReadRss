@@ -921,19 +921,42 @@ class ReadYouDatabase {
     return states;
   }
 
-  /** Previous/next article ids in the same feed, ordered like listArticles
-   *  (published_at DESC, id DESC). Two bounded queries replace loading the
-   *  feed's entire id list into memory. */
+  /** Previous/next article ids within the same list scope as listArticles,
+   *  ordered like it (published_at DESC, id DESC). Reusing the same WHERE
+   *  clauses makes prev/next on the global "全部" tab span every feed instead
+   *  of being confined to the current article's feed. Two bounded queries
+   *  replace loading the whole scope's id list into memory. */
   async neighborArticleIds(
-    accountId: string, feedId: string, articleId: string, publishedAt: number
+    accountId: string, articleId: string, publishedAt: number,
+    feedId: string, filter: string, groupId: string, searchText: string
   ): Promise<ArticleNeighbors> {
     const result: ArticleNeighbors = { previous: '', next: '' };
+    let where: string = 'account_id = ?';
+    const scopeArgs: Array<string | number> = [accountId];
+    if (feedId.length > 0) {
+      where += ' AND feed_id = ?';
+      scopeArgs.push(feedId);
+    }
+    if (filter === 'unread') {
+      where += ' AND is_read = 0';
+    } else if (filter === 'starred') {
+      where += ' AND is_starred = 1';
+    }
+    if (groupId.length > 0) {
+      where += ' AND feed_id IN (SELECT id FROM feed WHERE group_id = ?)';
+      scopeArgs.push(groupId);
+    }
+    if (searchText.length > 0) {
+      where += ' AND (title LIKE ? OR summary LIKE ? OR content LIKE ?)';
+      const pattern: string = `%${searchText}%`;
+      scopeArgs.push(pattern, pattern, pattern);
+    }
     const newer = await this.query(
       `SELECT id FROM article
-       WHERE account_id = ? AND feed_id = ?
+       WHERE ${where}
          AND (published_at > ? OR (published_at = ? AND id > ?))
        ORDER BY published_at ASC, id ASC LIMIT 1`,
-      [accountId, feedId, publishedAt, publishedAt, articleId]
+      scopeArgs.concat([publishedAt, publishedAt, articleId])
     );
     try {
       if (this.nextRow(newer)) {
@@ -944,10 +967,10 @@ class ReadYouDatabase {
     }
     const older = await this.query(
       `SELECT id FROM article
-       WHERE account_id = ? AND feed_id = ?
+       WHERE ${where}
          AND (published_at < ? OR (published_at = ? AND id < ?))
        ORDER BY published_at DESC, id DESC LIMIT 1`,
-      [accountId, feedId, publishedAt, publishedAt, articleId]
+      scopeArgs.concat([publishedAt, publishedAt, articleId])
     );
     try {
       if (this.nextRow(older)) {

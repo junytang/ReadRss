@@ -89,10 +89,13 @@ export default class EntryAbility extends UIAbility {
           .catch((error: Error) => {
             Logger.error(`Article cleanup failed: ${error.message}`);
           });
-        if (accountRepository.isFirstRun()) {
-          // Android enqueues a one-time WorkManager job; never block UI loading on it.
+        // First install always syncs the starter feed. On later launches only
+        // sync when the "启动时同步" setting is on — mirrors Android's
+        // AbstractRssRepository.initSync() reading Account.syncOnStart.
+        // Never block UI loading on network work.
+        if (accountRepository.isFirstRun() || settingsStore.get().syncOnLaunch) {
           rssRepository.syncAll().catch((error: Error) => {
-            Logger.error(`Initial sync failed: ${error.message}`);
+            Logger.error(`Startup sync failed: ${error.message}`);
           });
         }
         AppStorage.setOrCreate<boolean>('darkMode', settingsStore.get().darkMode);

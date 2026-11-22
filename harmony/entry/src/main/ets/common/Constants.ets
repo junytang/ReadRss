@@ -32,9 +32,19 @@ export const FILTER_UNREAD: string = 'unread';
 export const FILTER_STARRED: string = 'starred';
 export const FILTER_ALL: string = 'all';
 
+/** The list scope an article was opened from. Prev/next must follow the same
+ *  feed/group/filter/search as the visible list, not just the article's feed. */
+export interface ArticleScope {
+  feedId: string;
+  groupId: string;
+  filter: string;
+  searchText: string;
+}
+
 /** Parameters passed through Navigation when opening the reader. */
 export interface ReadingParam {
   articleId: string;
+  scope: ArticleScope;
 }
 
 /** Parameters passed through Navigation when editing an account (empty id = new). */

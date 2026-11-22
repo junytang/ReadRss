@@ -1,5 +1,6 @@
 import {
   AccountEditorParam,
+  ArticleScope,
   EmptyNavParam,
   FontPickerParam,
   ROUTE_ARTICLE_LIST_STYLE,
@@ -29,8 +30,11 @@ export function openFlow(feedId: string, feedTitle: string): void {
   navStack.pushPathByName(ROUTE_FLOW, param);
 }
 
-export function openArticle(articleId: string): void {
-  const param: ReadingParam = { articleId: articleId };
+export function openArticle(articleId: string, scope?: ArticleScope): void {
+  const param: ReadingParam = {
+    articleId: articleId,
+    scope: scope ?? { feedId: '', groupId: '', filter: '', searchText: '' },
+  };
   navStack.pushPathByName(ROUTE_READING, param);
 }
 

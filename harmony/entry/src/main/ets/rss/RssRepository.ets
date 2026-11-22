@@ -75,16 +75,21 @@ class FeedRepository {
     );
   }
 
-  /** Android prefetchArticleId: previous/next article in the same feed.
+  /** Android prefetchArticleId: previous/next article in the visible list.
+   *  Uses the scope captured when the article was opened (feed/group/filter/
+   *  search), so "全部" spans every feed instead of staying in one source.
    *  Takes the already-loaded article so no extra full-body read is needed. */
-  async neighborIds(article: Article): Promise<ArticleNeighbors> {
+  async neighborIds(
+    article: Article,
+    feedId: string = '', filter: string = '', groupId: string = '', searchText: string = ''
+  ): Promise<ArticleNeighbors> {
     const empty: ArticleNeighbors = { previous: '', next: '' };
-    if (!article || article.feedId.length === 0) {
+    if (!article || article.id.length === 0) {
       return empty;
     }
     const account: Account = await this.activeAccount();
     return database.neighborArticleIds(
-      account.id, article.feedId, article.id, article.publishedAt
+      account.id, article.id, article.publishedAt, feedId, filter, groupId, searchText
     );
   }
 
