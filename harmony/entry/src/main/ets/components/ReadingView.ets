@@ -39,6 +39,9 @@ export struct ReadingView {
   @State feedIconUrl: string = '';
 
   private controller: webview.WebviewController = new webview.WebviewController();
+  // buildHtml is async (AVIF conversion). Guard so a stale render (e.g. an
+  // older style change finishing after a newer one) cannot overwrite the HTML.
+  private htmlSeq: number = 0;
 
   aboutToAppear(): void {
     this.load();
@@ -59,16 +62,14 @@ export struct ReadingView {
         break;
       }
     }
-    this.html = await this.buildHtml(article);
-    this.pushHtml();
+    await this.renderHtml(article);
     Logger.info(`Open article: cachedFull=${article.fullContent.length} cachedBody=${article.content.length}`);
 
     if (!rssRepository.hasCurrentFullContent(article) && article.link.length > 0) {
       rssRepository.ensureFullContent(this.articleId).then(async (updated: Article | undefined) => {
         if (updated && updated.fullContent.length > 0) {
           this.article = updated;
-          this.html = await this.buildHtml(updated);
-          this.pushHtml();
+          await this.renderHtml(updated);
         }
       }).catch((error: Error) => {
         Logger.error(`Background full content failed: ${error.message}`);
@@ -98,7 +99,17 @@ export struct ReadingView {
     if (!this.article) {
       return;
     }
-    this.html = await this.buildHtml(this.article);
+    await this.renderHtml(this.article);
+  }
+
+  /** Build HTML async and apply it only if no newer render superseded it. */
+  private async renderHtml(article: Article): Promise<void> {
+    const seq: number = ++this.htmlSeq;
+    const html: string = await this.buildHtml(article);
+    if (seq !== this.htmlSeq) {
+      return; // a newer style/content render won; discard this stale result
+    }
+    this.html = html;
     this.pushHtml();
   }
 

@@ -25,7 +25,7 @@ export default class EntryAbility extends UIAbility {
     WindowInsets.top = top > 0 ? top : 28;
     WindowInsets.bottom = bottom > 0 ? bottom : 16;
     AppStorage.set<number>('topInset', WindowInsets.top);
-    AppStorage.set<number>('bottomInset', WindowInsets.bottom);
+    AppStorage.setOrCreate<number>('bottomInset', WindowInsets.bottom);
     // Publish the usable window height so the article list can size its first
     // batch to roughly two screens instead of a hard-coded row count.
     try {
