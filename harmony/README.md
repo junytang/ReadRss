@@ -106,38 +106,38 @@ harmony/
 - [x] `markReadOnOpen` 生效：阅读页按该设置决定是否标已读（当前无条件标已读）。（已实现：`load()` 中按设置值决定是否乐观标已读。）
 
 **同步**
-- [ ] 后台定时同步：WorkManager 等价能力（`@ohos.resourceschedule.backgroundTaskManager`）+ 按账号同步间隔 + 仅 WiFi / 仅充电约束 + 指数退避。
+- [ ] ~~后台定时同步：WorkManager 等价能力（`@ohos.resourceschedule.backgroundTaskManager`）+ 按账号同步间隔 + 仅 WiFi / 仅充电约束 + 指数退避。~~
 - [ ] 通知：声明并申请通知权限、建立通知渠道、点击直达文章；补齐 Local 同步通知（当前仅 Fever/GReader 发通知且未申请权限）。
 - [ ] 通知去重状态持久化（当前「每源一条」依赖内存 Map，进程重启后丢失）。
 
 ### P1 — 重要行为对齐
 
 **导航与入口**
-- [ ] 返回键特殊行为：根列表页返回退到后台；搜索/批量/抽屉展开时返回先收起面板。
-- [ ] 深链 / 外部入口：`ACTION_VIEW`、`ACTION_SEND`（分享订阅 URL）、`article.id`/`feed.id`/`group.id` extras、通知点击跳转。
+- [ ] ~~返回键特殊行为：根列表页返回退到后台；搜索/批量/抽屉展开时返回先收起面板。~~
+- [ ] ~~深链 / 外部入口：`ACTION_VIEW`、`ACTION_SEND`（分享订阅 URL）、`article.id`/`feed.id`/`group.id` extras、通知点击跳转。~~
 - [ ] 「起始页」（Feeds / Flow）与「默认筛选」（星标/未读/全部）设置。
 - [ ] 独立单源列表路由 `FlowPage` 接线（`openFlow` 当前无任何调用方）。
 
 **文章列表**
-- [ ] 未读排序切换 Latest / Earliest（DB 已支持 ASC，缺 UI 开关）。
-- [ ] 左右滑动作可配（None / 标已读 / 标星标，左右分别设置）；当前仅有固定左滑标已读。
-- [ ] 长按菜单补「分享」项（当前只有 4 项）。
-- [ ] 批量标记按时间分档：1 天 / 3 天 / 7 天 / 全部（当前只有「全部标已读」）。
-- [ ] 列表显示项开关：源图标、源名、缩略图、摘要长度（无/短/长）、已读灰显策略。
+- [x] 未读排序切换 Latest / Earliest：设置 > 文章列表中的开关；排序方向同时影响长按「标记上/下面文章」的方向。
+- [x] 左右滑动作可配（无 / 标已读 / 标星标，左右分别设置），选项以图标呈现；滑动按钮也是图标。默认右滑收藏、左滑标已读（对齐 Android）。
+- [x] 长按菜单补「分享」项（系统分享面板）。
+- [x] 批量标记按时间分档：1 天 / 3 天 / 7 天 / 全部（顶栏按钮的标准弹出菜单）。
+- [x] 列表显示项开关：源图标、源名、缩略图、摘要长度（无/短/2 行/3 行）。首屏预估条目数已按这些开关调整行高估算。已读灰显策略按需求未实现（保留现有固定灰显）。
 
 **阅读页**
-- [ ] 全文 / 摘要即时切换按钮（当前 `showFullContent` 已移除，始终抓全文）。
-- [ ] 底部操作栏：标已读/未读、星标、下一篇、TTS、全文切换。
-- [ ] 打开链接方式 6 选 1（CustomTabs / 默认浏览器 / 指定包 / 总是询问等）+ 指定浏览器。
-- [ ] 分享内容设置（仅链接 / 标题+链接）。
-- [ ] 顶栏点击回顶、阅读样式快捷入口。
+- [ ] ~~全文 / 摘要即时切换按钮（当前 `showFullContent` 已移除，始终抓全文）。~~
+- [ ] ~~底部操作栏：标已读/未读、星标、下一篇、TTS、全文切换。~~
+- [ ] ~~打开链接方式 6 选 1（CustomTabs / 默认浏览器 / 指定包 / 总是询问等）+ 指定浏览器。~~
+- [ ] ~~分享内容设置（仅链接 / 标题+链接）。~~
+- [ ] ~~顶栏点击回顶、阅读样式快捷入口。~~
 
 **账号与同步**
 - [ ] 账号详情页：连接信息四项可改（服务器/用户名/密码/证书）、清空文章、删除。
-- [ ] 客户端证书使用系统 KeyChain 选择（当前仅保存别名字符串，未真正用于 TLS）。
-- [ ] 账号级同步策略设置：同步间隔、仅 WiFi、仅充电、同步屏蔽列表（字段已持久化但无 UI、无逻辑读取）。
+- [ ] ~~客户端证书使用系统 KeyChain 选择（当前仅保存别名字符串，未真正用于 TLS）。~~
+- [ ] ~~账号级同步策略设置：同步间隔、仅 WiFi、仅充电、同步屏蔽列表（字段已持久化但无 UI、无逻辑读取）。~~
 - [ ] `ReaderWorker`（并发全文抓取）与 `WidgetUpdateWorker`（同步后刷新小组件）。
-- [ ] 同步日志 + 故障排查页：Worker 状态、错误日志查看/复制/清空。
+- [ ] ~~同步日志 + 故障排查页：Worker 状态、错误日志查看/复制/清空。~~
 - [ ] DiffMapHolder 等价的离线已读状态批处理（当前为 `ReadStatusBatcher`，能力不完全等价）。
 
 ### P2 — 体验增强与样式
@@ -147,39 +147,147 @@ harmony/
 - [ ] 自适应双栏（列表 + 详情）+ 分栏拖拽手柄 + 三态导航按钮（关闭/隐藏列表/展开列表）。
 
 **文章列表**
-- [ ] 底部下拉换源（不操作 / 加载下一源 / 标已读并加载下一源）。
+- [ ] ~~底部下拉换源（不操作 / 加载下一源 / 标已读并加载下一源）。~~
 - [ ] 粘性日期头、Today/Yesterday 日期文案、显示时间开关。
 - [ ] 筛选栏样式（图标 / 图标+文字 / 仅选中带文字）、padding、色调层级。
 
 **阅读页**
-- [ ] TTS 朗读：按行分段播报、进度环、长按进入系统 TTS 设置。
+- [ ] ~~TTS 朗读：按行分段播报、进度环、长按进入系统 TTS 设置。~~
 - [ ] 图片全屏查看器：4x 缩放、点击关闭、长按保存、403 图片 Referer 重试。
-- [ ] 阅读主题预设（MaterialYou / Reeder / Paper / Custom）。
+- [ ] ~~阅读主题预设（MaterialYou / Reeder / Paper / Custom）。~~
 - [ ] 自动隐藏工具栏（滚动时收起顶/底栏）。
 - [ ] 排版设置：字间距、文字对齐、正文/标题/子标题粗体与大写、图片内边距/圆角/最大化、阅读页色调层级。
 
 **订阅页 / 设置**
-- [ ] 隐藏空分组、分组总是展开、全部展开/收起按钮。
-- [ ] BestIconFinder 站点 favicon 探测（当前只用服务端返回的图标 URL）。
+- [ ] ~~隐藏空分组、分组总是展开、全部展开/收起按钮。~~
+- [ ] ~~BestIconFinder 站点 favicon 探测（当前只用服务端返回的图标 URL）。~~
 - [ ] 设置项补齐：阅读器样式、文章列表样式、订阅页样式、交互、深色三态（跟随系统/开/关）、AMOLED 黑、基础字体方案、外部字体导入。
 
 ### P3 — 平台外围能力
 
-- [ ] 桌面小组件：列表视图 + 卡片视图（Article of the Day），主题 SansSerif/Serif，数据源 Account/Group/Feed，配置页与点击跳文章。
-- [ ] 应用内更新检查（GitHub releases、设置页 banner、跳过此版本）。
-- [ ] 崩溃上报（未异常捕获 + 报告页 + 复制 Markdown 报告）。
-- [ ] Tips & Support 页、Sponsor、GitHub/Telegram/Help 链接、开源许可列表。
-- [ ] 40+ 种语言本地化（Android 有 51 个翻译资源目录；当前鸿蒙版全中文硬编码）。
-- [ ] Material You 动态取色（壁纸/基础色板 + 自定义主色 HEX）。
-- [ ] 原生 Compose 阅读渲染器 + 渲染器切换（平台差异，需基于 ArkUI 重新设计）。
-- [ ] 启动欢迎页 / 服务条款同意流程。
-- [ ] 粗体字符（Jiffy Reader 风格）、RTL/Bidi、触觉反馈、筛选切换点击音效、自绘滚动指示条。
+- [ ] ~~桌面小组件：列表视图 + 卡片视图（Article of the Day），主题 SansSerif/Serif，数据源 Account/Group/Feed，配置页与点击跳文章。~~
+- [ ] ~~应用内更新检查（GitHub releases、设置页 banner、跳过此版本）。~~
+- [ ] ~~崩溃上报（未异常捕获 + 报告页 + 复制 Markdown 报告）。~~
+- [ ] ~~Tips & Support 页、Sponsor、GitHub/Telegram/Help 链接、开源许可列表。~~
+- [ ] ~~40+ 种语言本地化（Android 有 51 个翻译资源目录；当前鸿蒙版全中文硬编码）。~~
+- [ ] ~~Material You 动态取色（壁纸/基础色板 + 自定义主色 HEX）。~~
+- [ ] ~~原生 Compose 阅读渲染器 + 渲染器切换（平台差异，需基于 ArkUI 重新设计）。~~
+- [ ] ~~启动欢迎页 / 服务条款同意流程。~~
+- [ ] ~~粗体字符（Jiffy Reader 风格）、RTL/Bidi、触觉反馈、筛选切换点击音效、自绘滚动指示条。~~
 
 ### 有意裁剪（不建议直接照搬）
 
 - Feedly / Inoreader 实际协议（Android 同样禁用入口，回退到本地服务）。
 - **性能优化（偏离 Android）**：GReader 同步时已读 ID 只取前 3 页（上限 3000）且只用于本地状态对账，不抓正文；正文只抓未读与星标。Android 会抓取全部已读 ID 正文，首次同步可能产生上万次请求。
 - WebView 中的图片点击 / 保存回调与 JS Bridge（平台 WebView 能力差异，已用代理与系统分享替代部分能力）。
+
+## 关键技术决策（已定，勿随意推翻）
+
+- 当前工程配置（以代码为准）：`build-profile.json5` 中 `compatibleSdkVersion = "6.0.0(20)"`、
+  `targetSdkVersion = "6.1.0(23)"`；`oh-package.json5` 中 `modelVersion = "5.1.0"`。
+  配置里**没有** `compileSdkVersion` 或 `arkTSVersion` 字段。本机 SDK 为 API 26，按上述配置可正常编译。
+- 无第三方 ohpm 依赖，只用系统 Kit。
+- `showFullContent` 设置项已移除——全文抓取始终开启。
+- 阅读器「更多」菜单用 ArkUI 系统 `bindMenu`：浏览器打开 / 复制链接 / 系统分享。
+- AVIF 图片：设备 ArkWeb 不能解码，走公共代理 `https://images.weserv.nl/?url=...&output=jpeg...`，通过虚假 HTTPS URL + WebView `onInterceptRequest` 暴露（见 `common/ArticleImageConverter.ets` / `components/ReadingView.ets`）。
+- Feed / 分组按最新文章时间降序排序。
+- 订阅抽屉宽度 66%（从 82% 调小）。
+- 分页加载：`onReachEnd` 触发，递增 limit 重查；首批约 20–80 行，延迟补齐至 `FULL_PAGE_SIZE=100`，之后每次 `LOAD_MORE_STEP=100`。
+- 分批大小设置值：50 / 100 / 200 / 300 / 500，默认 **100**（`SettingsStore` + `AppSettings.fetchBatchSize`）。
+- GReader ID 分页大小固定 **1000**；`fetchBatchSize` 只控制正文抓取/入库批次。
+- GReader token 持久化 **30 天**（`rss/GReaderTokenStore.ets`），401 时清除重登。
+- 已读 ID 对账**每次 sync 都做**，无时间间隔节流。
+- `listArticles` 排序带次级键：`ORDER BY published_at DESC, a.id DESC`（ASC 同理）——防止相同时间戳文章在重查时相对顺序跳变。
+- AppScope 与 entry 有重复图标文件（分层图标配置，勿随意删）。
+- `.appanalyzer/` 已在 `.gitignore` 排除。
+
+## 载入 / 同步逻辑（核心，最易出 bug）
+
+### 三个 tick（AppStorage）
+
+定义在 `rss/SyncProgress.ets`：
+
+| tick | 发出时机 | 节流 |
+|---|---|---|
+| `syncFirstBatchTick` | 首批入库后（`signalFirstBatch`），**全 sync 只发一次**；`notifyContentReady`/`notifySyncFinal` 也会兜底调用但被 `firstBatchNotified` 挡住 | 无 |
+| `feedDataTick` | 每批入库后（`notifySyncBatch`） | 800ms（`NOTIFY_INTERVAL_MS`） |
+| `syncFinishedTick` | sync 真正结束（`notifySyncFinal`） | 无 |
+
+`beginSync()` 在每次 sync 开始时重置 `lastNotify` 与 `firstBatchNotified`。
+`notifySyncFinal()` 在设置 `feedDataTick` 的同时设置 `syncFinishedTick`。
+
+三种同步服务（`GoogleReaderSyncService` / `FeverSyncService` / `LocalSyncService`）都必须完整发
+`beginSync → notifySyncBatch → notifyContentReady → notifySyncFinal` 全序列。
+`RssRepository.syncAll()` 不再额外发 tick（避免重复全量 reload）。
+
+### ArticleListView 的 watcher 分工（改动务必保持此分工）
+
+- `onSyncFirstBatch()`（`syncFirstBatchTick`）：
+  - 若 `isSyncing`（页面下拉刷新）→ `isRefreshing=false` **停转圈**
+  - **`load(false, true)` 立即重载列表**——首批已入库，让新文章马上显示（修复"转圈停了但 UI 不变、等 toast 才瞬间更新"的关键，勿删）
+- `onSyncBatch()`（`feedDataTick`）：**只** `refreshCounts()` + `refreshFeeds()`（未读数/徽标实时刷新），**不碰列表**（每批都 reload 会打断阅读）
+- `onSyncFinished()`（`syncFinishedTick`）：
+  - `load(false, true)` 最终补全列表（保留分页深度）
+  - 若 `!isSyncing`（首装/启动同步）→ 弹 toast「同步完成」；页面下拉刷新由 `sync()` 自己弹，避免重复
+
+### 分页与竞态护栏
+
+- **分页机制**：不是分批 append，而是**递增 limit 重查**，SQL 固定 `ORDER BY published_at DESC, id DESC`，永远返回"从头开始的完整前 N 条"。`ForEach` 以 article.id 为 key，已有行不重建，顺序稳定。
+- **序号护栏**：
+  - `loadSeq`：`load()` 每次递增，每个 `await` 后校验 → 过期 load 结果丢弃
+  - `pageLoadSeq`：`load()` 与 `loadMore()` 都递增；`loadMore()` 捕获后校验 → 过期 loadMore 不能覆盖新列表
+  - `orderKey`：feed/group/filter/search/排序方向的快照；分批追加捕获后校验，排序切换使在途追加失效
+- **分页深度**：`load(resetPaging=true, fromSync=false, snapToTop=true)`——真正切换上下文时回顶；sync 自身刷新传 `fromSync=true` 保留滚动深度。
+- **上下文切换护栏**：`suppressScrollMark` + `awaitingTopConfirm`——替换行后 List 仍持旧 offset，回顶确认前禁止滚动标记，避免误标未读。
+
+### sync 期间冲突请求的忽略规则
+
+- 重复下拉（`sync()` 重入）→ 停本次转圈 + toast「正在同步中，请稍候」，不发起新 sync
+- `loadMore()` 在 sync 期间 → **静默忽略**（滚动自动触发，弹 toast 会打扰）
+- 外部 `load()` 在 sync 期间 → 忽略（`isSyncing && !fromSync`）；sync 自身传 `fromSync=true` 放行
+- `refreshCounts` / `refreshFeeds` 在 sync 期间 → 保留（期望的实时徽标更新）
+
+### 两条 sync 路径的 toast/转圈时序
+
+- **首装 / 启动同步**（`EntryAbility` 直接调 `rssRepository.syncAll()`）：`isSyncing=false` → `onSyncFinished` 弹「同步完成」；无转圈。
+- **页面下拉刷新**（`ArticleListView.sync()`）：置 `isSyncing=true` → `syncAll()` → `onSyncFinished` 因 `isSyncing=true` 不弹 toast → `sync()` 自己弹一次 → `finally` 复位。`sync()` 内无 `await load(...)`（由 `onSyncFinished` 统一负责）。
+
+### FeedListView 的差异
+
+- `FeedListView` **不监听 `syncFinishedTick`**，列表刷新只靠自身 `sync()` 里的 `await this.load()`——不是冗余，勿删。
+- 同样有 `isSyncing` 重入保护。
+
+### 设置通知机制
+
+`SettingsStore` 的所有 setter 改动即写 AppStorage，AppStorage 是唯一响应式数据源：
+- 外观/字体/字号 → 各页 `@StorageProp` 即时刷新；
+- 文章列表行为 → 写对应键 + bump `listSettingsTick` 触发重载；
+- `markReadOnScroll` / `markReadOnOpen` / `activeAccountId` 等 → 写对应键，常驻页即时响应，不依赖 `load()`/`onShown` 时机。
+
+## 真机日志基线（用于验证）
+
+首装同步完成时应看到：
+```
+greader toFetch=N batchSize=100 (local=0)
+greader batch committed ... （按批）
+onSyncFirstBatch → home load done articles=<首批数>
+...
+home onSyncFinished -> reload list
+home load done articles=<全部未读数> displayLimit=<分页深度>   ← 关键：列表补全
+toast 同步完成（仅一次）
+```
+下拉刷新（无新文章）应看到：
+```
+toFetch=0 → contentReady signaled → onSyncFinished → load done → toast 同步完成（仅一次）
+```
+有新文章时，转圈一停就应有 `home load done`（首批），而不是等 toast 才更新。
+
+## 已知待办 / 注意事项
+
+- `SYNCDBG` 诊断日志已于 2026-11-21 **全部清理**（40 处 / 7 个文件），`Logger.error` 等错误日志全部保留。不要在 sync/load 热路径重新引入高频 `Logger.info`。
+- 跨页面并发 sync：`ArticleListView` 与 `FeedListView` 各有独立 `isSyncing`，理论上可同时发起 sync 并发写库（用户未要求处理）。
+- 服务端层面：sync 期间用户的标记操作可能被 GReader 的 toRead/toUnread 对账覆盖（数据一致性问题，未处理）。
+- 用户偏好系统组件；不要引入自定义绘制替代系统组件。
 
 ## 下一步建议
 
