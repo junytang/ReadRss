@@ -8,6 +8,19 @@ import { Logger } from './Logger';
 class FeedIconCacheImpl {
   private memory: Map<string, string> = new Map<string, string>();
   private inFlight: Set<string> = new Set<string>();
+  private tickTimer: number = -1;
+
+  /** Coalesce icon-ready notifications: publishing one tick per icon made the
+   *  article list rebuild its whole ForEach once per downloaded favicon. */
+  private publishTick(): void {
+    if (this.tickTimer >= 0) {
+      return;
+    }
+    this.tickTimer = setTimeout(() => {
+      this.tickTimer = -1;
+      AppStorage.set<number>('feedIconTick', Date.now());
+    }, 300);
+  }
 
   private directory(context: common.Context): string {
     return `${context.filesDir}/feed_icons`;
@@ -76,7 +89,7 @@ class FeedIconCacheImpl {
           fs.closeSync(file);
         }
         this.memory.set(url, path);
-        AppStorage.set<number>('feedIconTick', Date.now());
+        this.publishTick();
         return path;
       } finally {
         request.destroy();

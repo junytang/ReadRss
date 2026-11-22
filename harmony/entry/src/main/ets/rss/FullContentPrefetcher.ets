@@ -4,20 +4,22 @@ import { Logger } from '../common/Logger';
 
 /**
  * Sliding-window prefetcher for article full text.
- * Keeps roughly 2 screens (30 items) of full content ahead of the visible item so
- * that tapping an article never has to wait for a network fetch.
+ * Keeps a small buffer of full content ahead of the visible item so tapping an
+ * article usually needs no network wait. Each buffered item costs one request
+ * to the origin site, so the window is deliberately small: it only has to cover
+ * the next few rows the user is likely to tap, not the whole page.
  */
 class ReadYouFullContentPrefetcher {
-  /** Keep 2 screens of full text ahead; cap to avoid an unbounded burst. */
-  private static readonly BUFFER_MULTIPLIER: number = 2;
-  private static readonly DEFAULT_BUFFER: number = 30;
-  private static readonly MAX_BUFFER: number = 60;
-  private static readonly CONCURRENCY: number = 3;
+  /** One extra screen of full text ahead; a big window fired a request per row. */
+  private static readonly BUFFER_MULTIPLIER: number = 1;
+  private static readonly DEFAULT_BUFFER: number = 6;
+  private static readonly MAX_BUFFER: number = 10;
+  private static readonly CONCURRENCY: number = 2;
 
   // Cap the tracking sets. They only exist to avoid duplicate fetches; once a
-  // user scrolls far, old ids are irrelevant. Clearing them bounds memory at the
-  // cost of at most one redundant fetch for a distant article.
-  private static readonly MAX_TRACKED: number = 600;
+  // user scrolls far, old ids are irrelevant. Entries are evicted oldest-first
+  // so the articles still near the viewport keep their "already handled" mark.
+  private static readonly MAX_TRACKED: number = 300;
   private done: Set<string> = new Set<string>();
   private failed: Set<string> = new Set<string>();
   private inFlight: Set<string> = new Set<string>();
@@ -25,9 +27,17 @@ class ReadYouFullContentPrefetcher {
   private pending: string[] = [];
 
   private trimTracking(): void {
-    if (this.done.size + this.failed.size > ReadYouFullContentPrefetcher.MAX_TRACKED) {
-      this.done.clear();
-      this.failed.clear();
+    this.evictOldest(this.done);
+    this.evictOldest(this.failed);
+  }
+
+  private evictOldest(tracked: Set<string>): void {
+    while (tracked.size > ReadYouFullContentPrefetcher.MAX_TRACKED) {
+      const oldest: string | undefined = tracked.keys().next().value;
+      if (oldest === undefined) {
+        return;
+      }
+      tracked.delete(oldest);
     }
   }
 
@@ -46,9 +56,13 @@ class ReadYouFullContentPrefetcher {
           ReadYouFullContentPrefetcher.MAX_BUFFER
         )
       : ReadYouFullContentPrefetcher.DEFAULT_BUFFER;
-    const end: number = Math.min(articles.length, firstVisibleIndex + buffer);
+    // Only the visible window and the rows just below it. Scanning from index 0
+    // made every scroll event re-queue the whole list once old ids had been
+    // evicted from the tracking sets — hundreds of origin requests per scroll.
+    const start: number = Math.max(0, firstVisibleIndex);
+    const end: number = Math.min(articles.length, start + buffer);
     const newly: string[] = [];
-    for (let i = 0; i < end; i++) {
+    for (let i = start; i < end; i++) {
       const id: string = articles[i].id;
       if (articles[i].fullContent.length > 0) {
         this.done.add(id);

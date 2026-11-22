@@ -104,9 +104,7 @@ export class LocalSyncService implements FeedSyncService {
   }
 
   async markRead(account: Account, articleIds: string[], read: boolean, before?: number): Promise<string[]> {
-    for (const id of articleIds) {
-      await database.setArticleRead(id, read);
-    }
+    await database.setStates(articleIds, read, undefined);
     return articleIds.slice();
   }
 

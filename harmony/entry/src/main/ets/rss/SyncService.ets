@@ -7,6 +7,13 @@ export interface SyncResult {
   newArticles: number;
 }
 
+/** Pending notification for one feed, coalesced across all sync batches. */
+export interface FeedNotify {
+  feedTitle: string;
+  firstTitle: string;
+  count: number;
+}
+
 /** Contract shared by the local, Fever and Google Reader sync implementations. */
 export interface FeedSyncService {
   readonly canImportSubscription: boolean;

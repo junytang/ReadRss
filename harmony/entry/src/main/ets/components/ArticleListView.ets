@@ -1,6 +1,7 @@
 import { common } from '@kit.AbilityKit';
 import { Article, Feed, FeedGroup, filterFeedsByDrawer } from '../model/Models';
 import { rssRepository } from '../rss/RssRepository';
+import { ArticleCounts } from '../data/Database';
 import { fullContentPrefetcher } from '../rss/FullContentPrefetcher';
 import { Logger } from '../common/Logger';
 import { settingsStore } from '../data/SettingsStore';
@@ -188,15 +189,16 @@ export struct ArticleListView {
     // Subtract the not-yet-persisted optimistic marks so a DB re-read never
     // jumps back to the stale (higher) unread value while the batcher is pending.
     const globalDelta: number = AppStorage.get<number>('optimisticUnreadDelta') ?? 0;
-    const scoped: number = await rssRepository.unreadCount(this.currentFeedId, this.currentGroupId);
-    this.unreadCount = Math.max(0, scoped - this.scopeUnreadDelta);
-    this.starredCount = await rssRepository.articleCount(FILTER_STARRED, this.currentFeedId, this.currentGroupId);
-    this.allCount = await rssRepository.articleCount(FILTER_ALL, this.currentFeedId, this.currentGroupId);
+    // Scoped + global counts each need one aggregate query instead of three.
+    const scoped: ArticleCounts = await rssRepository.articleCounts(this.currentFeedId, this.currentGroupId);
+    this.unreadCount = Math.max(0, scoped.unread - this.scopeUnreadDelta);
+    this.starredCount = scoped.starred;
+    this.allCount = scoped.total;
     // Global totals for the drawer top row, never scoped by feed/group.
-    const global: number = await rssRepository.unreadCount();
-    this.globalUnread = Math.max(0, global - globalDelta);
-    this.globalStarred = await rssRepository.articleCount(FILTER_STARRED);
-    this.globalAll = await rssRepository.articleCount(FILTER_ALL);
+    const global: ArticleCounts = await rssRepository.articleCounts();
+    this.globalUnread = Math.max(0, global.unread - globalDelta);
+    this.globalStarred = global.starred;
+    this.globalAll = global.total;
   }
 
   /** First batch size: roughly two screens of rows, adapted to the device.
@@ -474,9 +476,14 @@ export struct ArticleListView {
 
   /** Optimistic UI update: change rows first, persist in the background. */
   private setLocalRead(ids: string[], read: boolean): void {
+    if (ids.length === 0) {
+      return;
+    }
+    // Set lookup keeps this O(rows) instead of O(rows × ids) on big selections.
+    const targets: Set<string> = new Set<string>(ids);
     const next: Article[] = [];
     for (const article of this.articles) {
-      next.push(ids.indexOf(article.id) >= 0
+      next.push(targets.has(article.id)
         ? ArticleListView.withReadState(article, read) : article);
     }
     this.articles = next;
@@ -540,19 +547,19 @@ export struct ArticleListView {
     this.lastMarkedIndex = 0;
     this.lastPrefetchIndex = 0;
     this.scrollMarksPending = false;
-    const unread: number = await rssRepository.unreadCount(this.currentFeedId, this.currentGroupId);
+    const scopedCounts: ArticleCounts = await rssRepository.articleCounts(
+      this.currentFeedId, this.currentGroupId
+    );
     if (seq !== this.loadSeq) return;
-    this.unreadCount = unread;
-    const starred: number = await rssRepository.articleCount(FILTER_STARRED, this.currentFeedId, this.currentGroupId);
-    if (seq !== this.loadSeq) return;
-    this.starredCount = starred;
-    const all: number = await rssRepository.articleCount(FILTER_ALL, this.currentFeedId, this.currentGroupId);
-    if (seq !== this.loadSeq) return;
-    this.allCount = all;
+    this.unreadCount = scopedCounts.unread;
+    this.starredCount = scopedCounts.starred;
+    this.allCount = scopedCounts.total;
     // Drawer global totals, never scoped by the selected feed/group.
-    this.globalUnread = await rssRepository.unreadCount();
-    this.globalStarred = await rssRepository.articleCount(FILTER_STARRED);
-    this.globalAll = await rssRepository.articleCount(FILTER_ALL);
+    const globalCounts: ArticleCounts = await rssRepository.articleCounts();
+    if (seq !== this.loadSeq) return;
+    this.globalUnread = globalCounts.unread;
+    this.globalStarred = globalCounts.starred;
+    this.globalAll = globalCounts.total;
     fullContentPrefetcher.ensureWindow(
       this.articles, this.firstVisibleIndex, this.visibleCount
     );

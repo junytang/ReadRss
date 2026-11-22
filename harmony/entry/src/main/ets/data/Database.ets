@@ -2,8 +2,42 @@ import { relationalStore } from '@kit.ArkData';
 import { common } from '@kit.AbilityKit';
 import { DB_NAME } from '../common/Constants';
 import { Account, AccountType, EMPTY_SECURITY_KEY, isValidAccountType } from '../account/AccountModels';
-import { Article, Feed, FeedGroup } from '../model/Models';
+import { Article, ArticleNeighbors, Feed, FeedGroup } from '../model/Models';
 import { Logger } from '../common/Logger';
+
+/** Unread / starred / total counts for one scope, read in a single query. */
+export interface ArticleCounts {
+  unread: number;
+  starred: number;
+  total: number;
+}
+
+/** Minimal read/star state of an article, used for remote reconciliation. */
+export interface ArticleState {
+  id: string;
+  isRead: boolean;
+  isStarred: boolean;
+}
+
+/** Column offsets resolved once per ResultSet instead of once per row. */
+interface ArticleColumns {
+  id: number;
+  feedId: number;
+  feedTitle: number;
+  title: number;
+  author: number;
+  link: number;
+  summary: number;
+  content: number;
+  fullContent: number;
+  imageUrl: number;
+  publishedAt: number;
+  isRead: number;
+  isStarred: number;
+}
+
+/** Max ids per `UPDATE ... WHERE id IN (...)`; SQLite's variable limit is 999. */
+const STATE_UPDATE_CHUNK: number = 500;
 
 /**
  * RDB-backed local store. Counterpart of Room's `Reader` database, extended
@@ -12,6 +46,40 @@ import { Logger } from '../common/Logger';
 class ReadYouDatabase {
   private store?: relationalStore.RdbStore;
   private initTask?: Promise<void>;
+  // Explicit transactions (beginTransaction) hold the store's single write
+  // connection until commit. Serialize them so a user mark-read cannot overlap
+  // a sync's batch insert (which would throw "already in transaction" or time
+  // out waiting for the connection).
+  private txChain: Promise<void> = Promise.resolve();
+
+  /** Run `body` inside a serialized transaction. commit() runs outside the
+   *  body's catch so a commit failure is never masked by rollBack(). */
+  private async withTransaction<T>(body: () => Promise<T>): Promise<T> {
+    const job: Promise<T> = this.txChain.then(async () => {
+      const store: relationalStore.RdbStore = this.db();
+      store.beginTransaction();
+      let result: T;
+      try {
+        result = await body();
+      } catch (error) {
+        try { store.rollBack(); } catch (rbError) { /* keep original error */ }
+        throw error as Error;
+      }
+      try {
+        store.commit();
+      } catch (error) {
+        try { store.rollBack(); } catch (rbError) { /* keep commit error */ }
+        throw error as Error;
+      }
+      return result;
+    });
+    // Keep the chain alive regardless of this job's outcome so later writes
+    // still run; swallow the error here (the caller gets it from `job`).
+    this.txChain = new Promise<void>((resolve: () => void) => {
+      job.then(() => resolve(), () => resolve());
+    });
+    return job;
+  }
 
   async init(context: common.Context): Promise<void> {
     if (this.store) {
@@ -267,11 +335,14 @@ class ReadYouDatabase {
       [accountId]
     );
     try {
+      const idCol: number = this.colIndex(rs, 'id');
+      const nameCol: number = this.colIndex(rs, 'name');
+      const sortCol: number = this.colIndex(rs, 'sort_order');
       while (this.nextRow(rs)) {
         result.push({
-          id: this.str(rs, this.colIndex(rs, 'id')),
-          name: this.str(rs, this.colIndex(rs, 'name')),
-          sortOrder: this.lng(rs, this.colIndex(rs, 'sort_order')),
+          id: this.str(rs, idCol),
+          name: this.str(rs, nameCol),
+          sortOrder: this.lng(rs, sortCol),
         });
       }
     } finally {
@@ -298,31 +369,76 @@ class ReadYouDatabase {
   // -------------------------------- feeds ---------------------------------
 
   async listFeeds(accountId: string): Promise<Feed[]> {
+    // One grouped scan of `article` instead of three correlated subqueries per
+    // feed: this runs on every sync batch tick, so the per-feed subqueries made
+    // badge refreshes cost O(feeds × articles).
     const sql: string =
       `SELECT f.id, f.title, f.url, f.group_id, f.icon_url, f.sort_order,
-              (SELECT COUNT(*) FROM article a WHERE a.feed_id = f.id AND a.is_read = 0) AS unread_count,
-              (SELECT COUNT(*) FROM article a WHERE a.feed_id = f.id AND a.is_starred = 1) AS starred_count,
-              (SELECT MAX(a.published_at) FROM article a WHERE a.feed_id = f.id) AS latest_at
-       FROM feed f WHERE f.account_id = ? ORDER BY latest_at DESC, f.sort_order ASC, f.title ASC`;
+              COALESCE(a.unread_count, 0) AS unread_count,
+              COALESCE(a.starred_count, 0) AS starred_count
+       FROM feed f
+       LEFT JOIN (
+         SELECT feed_id,
+                SUM(CASE WHEN is_read = 0 THEN 1 ELSE 0 END) AS unread_count,
+                SUM(CASE WHEN is_starred = 1 THEN 1 ELSE 0 END) AS starred_count,
+                MAX(published_at) AS latest_at
+         FROM article GROUP BY feed_id
+       ) a ON a.feed_id = f.id
+       WHERE f.account_id = ?
+       ORDER BY a.latest_at DESC, f.sort_order ASC, f.title ASC`;
     const result: Feed[] = [];
     const rs = await this.query(sql, [accountId]);
     try {
+      const idCol: number = this.colIndex(rs, 'id');
+      const titleCol: number = this.colIndex(rs, 'title');
+      const urlCol: number = this.colIndex(rs, 'url');
+      const groupCol: number = this.colIndex(rs, 'group_id');
+      const iconCol: number = this.colIndex(rs, 'icon_url');
+      const sortCol: number = this.colIndex(rs, 'sort_order');
+      const unreadCol: number = this.colIndex(rs, 'unread_count');
+      const starredCol: number = this.colIndex(rs, 'starred_count');
       while (this.nextRow(rs)) {
         result.push({
-          id: this.str(rs, this.colIndex(rs, 'id')),
-          title: this.str(rs, this.colIndex(rs, 'title')),
-          url: this.str(rs, this.colIndex(rs, 'url')),
-          groupId: this.str(rs, this.colIndex(rs, 'group_id')),
-          iconUrl: this.str(rs, this.colIndex(rs, 'icon_url')),
-          sortOrder: this.lng(rs, this.colIndex(rs, 'sort_order')),
-          unreadCount: this.lng(rs, this.colIndex(rs, 'unread_count')),
-          starredCount: this.lng(rs, this.colIndex(rs, 'starred_count')),
+          id: this.str(rs, idCol),
+          title: this.str(rs, titleCol),
+          url: this.str(rs, urlCol),
+          groupId: this.str(rs, groupCol),
+          iconUrl: this.str(rs, iconCol),
+          sortOrder: this.lng(rs, sortCol),
+          unreadCount: this.lng(rs, unreadCol),
+          starredCount: this.lng(rs, starredCol),
         });
       }
     } finally {
       this.closeRs(rs);
     }
     return result;
+  }
+
+  /** Single feed row; used by the reader to resolve its source icon. */
+  async getFeedById(id: string): Promise<Feed | undefined> {
+    const rs = await this.query(
+      `SELECT id, title, url, group_id, icon_url, sort_order
+       FROM feed WHERE id = ? LIMIT 1`,
+      [id]
+    );
+    try {
+      if (this.nextRow(rs)) {
+        return {
+          id: this.str(rs, this.colIndex(rs, 'id')),
+          title: this.str(rs, this.colIndex(rs, 'title')),
+          url: this.str(rs, this.colIndex(rs, 'url')),
+          groupId: this.str(rs, this.colIndex(rs, 'group_id')),
+          iconUrl: this.str(rs, this.colIndex(rs, 'icon_url')),
+          sortOrder: this.lng(rs, this.colIndex(rs, 'sort_order')),
+          unreadCount: 0,
+          starredCount: 0,
+        };
+      }
+    } finally {
+      this.closeRs(rs);
+    }
+    return undefined;
   }
 
   async getFeedByUrl(accountId: string, url: string): Promise<Feed | undefined> {
@@ -420,8 +536,11 @@ class ReadYouDatabase {
     const result: Article[] = [];
     const rs = await this.query(sql, args);
     try {
+      // Resolve column offsets once per query: doing it per row costs a
+      // try/catch + string lookup for every one of the 13 columns.
+      const cols: ArticleColumns = this.articleColumns(rs, !lightweight);
       while (this.nextRow(rs)) {
-        result.push(this.readArticle(rs, !lightweight));
+        result.push(this.readArticle(rs, cols, !lightweight));
       }
     } finally {
       this.closeRs(rs);
@@ -454,7 +573,7 @@ class ReadYouDatabase {
     );
     try {
       if (this.nextRow(rs)) {
-        return this.readArticle(rs);
+        return this.readArticle(rs, this.articleColumns(rs));
       }
     } finally {
       this.closeRs(rs);
@@ -462,43 +581,85 @@ class ReadYouDatabase {
     return undefined;
   }
 
-  private readArticle(rs: relationalStore.ResultSet, includeBody: boolean = true): Article {
+  /** Same as getArticle without the HTML bodies; for callers that only need
+   *  metadata (remote id, title, link). Avoids marshalling a full body. */
+  async getArticleMeta(id: string): Promise<Article | undefined> {
+    const rs = await this.query(
+      `SELECT a.id, a.feed_id, a.feed_title, a.title, a.author, a.link,
+              a.summary, a.image_url, a.published_at, a.is_read, a.is_starred
+       FROM article a WHERE a.id = ? LIMIT 1`,
+      [id]
+    );
+    try {
+      if (this.nextRow(rs)) {
+        return this.readArticle(rs, this.articleColumns(rs, false), false);
+      }
+    } finally {
+      this.closeRs(rs);
+    }
+    return undefined;
+  }
+
+  private articleColumns(rs: relationalStore.ResultSet, includeBody: boolean = true): ArticleColumns {
     return {
-      id: this.str(rs, this.colIndex(rs, 'id')),
-      feedId: this.str(rs, this.colIndex(rs, 'feed_id')),
-      feedTitle: this.str(rs, this.colIndex(rs, 'feed_title')),
-      title: this.str(rs, this.colIndex(rs, 'title')),
-      author: this.str(rs, this.colIndex(rs, 'author')),
-      link: this.str(rs, this.colIndex(rs, 'link')),
-      summary: this.str(rs, this.colIndex(rs, 'summary')),
-      content: includeBody ? this.str(rs, this.colIndex(rs, 'content')) : '',
-      fullContent: includeBody ? this.readText(rs, 'full_content', '') : '',
-      imageUrl: this.str(rs, this.colIndex(rs, 'image_url')),
-      publishedAt: this.lng(rs, this.colIndex(rs, 'published_at')),
-      isRead: this.lng(rs, this.colIndex(rs, 'is_read')) === 1,
-      isStarred: this.lng(rs, this.colIndex(rs, 'is_starred')) === 1,
+      id: this.colIndex(rs, 'id'),
+      feedId: this.colIndex(rs, 'feed_id'),
+      feedTitle: this.colIndex(rs, 'feed_title'),
+      title: this.colIndex(rs, 'title'),
+      author: this.colIndex(rs, 'author'),
+      link: this.colIndex(rs, 'link'),
+      summary: this.colIndex(rs, 'summary'),
+      content: includeBody ? this.colIndex(rs, 'content') : -1,
+      fullContent: includeBody ? this.colIndex(rs, 'full_content') : -1,
+      imageUrl: this.colIndex(rs, 'image_url'),
+      publishedAt: this.colIndex(rs, 'published_at'),
+      isRead: this.colIndex(rs, 'is_read'),
+      isStarred: this.colIndex(rs, 'is_starred'),
     };
   }
 
-  /** Returns the number of articles that were not already in the database. */
+  private readArticle(rs: relationalStore.ResultSet, cols: ArticleColumns, includeBody: boolean = true): Article {
+    return {
+      id: this.str(rs, cols.id),
+      feedId: this.str(rs, cols.feedId),
+      feedTitle: this.str(rs, cols.feedTitle),
+      title: this.str(rs, cols.title),
+      author: this.str(rs, cols.author),
+      link: this.str(rs, cols.link),
+      summary: this.str(rs, cols.summary),
+      content: includeBody && cols.content >= 0 ? this.str(rs, cols.content) : '',
+      fullContent: includeBody && cols.fullContent >= 0 ? this.str(rs, cols.fullContent) : '',
+      imageUrl: this.str(rs, cols.imageUrl),
+      publishedAt: this.lng(rs, cols.publishedAt),
+      isRead: this.lng(rs, cols.isRead) === 1,
+      isStarred: this.lng(rs, cols.isStarred) === 1,
+    };
+  }
+
+  /** Returns the number of articles written. Runs as one transaction: the
+   *  previous per-row commit cost one disk sync per article, which dominated
+   *  large batch inserts (100-500 rows per sync batch). */
   async insertArticles(articles: Article[], accountId: string): Promise<number> {
+    if (articles.length === 0) {
+      return 0;
+    }
     // Android ArticleDao uses OnConflictStrategy.REPLACE.
     const sql: string =
       `INSERT OR REPLACE INTO article
        (id, account_id, feed_id, feed_title, title, author, link, summary, content, full_content,
         image_url, published_at, is_read, is_starred)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
-    let inserted: number = 0;
-    for (const article of articles) {
-      await this.exec(sql, [
-        article.id, accountId, article.feedId, article.feedTitle, article.title,
-        article.author, article.link, article.summary, article.content, article.fullContent,
-        article.imageUrl, article.publishedAt,
-        article.isRead ? 1 : 0, article.isStarred ? 1 : 0,
-      ]);
-      inserted += 1;
-    }
-    return inserted;
+    await this.withTransaction(async () => {
+      for (const article of articles) {
+        await this.exec(sql, [
+          article.id, accountId, article.feedId, article.feedTitle, article.title,
+          article.author, article.link, article.summary, article.content, article.fullContent,
+          article.imageUrl, article.publishedAt,
+          article.isRead ? 1 : 0, article.isStarred ? 1 : 0,
+        ]);
+      }
+    });
+    return articles.length;
   }
 
   async updateArticleContent(id: string, content: string): Promise<void> {
@@ -552,15 +713,31 @@ class ReadYouDatabase {
     if (ids.length === 0) {
       return;
     }
-    if (read !== undefined) {
-      for (const id of ids) {
-        await this.setArticleRead(id, read);
+    // One UPDATE per 500 ids instead of one per id. Remote reconciliation can
+    // pass tens of thousands of ids in a single call, which previously meant
+    // tens of thousands of round-trips to the RDB thread.
+    await this.withTransaction(async () => {
+      if (read !== undefined) {
+        await this.updateStateInChunks(ids, 'is_read', read ? 1 : 0);
       }
-    }
-    if (starred !== undefined) {
-      for (const id of ids) {
-        await this.setArticleStarred(id, starred);
+      if (starred !== undefined) {
+        await this.updateStateInChunks(ids, 'is_starred', starred ? 1 : 0);
       }
+    });
+  }
+
+  private async updateStateInChunks(ids: string[], column: string, value: number): Promise<void> {
+    for (let start = 0; start < ids.length; start += STATE_UPDATE_CHUNK) {
+      const end: number = Math.min(start + STATE_UPDATE_CHUNK, ids.length);
+      let placeholders: string = '';
+      const args: Array<relationalStore.ValueType> = [value];
+      for (let i = start; i < end; i++) {
+        placeholders += placeholders.length === 0 ? '?' : ',?';
+        args.push(ids[i]);
+      }
+      await this.exec(
+        `UPDATE article SET ${column} = ? WHERE id IN (${placeholders})`, args
+      );
     }
   }
 
@@ -649,6 +826,137 @@ class ReadYouDatabase {
       this.closeRs(rs);
     }
     return 0;
+  }
+
+  /** Unread + starred + total for one scope in a single query. The article list
+   *  used to issue six separate COUNT queries (scoped and global, three filters
+   *  each) on every load and badge refresh. */
+  async articleCounts(
+    accountId: string, feedId?: string, groupId?: string
+  ): Promise<ArticleCounts> {
+    let sql: string =
+      `SELECT COALESCE(SUM(CASE WHEN is_read = 0 THEN 1 ELSE 0 END), 0) AS unread,
+              COALESCE(SUM(CASE WHEN is_starred = 1 THEN 1 ELSE 0 END), 0) AS starred,
+              COUNT(*) AS total
+       FROM article WHERE account_id = ?`;
+    const args: Array<string | number> = [accountId];
+    if (feedId && feedId.length > 0) {
+      sql += ' AND feed_id = ?';
+      args.push(feedId);
+    }
+    if (groupId && groupId.length > 0) {
+      sql += ' AND feed_id IN (SELECT id FROM feed WHERE group_id = ?)';
+      args.push(groupId);
+    }
+    const rs = await this.query(sql, args);
+    try {
+      if (this.nextRow(rs)) {
+        return {
+          unread: this.lng(rs, this.colIndex(rs, 'unread')),
+          starred: this.lng(rs, this.colIndex(rs, 'starred')),
+          total: this.lng(rs, this.colIndex(rs, 'total')),
+        };
+      }
+    } finally {
+      this.closeRs(rs);
+    }
+    return { unread: 0, starred: 0, total: 0 };
+  }
+
+  /** Ids only, no article bodies. `markAllRead` used to load up to 100k full
+   *  articles (content + full_content) just to collect their ids. */
+  async listArticleIds(
+    accountId: string, filter: string, feedId?: string, groupId?: string
+  ): Promise<string[]> {
+    let sql: string = 'SELECT id FROM article WHERE account_id = ?';
+    const args: Array<string | number> = [accountId];
+    if (filter === 'unread') {
+      sql += ' AND is_read = 0';
+    } else if (filter === 'starred') {
+      sql += ' AND is_starred = 1';
+    }
+    if (feedId && feedId.length > 0) {
+      sql += ' AND feed_id = ?';
+      args.push(feedId);
+    }
+    if (groupId && groupId.length > 0) {
+      sql += ' AND feed_id IN (SELECT id FROM feed WHERE group_id = ?)';
+      args.push(groupId);
+    }
+    const rs = await this.query(sql, args);
+    const ids: string[] = [];
+    try {
+      const idCol: number = this.colIndex(rs, 'id');
+      while (this.nextRow(rs)) {
+        ids.push(this.str(rs, idCol));
+      }
+    } finally {
+      this.closeRs(rs);
+    }
+    return ids;
+  }
+
+  /** Id + read/star flags for every local article in one scan. Remote
+   *  reconciliation previously ran three separate full-table id queries. */
+  async listArticleStates(accountId: string): Promise<ArticleState[]> {
+    const rs = await this.query(
+      'SELECT id, is_read, is_starred FROM article WHERE account_id = ?',
+      [accountId]
+    );
+    const states: ArticleState[] = [];
+    try {
+      const idCol: number = this.colIndex(rs, 'id');
+      const readCol: number = this.colIndex(rs, 'is_read');
+      const starredCol: number = this.colIndex(rs, 'is_starred');
+      while (this.nextRow(rs)) {
+        states.push({
+          id: this.str(rs, idCol),
+          isRead: this.lng(rs, readCol) === 1,
+          isStarred: this.lng(rs, starredCol) === 1,
+        });
+      }
+    } finally {
+      this.closeRs(rs);
+    }
+    return states;
+  }
+
+  /** Previous/next article ids in the same feed, ordered like listArticles
+   *  (published_at DESC, id DESC). Two bounded queries replace loading the
+   *  feed's entire id list into memory. */
+  async neighborArticleIds(
+    accountId: string, feedId: string, articleId: string, publishedAt: number
+  ): Promise<ArticleNeighbors> {
+    const result: ArticleNeighbors = { previous: '', next: '' };
+    const newer = await this.query(
+      `SELECT id FROM article
+       WHERE account_id = ? AND feed_id = ?
+         AND (published_at > ? OR (published_at = ? AND id > ?))
+       ORDER BY published_at ASC, id ASC LIMIT 1`,
+      [accountId, feedId, publishedAt, publishedAt, articleId]
+    );
+    try {
+      if (this.nextRow(newer)) {
+        result.previous = this.str(newer, this.colIndex(newer, 'id'));
+      }
+    } finally {
+      this.closeRs(newer);
+    }
+    const older = await this.query(
+      `SELECT id FROM article
+       WHERE account_id = ? AND feed_id = ?
+         AND (published_at < ? OR (published_at = ? AND id < ?))
+       ORDER BY published_at DESC, id DESC LIMIT 1`,
+      [accountId, feedId, publishedAt, publishedAt, articleId]
+    );
+    try {
+      if (this.nextRow(older)) {
+        result.next = this.str(older, this.colIndex(older, 'id'));
+      }
+    } finally {
+      this.closeRs(older);
+    }
+    return result;
   }
 
   /** Remote IDs of local articles, used for remote → local state reconciliation. */

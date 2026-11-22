@@ -4,26 +4,41 @@ import { Logger } from './Logger';
 /** Serves the installed custom font to ArkWeb through onInterceptRequest.
  *
  *  ArkUI's getFont().registerFont only affects native Text, and a data: URI in
- *  @font-face is not decoded by this ArkWeb build. Keeping the font bytes in
- *  memory under a same-origin virtual URL lets the WebView load it like any
- *  normal font resource, with no CORS or local-file restrictions.
+ *  @font-face is not decoded by this ArkWeb build. The font bytes are exposed
+ *  through one fixed virtual URL intercepted by onInterceptRequest, with CORS
+ *  and cache headers so the WebView loads it as a normal cached font resource.
+ *
+ *  No long-lived byte cache: a 22MB TTF kept in a static ArrayBuffer would
+ *  permanently duplicate the copy ArkWeb keeps in its renderer. The file is
+ *  read only when the WebView actually requests it, then released as soon as
+ *  the response callback returns.
  */
 export class ReaderFont {
   private static readonly MARKER: string = '/__ry_font__/';
-  private static bytes: ArrayBuffer | undefined = undefined;
-  private static cachedPath: string = '';
+  private static readonly VIRTUAL_URL: string =
+    'https://static3cdn.appinn.com/__ry_font__/custom.ttf';
 
   static isVirtualUrl(url: string): boolean {
     return url.includes(ReaderFont.MARKER);
   }
 
-  /** Read the font once per path; reopening an article reuses cached bytes. */
+  /** Existence check that does not load the (possibly 22MB) file. */
+  static exists(path: string): boolean {
+    if (path.length === 0) {
+      return false;
+    }
+    try {
+      return fs.statSync(path).size > 0;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  /** Read on demand. The caller hands the buffer to WebResourceResponse and
+   *  drops its reference; we never retain a second copy in memory. */
   static load(path: string): ArrayBuffer | undefined {
     if (path.length === 0) {
       return undefined;
-    }
-    if (ReaderFont.bytes !== undefined && ReaderFont.cachedPath === path) {
-      return ReaderFont.bytes;
     }
     try {
       const stat: fs.Stat = fs.statSync(path);
@@ -34,8 +49,6 @@ export class ReaderFont {
       } finally {
         fs.closeSync(file);
       }
-      ReaderFont.bytes = bytes;
-      ReaderFont.cachedPath = path;
       return bytes;
     } catch (error) {
       Logger.warn(`ReaderFont load failed: ${(error as Error).message}`);
@@ -43,19 +56,18 @@ export class ReaderFont {
     }
   }
 
-  static invalidate(): void {
-    ReaderFont.bytes = undefined;
-    ReaderFont.cachedPath = '';
-  }
-
-  static getBytes(): ArrayBuffer | undefined {
-    return ReaderFont.bytes;
-  }
-
-  /** Build a virtual font URL on the article's own origin to avoid CORS. */
-  static virtualUrl(articleLink: string): string {
-    const matched: RegExpMatchArray | null = articleLink.match(/^(https?:\/\/[^\/]+)/);
-    const origin: string = matched ? matched[1] : 'https://static3cdn.appinn.com';
-    return `${origin}${ReaderFont.MARKER}custom.ttf`;
+  /** One URL for every article and every site, so ArkWeb caches a single copy.
+   *  The mtime suffix changes when a new font is installed, which busts that
+   *  cache without needing a second in-memory buffer. */
+  static virtualUrl(path: string): string {
+    let version: string = '0';
+    if (path.length > 0) {
+      try {
+        version = fs.statSync(path).mtime.toString();
+      } catch (error) {
+        // Fall back to the unversioned URL.
+      }
+    }
+    return `${ReaderFont.VIRTUAL_URL}?v=${version}`;
   }
 }

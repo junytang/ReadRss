@@ -76,26 +76,30 @@ export class ArticleImageConverter {
   }
 
   private static async convertTag(tag: string, url: string): Promise<string> {
-    try {
-      const proxyUrl: string = ArticleImageConverter.PROXY + encodeURIComponent(url) +
-        '&output=jpeg&w=800&q=80';
-      const bytes: ArrayBuffer | undefined = await ArticleImageConverter.fetchBytes(proxyUrl);
-      if (bytes === undefined) {
+    const key: string = ArticleImageConverter.hash(url) + '.jpg';
+    // Reuse already converted bytes: re-rendering the same article (font size /
+    // dark mode change) used to hit the proxy again for every AVIF image.
+    if (ArticleImageConverter.getBytes(key) === undefined) {
+      try {
+        const proxyUrl: string = ArticleImageConverter.PROXY + encodeURIComponent(url) +
+          '&output=jpeg&w=800&q=80';
+        const bytes: ArrayBuffer | undefined = await ArticleImageConverter.fetchBytes(proxyUrl);
+        if (bytes === undefined) {
+          return tag;
+        }
+        ArticleImageConverter.putBytes(key, bytes);
+      } catch (error) {
+        Logger.error(`AVIF convert failed: ${(error as Error).message}`);
         return tag;
       }
-      const key: string = ArticleImageConverter.hash(url) + '.jpg';
-      ArticleImageConverter.putBytes(key, bytes);
-      // Strip srcset/sizes so the browser uses src (our virtual URL) instead of
-      // the original .avif candidates.
-      let clean: string = tag.replace(/\ssrcset\s*=\s*(["'])[^"']*\1/gi, '')
-        .replace(/\ssizes\s*=\s*(["'])[^"']*\1/gi, '');
-      clean = clean.replace(/\bsrc\s*=\s*(["'])[^"']+\1/i,
-        `src="${ArticleImageConverter.VIRTUAL}${key}"`);
-      return clean;
-    } catch (error) {
-      Logger.error(`AVIF convert failed: ${(error as Error).message}`);
-      return tag;
     }
+    // Strip srcset/sizes so the browser uses src (our virtual URL) instead of
+    // the original .avif candidates.
+    let clean: string = tag.replace(/\ssrcset\s*=\s*(["'])[^"']*\1/gi, '')
+      .replace(/\ssizes\s*=\s*(["'])[^"']*\1/gi, '');
+    clean = clean.replace(/\bsrc\s*=\s*(["'])[^"']+\1/i,
+      `src="${ArticleImageConverter.VIRTUAL}${key}"`);
+    return clean;
   }
 
   private static async fetchBytes(url: string): Promise<ArrayBuffer | undefined> {

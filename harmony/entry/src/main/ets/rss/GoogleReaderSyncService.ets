@@ -11,13 +11,12 @@ import {
   shortItemId,
 } from '../account/AccountModels';
 import { accountRepository, DEFAULT_GROUP_SUFFIX } from '../account/AccountRepository';
-import { database } from '../data/Database';
+import { database, ArticleState } from '../data/Database';
 import { settingsStore } from '../data/SettingsStore';
 import { Article, Feed, FeedGroup } from '../model/Models';
 import { beginSync, notifySyncBatch, notifySyncFinal, notifyContentReady } from './SyncProgress';
 import {
   ApiParams,
-  GReaderItem,
   GReaderSubscription,
   GoogleReaderApi,
   ItemIdsDto,
@@ -25,7 +24,7 @@ import {
   QuickAddDto,
 } from './GoogleReaderApi';
 import { XmlParser } from './XmlParser';
-import { FeedSyncService, SyncResult } from './SyncService';
+import { FeedSyncService, FeedNotify, SyncResult } from './SyncService';
 import { Logger } from '../common/Logger';
 import { NotificationHelper } from '../common/NotificationHelper';
 
@@ -267,33 +266,43 @@ export class GoogleReaderSyncService implements FeedSyncService {
         await database.upsertGroup(groups[i], account.id);
       }
 
-      const allLocal: string[] = await database.listRemoteIds(account.id);
-      const localRead: string[] = await database.listRemoteIds(account.id, true);
-      const localStarred: string[] = await database.listRemoteIds(account.id, undefined, true);
-      const readLocals: Set<string> = new Set<string>(localRead);
-      const starredLocals: Set<string> = new Set<string>(localStarred);
+      // One state scan replaces three full-table id queries (all / read /
+      // starred) plus the per-id indexOf scans used to dedupe fetches.
+      const localStates: ArticleState[] = await database.listArticleStates(account.id);
+      const localRemoteIds: Set<string> = new Set<string>();
       const toUnread: string[] = [];
       const toStar: string[] = [];
       const toUnstar: string[] = [];
-      for (const dbIdValue of allLocal) {
-        const id: string = remoteId(dbIdValue);
-        if (readLocals.has(dbIdValue) && unreadSet.has(id)) toUnread.push(dbIdValue);
-        if (!starredLocals.has(dbIdValue) && starredSet.has(id)) toStar.push(dbIdValue);
-        if (starredLocals.has(dbIdValue) && !starredSet.has(id)) toUnstar.push(dbIdValue);
+      for (const state of localStates) {
+        const id: string = remoteId(state.id);
+        localRemoteIds.add(id);
+        if (state.isRead && unreadSet.has(id)) toUnread.push(state.id);
+        if (!state.isStarred && starredSet.has(id)) toStar.push(state.id);
+        if (state.isStarred && !starredSet.has(id)) toUnstar.push(state.id);
       }
       await database.setStates(toUnread, false, undefined);
       await database.setStates(toStar, undefined, true);
       await database.setStates(toUnstar, undefined, false);
 
-      const localRemoteIds: string[] = allLocal.map((fullId: string) => remoteId(fullId));
       const toFetch: string[] = [];
+      const queued: Set<string> = new Set<string>();
       // Only unread + starred need content. Read ids are used purely for state reconciliation.
-      for (const id of unreadIds.concat(starredIds)) {
-        if (localRemoteIds.indexOf(id) >= 0 || toFetch.indexOf(id) >= 0) {
-          continue;
+      for (const id of unreadIds) {
+        if (!localRemoteIds.has(id) && !queued.has(id)) {
+          queued.add(id);
+          toFetch.push(id);
         }
-        toFetch.push(id);
       }
+      for (const id of starredIds) {
+        if (!localRemoteIds.has(id) && !queued.has(id)) {
+          queued.add(id);
+          toFetch.push(id);
+        }
+      }
+      // Collect notification candidates per feed and publish once at the end:
+      // notifying inside the batch loop sent the same feed's notification again
+      // for every batch, and re-read the whole feed list each time.
+      const notifyByFeed: Map<string, FeedNotify> = new Map<string, FeedNotify>();
       for (const batch of await this.chunks(toFetch, batchSize)) {
         const contents: ItemsContentsResult = await api.getItemsContents(batch);
         const articles: Article[] = [];
@@ -329,14 +338,21 @@ export class GoogleReaderSyncService implements FeedSyncService {
         // Let the UI refresh unread badges after this batch, without waiting
         // for the remaining batches to finish.
         notifySyncBatch();
-        const unread: Article[] = articles.filter((article: Article) => !article.isRead);
-        for (const feed of await database.listFeeds(account.id)) {
-          const feedArticles: Article[] = unread.filter((article: Article) => article.feedId === feed.id);
-          if (feedArticles.length > 0) {
-            await NotificationHelper.notify(feed.title, feedArticles[0].title, feedArticles.length);
+        for (const article of articles) {
+          if (article.isRead) {
+            continue;
+          }
+          const entry: FeedNotify | undefined = notifyByFeed.get(article.feedId);
+          if (entry === undefined) {
+            notifyByFeed.set(article.feedId, {
+              feedTitle: article.feedTitle, firstTitle: article.title, count: 1,
+            });
+          } else {
+            entry.count += 1;
           }
         }
       }
+      NotificationHelper.notifyAll(notifyByFeed);
 
       // All readable content is committed. Stop the spinner now even if there
       // were no new articles (toFetch empty), before the slow reconciliation.
@@ -383,8 +399,9 @@ export class GoogleReaderSyncService implements FeedSyncService {
     const api: GoogleReaderApi = this.api(account);
     const done: string[] = [];
     for (const batch of await this.chunks(articleIds, 500)) {
+      // One batched UPDATE for the whole chunk instead of one write per id.
+      await database.setStates(batch, read, undefined);
       for (const id of batch) {
-        await database.setArticleRead(id, read);
         done.push(id);
       }
       try {

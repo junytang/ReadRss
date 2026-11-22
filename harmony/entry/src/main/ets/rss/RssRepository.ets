@@ -1,6 +1,6 @@
 import { Account } from '../account/AccountModels';
 import { accountRepository } from '../account/AccountRepository';
-import { database } from '../data/Database';
+import { database, ArticleCounts } from '../data/Database';
 import { Article, ArticleNeighbors, Feed, FeedGroup } from '../model/Models';
 import { FeedSyncService, SyncResult } from './SyncService';
 import { syncServiceFor } from './SyncServiceFactory';
@@ -75,23 +75,28 @@ class FeedRepository {
     );
   }
 
-  /** Android prefetchArticleId: previous/next article in the same feed. */
-  async neighborIds(articleId: string): Promise<ArticleNeighbors> {
-    const article: Article | undefined = await database.getArticle(articleId);
+  /** Android prefetchArticleId: previous/next article in the same feed.
+   *  Takes the already-loaded article so no extra full-body read is needed. */
+  async neighborIds(article: Article): Promise<ArticleNeighbors> {
     const empty: ArticleNeighbors = { previous: '', next: '' };
-    if (!article) {
+    if (!article || article.feedId.length === 0) {
       return empty;
     }
     const account: Account = await this.activeAccount();
-    const ids: string[] = await database.listArticleIdsForFeed(account.id, article.feedId);
-    const index: number = ids.indexOf(articleId);
-    if (index < 0) {
-      return empty;
+    return database.neighborArticleIds(
+      account.id, article.feedId, article.id, article.publishedAt
+    );
+  }
+
+  /** Source icon for one feed; avoids listing every feed to find one row. */
+  async feedIconUrl(feedId: string): Promise<string> {
+    const feed: Feed | undefined = await database.getFeedById(feedId);
+    if (!feed) {
+      return '';
     }
-    return {
-      previous: index > 0 ? ids[index - 1] : '',
-      next: index < ids.length - 1 ? ids[index + 1] : '',
-    };
+    const account: Account = await this.activeAccount();
+    const serverUrl: string = accountRepository.credentials(account).serverUrl;
+    return this.fixIconUrl(feed.iconUrl, serverUrl);
   }
 
   getArticle(id: string): Promise<Article | undefined> {
@@ -175,6 +180,12 @@ class FeedRepository {
     return database.countArticles(account.id, filter, feedId, groupId);
   }
 
+  /** Unread + starred + total in one query (three COUNT queries before). */
+  async articleCounts(feedId?: string, groupId?: string): Promise<ArticleCounts> {
+    const account: Account = await this.activeAccount();
+    return database.articleCounts(account.id, feedId, groupId);
+  }
+
   // A single in-flight sync serves all callers. Multiple pages (and the
   // first-launch sync) can request a sync at once; sharing the promise avoids
   // duplicate network requests against the server.
@@ -243,7 +254,8 @@ class FeedRepository {
 
   async markStarred(articleId: string, starred: boolean): Promise<void> {
     const account: Account = await this.activeAccount();
-    const article: Article | undefined = await database.getArticle(articleId);
+    // Only the remote id is needed for the tag edit; avoid loading the body.
+    const article: Article | undefined = await database.getArticleMeta(articleId);
     if (!article) {
       return;
     }
@@ -251,18 +263,16 @@ class FeedRepository {
   }
 
   /** Mark all unread articles in the current scope (feed / group / all) as read.
-   *  Only unread rows are collected, so already-read articles are never sent to
-   *  the server again, reducing load for large accounts. */
+   *  Only ids are read from the database: loading every unread article body just
+   *  to collect ids could pull 100k full HTML documents into memory. */
   async markAllRead(feedId: string, groupId?: string): Promise<void> {
     const account: Account = await this.activeAccount();
     const service: FeedSyncService = syncServiceFor(account);
-    const unread: Article[] = await database.listArticles(
-      account.id, feedId, 'unread', 100000, groupId
-    );
-    if (unread.length === 0) {
+    const ids: string[] = await database.listArticleIds(account.id, 'unread', feedId, groupId);
+    if (ids.length === 0) {
       return;
     }
-    await service.markRead(account, unread.map((article: Article) => article.id), true);
+    await service.markRead(account, ids, true);
   }
 }
 

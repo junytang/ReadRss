@@ -129,42 +129,21 @@ export class FullContentFetcher {
     // Android removes an h1 whose text equals the article title (handled by caller via regex).
   }
 
-  /** Replace script/style/noscript bodies with spaces, keeping indices stable. */
+  /** Replace script/style/noscript bodies with spaces, keeping indices stable.
+   *  Single regex pass: the previous implementation lowercased and rebuilt the
+   *  whole document once per script tag, i.e. O(n²) on script-heavy pages. */
   private static maskScripts(html: string): string {
-    let result: string = html;
-    const tags: string[] = ['script', 'style', 'noscript'];
-    for (const tag of tags) {
-      let from: number = 0;
-      for (;;) {
-        const lower: string = result.toLowerCase();
-        const start: number = lower.indexOf('<' + tag, from);
-        if (start < 0) {
-          break;
-        }
-        const end: number = lower.indexOf('</' + tag, start);
-        if (end < 0) {
-          break;
-        }
-        const closeEnd: number = result.indexOf('>', end);
-        if (closeEnd < 0) {
-          break;
-        }
-        const blank: string = ' '.repeat(closeEnd - start + 1);
-        result = result.substring(0, start) + blank + result.substring(closeEnd + 1);
-        from = start;
-      }
-    }
-    return result;
+    return html.replace(/<(script|style|noscript)\b[\s\S]*?<\/\1\s*>/gi, (match: string) => {
+      return ' '.repeat(match.length);
+    });
   }
 
   private static clean(html: string, title: string): string {
-    Logger.info(`Extract start: html=${html.length}`);
     let cleaned: string = html.replace(/<!--[\s\S]*?-->/g, '');
     // Blank out script/style/noscript blocks while preserving string length:
     // their JS/CSS often contains '<div>' style text that breaks both div
     // counting and the lenient DOM parser.
     cleaned = FullContentFetcher.maskScripts(cleaned);
-    Logger.info(`Extract stage raw images=${(cleaned.match(/<img/gi) ?? []).length}`);
     const root: HtmlNode = HtmlDom.parse(cleaned);
     const body: HtmlNode | undefined = FullContentFetcher.findBody(root);
     if (!body) return '';
@@ -173,15 +152,12 @@ export class FullContentFetcher {
     // noise and chrome keywords, then descend to the innermost strong container.
     const found: HtmlNode | undefined = HtmlDom.bestContentNode(body);
     const article: HtmlNode = HtmlDom.drillToContent(found ?? body);
-    const containersCount: number = found === undefined ? 0 : 1;
     let result: string = HtmlDom.toHtml(article);
-    Logger.info(`Extract stage containers=${containersCount} images=${(result.match(/<img/gi) ?? []).length}`);
     if (title.length > 0) {
       const escaped: string = title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       result = result.replace(new RegExp(`<h1[^>]*>[\\s\\S]*?${escaped}[\\s\\S]*?<\\/h1>`, 'i'), '');
     }
     const finalHtml: string = result.trim();
-    Logger.info(`Extract article: containers=${containersCount} length=${finalHtml.length} images=${(finalHtml.match(/<img/gi) ?? []).length}`);
     // Never cache an empty body, otherwise the version marker alone would
     // suppress future re-fetches forever.
     if (finalHtml.length === 0) {

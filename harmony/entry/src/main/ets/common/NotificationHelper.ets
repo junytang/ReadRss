@@ -3,6 +3,7 @@ import { notificationManager } from '@kit.NotificationKit';
 // which is a different enum from notificationManager.ContentType in API 26.
 import notification from '@ohos.notification';
 import { Logger } from './Logger';
+import { FeedNotify } from '../rss/SyncService';
 
 /** Sends a basic-text notification for new unread articles (Android NotificationHelper equivalent). */
 export class NotificationHelper {
@@ -25,5 +26,16 @@ export class NotificationHelper {
     } catch (error) {
       Logger.error(`Publish notification failed: ${(error as Error).message}`);
     }
+  }
+
+  /** Publish one notification per feed for a whole sync.
+   *  Android notifies once per feed after all articles are inserted; doing it
+   *  inside each batch re-notified the same feed every batch and re-read the
+   *  feed table on every iteration. Fire-and-forget so publishing never delays
+   *  the sync's UI completion signal. */
+  static notifyAll(entries: Map<string, FeedNotify>): void {
+    entries.forEach((entry: FeedNotify) => {
+      NotificationHelper.notify(entry.feedTitle, entry.firstTitle, entry.count);
+    });
   }
 }

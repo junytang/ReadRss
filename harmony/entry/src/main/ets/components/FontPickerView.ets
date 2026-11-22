@@ -1,6 +1,5 @@
 import { common } from '@kit.AbilityKit';
 import { FontManager } from '../common/FontManager';
-import { ReaderFont } from '../common/ReaderFont';
 import { goBack } from '../common/NavigationService';
 import { settingsStore } from '../data/SettingsStore';
 
@@ -72,7 +71,6 @@ export struct FontPickerView {
     }
     await settingsStore.setCustomFontPath(path, FontManager.fontName());
     FontManager.register(this.getUIContext(), path);
-    ReaderFont.invalidate();
     AppStorage.setOrCreate<number>('fontDataTick', Date.now());
     this.customInstalled = true;
     this.customName = FontManager.fontName();
@@ -85,7 +83,6 @@ export struct FontPickerView {
       FontManager.remove(hostContext as common.Context);
     }
     await settingsStore.setCustomFontPath('');
-    ReaderFont.invalidate();
     AppStorage.setOrCreate<number>('fontDataTick', Date.now());
     this.customInstalled = false;
     this.customName = '';

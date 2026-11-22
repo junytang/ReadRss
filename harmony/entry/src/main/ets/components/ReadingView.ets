@@ -4,7 +4,7 @@ import { common } from '@kit.AbilityKit';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { systemShare } from '@kit.ShareKit';
 import { uniformTypeDescriptor as utd } from '@kit.ArkData';
-import { Article, ArticleNeighbors, Feed } from '../model/Models';
+import { Article, ArticleNeighbors } from '../model/Models';
 import { rssRepository } from '../rss/RssRepository';
 import { HtmlBuilder } from '../rss/HtmlBuilder';
 import { goBack } from '../common/NavigationService';
@@ -55,18 +55,15 @@ export struct ReadingView {
     // Render immediately from whatever body is cached; full content arrives in background.
     this.article = article;
     this.isStarred = article.isStarred;
-    const feeds: Feed[] = await rssRepository.listFeeds();
-    for (const feed of feeds) {
-      if (feed.id === article.feedId) {
-        this.feedIconUrl = FeedIcon.src(feed.iconUrl);
-        break;
-      }
-    }
+    // One row lookup instead of listing every feed to find this article's icon.
+    this.feedIconUrl = FeedIcon.src(await rssRepository.feedIconUrl(article.feedId));
     await this.renderHtml(article);
     Logger.info(`Open article: cachedFull=${article.fullContent.length} cachedBody=${article.content.length}`);
 
     if (!rssRepository.hasCurrentFullContent(article) && article.link.length > 0) {
-      rssRepository.ensureFullContent(this.articleId).then(async (updated: Article | undefined) => {
+      // Pass the loaded article through: re-reading it by id would marshal the
+      // whole body a second time.
+      rssRepository.ensureFullContentFor(article).then(async (updated: Article | undefined) => {
         if (updated && updated.fullContent.length > 0) {
           this.article = updated;
           await this.renderHtml(updated);
@@ -89,7 +86,7 @@ export struct ReadingView {
         Logger.error(`Mark read on open failed: ${error.message}`);
       });
     }
-    const neighbors: ArticleNeighbors = await rssRepository.neighborIds(article.id);
+    const neighbors: ArticleNeighbors = await rssRepository.neighborIds(currentArticle);
     this.previousId = neighbors.previous;
     this.nextId = neighbors.next;
   }
@@ -114,19 +111,19 @@ export struct ReadingView {
   }
 
   /** ArkUI's getFont().registerFont only affects native Text, not ArkWeb, and
-   *  data: URI fonts are not decoded here either. Load the font bytes into
-   *  memory and expose them through a same-origin virtual URL intercepted by
-   *  onInterceptRequest. */
+   *  data: URI fonts are not decoded here either. Serve the font bytes through
+   *  a single fixed virtual URL intercepted by onInterceptRequest; the response
+   *  carries CORS + long-lived cache headers so ArkWeb keeps only one copy. */
   private customFontCss(): string {
     if (this.readerFontFamily !== 'custom') {
       return '';
     }
     const path: string = settingsStore.get().customFontPath;
-    if (ReaderFont.load(path) === undefined) {
+    if (!ReaderFont.exists(path)) {
       return '';
     }
     return `@font-face { font-family: 'ReadYouCustom'; ` +
-      `src: url('${ReaderFont.virtualUrl(this.article?.link ?? '')}') format('truetype'); }`;
+      `src: url('${ReaderFont.virtualUrl(path)}') format('truetype'); }`;
   }
 
   private async buildHtml(article: Article): Promise<string> {
@@ -363,13 +360,22 @@ export struct ReadingView {
                 }
               }
               if (ReaderFont.isVirtualUrl(url)) {
-                const bytes: ArrayBuffer | undefined = ReaderFont.getBytes();
+                // Read on demand instead of keeping a 22MB buffer resident.
+                const bytes: ArrayBuffer | undefined =
+                  ReaderFont.load(settingsStore.get().customFontPath);
                 if (bytes) {
                   const response: WebResourceResponse = new WebResourceResponse();
                   response.setResponseData(bytes);
                   response.setResponseMimeType('font/ttf');
                   response.setResponseCode(200);
                   response.setReasonMessage('OK');
+                  // Fixed URL is cross-origin to the article, so @font-face
+                  // needs CORS; the cache header makes ArkWeb reuse the one
+                  // parsed copy across articles instead of fetching per page.
+                  response.setResponseHeader([
+                    { headerKey: 'Access-Control-Allow-Origin', headerValue: '*' },
+                    { headerKey: 'Cache-Control', headerValue: 'public, max-age=31536000' },
+                  ]);
                   response.setResponseIsReady(true);
                   return response;
                 }

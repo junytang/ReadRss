@@ -5,7 +5,7 @@ import { settingsStore } from '../data/SettingsStore';
 import { Article, Feed, FeedGroup } from '../model/Models';
 import { beginSync, notifySyncBatch, notifySyncFinal, notifyContentReady } from './SyncProgress';
 import { FeverApi, FeverFeed, FeverGroupMapping, FeverItem, FeverStatus } from './FeverApi';
-import { FeedSyncService, SyncResult } from './SyncService';
+import { FeedSyncService, FeedNotify, SyncResult } from './SyncService';
 import { Logger } from '../common/Logger';
 import { NotificationHelper } from '../common/NotificationHelper';
 
@@ -125,6 +125,9 @@ export class FeverSyncService implements FeedSyncService {
       let lastSeenId: string = account.lastArticleId ?? '';
       let newArticles: number = 0;
       const batchSize: number = settingsStore.get().fetchBatchSize;
+      // One notification per feed for the whole sync (Android behaviour), instead
+      // of re-notifying and re-reading the feed table on every batch.
+      const notifyByFeed: Map<string, FeedNotify> = new Map<string, FeedNotify>();
       for (;;) {
         const body = await api.getItemsSince(lastSeenId);
         const items: FeverItem[] = body.items ?? [];
@@ -159,11 +162,17 @@ export class FeverSyncService implements FeedSyncService {
           const chunk: Article[] = articles.slice(start, start + batchSize);
           newArticles += await database.insertArticles(chunk, account.id);
           notifySyncBatch();
-          const unread: Article[] = chunk.filter((article: Article) => !article.isRead);
-          for (const feed of await database.listFeeds(account.id)) {
-            const feedArticles: Article[] = unread.filter((article: Article) => article.feedId === feed.id);
-            if (feedArticles.length > 0) {
-              await NotificationHelper.notify(feed.title, feedArticles[0].title, feedArticles.length);
+          for (const article of chunk) {
+            if (article.isRead) {
+              continue;
+            }
+            const entry: FeedNotify | undefined = notifyByFeed.get(article.feedId);
+            if (entry === undefined) {
+              notifyByFeed.set(article.feedId, {
+                feedTitle: article.feedTitle, firstTitle: article.title, count: 1,
+              });
+            } else {
+              entry.count += 1;
             }
           }
         }
@@ -176,6 +185,7 @@ export class FeverSyncService implements FeedSyncService {
         }
       }
       result.newArticles = newArticles;
+      NotificationHelper.notifyAll(notifyByFeed);
       // Content is committed; stop the spinner before the slower state reconciliation.
       notifyContentReady();
 
@@ -239,9 +249,11 @@ export class FeverSyncService implements FeedSyncService {
       await database.setAllRead(account.id, read);
       return [];
     }
+    // One batched UPDATE instead of one write per id. The per-item POST is kept:
+    // Fever's documented API only accepts a single item id.
+    await database.setStates(articleIds, read, undefined);
     const done: string[] = [];
     for (const id of articleIds) {
-      await database.setArticleRead(id, read);
       await api.markItem(status, remoteId(id));
       done.push(id);
     }
