@@ -1,5 +1,6 @@
 import { picker, fileIo as fs } from '@kit.CoreFileKit';
 import { common } from '@kit.AbilityKit';
+import { text } from '@kit.ArkGraphics2D';
 import { Logger } from './Logger';
 
 const FONT_NAME: string = 'ReadYouCustom';
@@ -57,21 +58,32 @@ export class FontManager {
   }
 
   /**
-   * Registers the custom font. Also registers under "sans-serif" (ArkUI's default
-   * family) so existing Text components without an explicit fontFamily pick it up.
+   * Loads the custom font synchronously so its glyphs are ready before the first
+   * paint. The SDK's getFont().registerFont() is asynchronous — text renders with
+   * a fallback font, then reflows once the font loads (a visible jitter on cold
+   * start). text.FontCollection.loadFontSync() (the SDK-recommended replacement)
+   * registers the same family name synchronously, eliminating that reflow.
    */
   static register(uiContext: UIContext, path: string): void {
     if (path.length === 0) {
       return;
     }
+    const src: string = `file://${path}`;
     try {
-      const src: string = `file://${path}`;
-      uiContext.getFont().registerFont({ familyName: FONT_NAME, familySrc: src });
+      text.FontCollection.getGlobalInstance().loadFontSync(FONT_NAME, src);
       customRegistered = true;
       activeFamily = FONT_NAME;
-      Logger.info(`Custom font registered: ${path}`);
+      Logger.info(`Custom font loaded synchronously: ${path}`);
     } catch (error) {
-      Logger.error(`Register font failed: ${(error as Error).message}`);
+      // Fallback for devices where the text-engine API is unavailable.
+      try {
+        uiContext.getFont().registerFont({ familyName: FONT_NAME, familySrc: src });
+        customRegistered = true;
+        activeFamily = FONT_NAME;
+        Logger.info(`Custom font registered (async fallback): ${path}`);
+      } catch (innerError) {
+        Logger.error(`Register font failed: ${(innerError as Error).message}`);
+      }
     }
   }
 
@@ -79,6 +91,11 @@ export class FontManager {
     customRegistered = false;
     customFontName = '';
     activeFamily = 'sans-serif';
+    try {
+      text.FontCollection.getGlobalInstance().unloadFontSync(FONT_NAME);
+    } catch (error) {
+      Logger.warn(`Unload font skipped: ${(error as Error).message}`);
+    }
     try {
       fs.unlinkSync(FontManager.fontPath(context));
     } catch (error) {

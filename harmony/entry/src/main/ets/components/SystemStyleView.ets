@@ -46,6 +46,19 @@ export struct SystemStyleView {
     return this.darkMode ? '#1F2226' : '#FFFFFF';
   }
 
+  /** Thin divider between items inside a grouped settings card. */
+  @Builder
+  divider(): void {
+    Row() {
+      Row()
+        .width('100%')
+        .height(1)
+        .backgroundColor(this.darkMode ? '#2A2D31' : '#ECEFF2')
+    }
+    .width('100%')
+    .padding({ left: 16 })
+  }
+
   private fontLabel(): string {
     if (this.fontKey === 'serif') return '衬线字体';
     if (this.fontKey === 'monospace') return '等宽字体';
@@ -98,63 +111,72 @@ export struct SystemStyleView {
 
         Scroll() {
           Column() {
-            Row() {
-              Column() {
-                Text('深色模式').fontSize(this.fs(15)).fontFamily(this.appFont()).fontColor(this.textColor())
-                Text('跟随应用设置').fontSize(this.fs(12)).fontFamily(this.appFont()).fontColor(this.secondaryColor()).margin({ top: 3 })
-              }
-              .layoutWeight(1)
-              .alignItems(HorizontalAlign.Start)
-              Toggle({ isOn: this.darkMode, type: ToggleType.Switch })
-                .onChange((value: boolean) => {
-                  settingsStore.setDarkMode(value);
-                  this.applyColorMode(value);
-                })
-            }
-            .width('100%')
-            .padding({ left: 16, right: 16, top: 14, bottom: 14 })
-            .backgroundColor(this.surfaceColor())
-            .alignItems(VerticalAlign.Center)
-
-            Text('字体').fontSize(this.fs(13)).fontFamily(this.appFont()).fontColor(this.secondaryColor())
-              .alignSelf(ItemAlign.Start)
-              .margin({ left: 4, top: 24, bottom: 8 })
+            Text('显示').fontSize(this.fs(14)).fontFamily(this.appFont()).fontColor(this.secondaryColor())
+              .width('100%').textAlign(TextAlign.Start).padding({ left: 16, bottom: 8 })
+              .margin({ top: 16 })
             Column() {
               Row() {
-                Text('字号').fontSize(this.fs(14)).fontFamily(this.appFont()).fontColor(this.textColor()).layoutWeight(1)
-                Text(`${Math.round(this.fontScaleValue * 100)}%`).fontSize(this.fs(13)).fontFamily(this.appFont()).fontColor(this.secondaryColor())
+                Column() {
+                  Text('深色模式').fontSize(this.fs(15)).fontFamily(this.appFont()).fontColor(this.textColor())
+                  Text('跟随应用设置').fontSize(this.fs(13)).fontFamily(this.appFont()).fontColor(this.secondaryColor()).margin({ top: 3 })
+                }
+                .layoutWeight(1)
+                .alignItems(HorizontalAlign.Start)
+                Toggle({ isOn: this.darkMode, type: ToggleType.Switch })
+                  .onChange((value: boolean) => {
+                    settingsStore.setDarkMode(value);
+                    this.applyColorMode(value);
+                  })
               }
               .width('100%')
-              Slider({
-                value: this.fontScaleValue, min: 0.8, max: 1.4, step: 0.05, style: SliderStyle.OutSet,
-              })
-                .width('100%')
-                .onChange((value: number) => { this.applyScale(value); })
+              .padding({ left: 16, right: 16, top: 14, bottom: 14 })
+              .alignItems(VerticalAlign.Center)
             }
             .width('100%')
-            .padding({ left: 16, right: 16, top: 10, bottom: 6 })
-            .alignItems(HorizontalAlign.Start)
             .backgroundColor(this.surfaceColor())
+            .borderRadius(10)
 
-            Row() {
-              Column() {
-                Text('字体').fontSize(this.fs(15)).fontFamily(this.appFont()).fontColor(this.textColor())
-                Text(this.fontLabel()).fontSize(this.fs(12)).fontFamily(this.appFont()).fontColor(this.secondaryColor()).margin({ top: 3 })
+            Text('字体').fontSize(this.fs(14)).fontFamily(this.appFont()).fontColor(this.secondaryColor())
+              .width('100%').textAlign(TextAlign.Start).padding({ left: 16, bottom: 8 })
+              .margin({ top: 24 })
+            Column() {
+              Row() {
+                Text('字号').fontSize(this.fs(15)).fontFamily(this.appFont()).fontColor(this.textColor()).width(72)
+                Slider({ value: this.fontScaleValue, min: 0.8, max: 1.4, step: 0.05, style: SliderStyle.OutSet })
+                  .layoutWeight(1)
+                  .margin({ left: 12, right: 12 })
+                  .onChange((value: number) => { this.applyScale(value); })
+                Text(`${Math.round(this.fontScaleValue * 100)}%`).fontSize(this.fs(13)).fontFamily(this.appFont()).fontColor(this.secondaryColor()).width(44)
               }
-              .layoutWeight(1)
-              .alignItems(HorizontalAlign.Start)
-              Text('›').fontSize(this.fs(18)).fontFamily(this.appFont()).fontColor(this.secondaryColor())
+              .width('100%')
+              .padding({ left: 16, right: 16, top: 10, bottom: 10 })
+              .alignItems(VerticalAlign.Center)
+
+              this.divider()
+
+              Row() {
+                Column() {
+                  Text('字体').fontSize(this.fs(15)).fontFamily(this.appFont()).fontColor(this.textColor())
+                  Text(this.fontLabel()).fontSize(this.fs(13)).fontFamily(this.appFont()).fontColor(this.secondaryColor()).margin({ top: 3 })
+                }
+                .layoutWeight(1)
+                .alignItems(HorizontalAlign.Start)
+                Image($r('sys.media.ohos_ic_public_arrow_right'))
+                  .width(18).height(18).fillColor(this.secondaryColor())
+              }
+              .width('100%')
+              .padding({ left: 16, right: 16, top: 14, bottom: 14 })
+              .alignItems(VerticalAlign.Center)
+              .onClick(() => openFontPicker('system'))
             }
             .width('100%')
-            .padding({ left: 16, right: 16, top: 14, bottom: 14 })
             .backgroundColor(this.surfaceColor())
-            .alignItems(VerticalAlign.Center)
-            .onClick(() => openFontPicker('system'))
+            .borderRadius(10)
           }
           .width('100%')
           .constraintSize({ minHeight: '100%' })
           .alignItems(HorizontalAlign.Start)
-          .padding({ left: 12, right: 12, bottom: 32 + this.bottomInset })
+          .padding({ left: 12, right: 12, bottom: 48 + this.bottomInset })
         }
         .width('100%')
         .layoutWeight(1)

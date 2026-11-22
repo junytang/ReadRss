@@ -67,6 +67,19 @@ export struct ReaderStyleView {
     return this.darkMode ? '#E8EAED' : '#191C1E';
   }
 
+  /** Thin divider between items inside a grouped settings card. */
+  @Builder
+  divider(): void {
+    Row() {
+      Row()
+        .width('100%')
+        .height(1)
+        .backgroundColor(this.darkMode ? '#2A2D31' : '#ECEFF2')
+    }
+    .width('100%')
+    .padding({ left: 16 })
+  }
+
   build() {
     NavDestination() {
       Column() {
@@ -84,10 +97,16 @@ export struct ReaderStyleView {
         .width('100%')
         .padding({ left: 12, right: 16, top: 14, bottom: 12 })
 
-        Scroll() {
-          Column() {
-            Text('预览').fontSize(this.fs(13)).fontColor(this.secondaryColor())
-              .margin({ left: 4, bottom: 8 })
+        // Fixed preview: stays visible and live-updates while settings scroll below.
+        // Matching left/right 12 so the label and card align with sections below.
+        Column() {
+          Text('预览').fontSize(this.fs(14)).fontFamily(this.appFont()).fontColor(this.secondaryColor())
+            .width('100%').textAlign(TextAlign.Start)
+            .padding({ left: 16, bottom: 8 })
+          // Fixed-height Scroll: when the body text grows, the preview scrolls
+          // internally instead of being clipped, so all text stays viewable while
+          // the settings Scroll below is never squeezed to zero (unreachable sliders).
+          Scroll() {
             Column() {
               // Real articles render the body as plain paragraphs at exactly
               // the configured font-size / line-height (CSS: font-size: Npx,
@@ -121,90 +140,97 @@ export struct ReaderStyleView {
             .padding({
               left: this.pageMargin, right: this.pageMargin, top: this.pageMargin, bottom: this.pageMargin,
             })
+          }
+          .width('100%')
+          .height(200)
+          .backgroundColor(this.surfaceColor())
+          .borderRadius(10)
+        }
+        .width('100%')
+        .padding({ left: 12, right: 12, top: 4, bottom: 8 })
+
+        Scroll() {
+          Column() {
+            Text('排版').fontSize(this.fs(14)).fontFamily(this.appFont()).fontColor(this.secondaryColor())
+              .width('100%').textAlign(TextAlign.Start)
+              .padding({ left: 16, bottom: 8 })
+              .margin({ top: 24 })
+
+            // Grouped card with dividers between rows; label + slider + value on one row.
+            Column() {
+              Row() {
+                Text('正文字号').fontSize(this.fs(15)).fontFamily(this.appFont()).fontColor(this.textColor()).width(72)
+                Slider({ value: this.bodySize, min: 12, max: 30, step: 1, style: SliderStyle.OutSet })
+                  .layoutWeight(1)
+                  .margin({ left: 12, right: 12 })
+                  .onChange((value: number) => {
+                    this.bodySize = value;
+                    settingsStore.setReaderBodyFontSize(value);
+                  })
+                Text(`${this.bodySize}`).fontSize(this.fs(13)).fontFamily(this.appFont()).fontColor(this.secondaryColor()).width(24)
+              }
+              .width('100%')
+              .padding({ left: 16, right: 16, top: 10, bottom: 10 })
+              .alignItems(VerticalAlign.Center)
+
+              this.divider()
+
+              Row() {
+                Text('页边距').fontSize(this.fs(15)).fontFamily(this.appFont()).fontColor(this.textColor()).width(72)
+                Slider({ value: this.pageMargin, min: 0, max: 40, step: 1, style: SliderStyle.OutSet })
+                  .layoutWeight(1)
+                  .margin({ left: 12, right: 12 })
+                  .onChange((value: number) => {
+                    this.pageMargin = value;
+                    settingsStore.setReaderPageMargin(value);
+                  })
+                Text(`${this.pageMargin}`).fontSize(this.fs(13)).fontFamily(this.appFont()).fontColor(this.secondaryColor()).width(24)
+              }
+              .width('100%')
+              .padding({ left: 16, right: 16, top: 10, bottom: 10 })
+              .alignItems(VerticalAlign.Center)
+
+              this.divider()
+
+              Row() {
+                Text('行距').fontSize(this.fs(15)).fontFamily(this.appFont()).fontColor(this.textColor()).width(72)
+                Slider({ value: this.lineSpacing, min: 1.0, max: 2.5, step: 0.05, style: SliderStyle.OutSet })
+                  .layoutWeight(1)
+                  .margin({ left: 12, right: 12 })
+                  .onChange((value: number) => {
+                    this.lineSpacing = value;
+                    settingsStore.setReaderLineSpacing(value);
+                  })
+                Text(this.lineSpacing.toFixed(2)).fontSize(this.fs(13)).fontFamily(this.appFont()).fontColor(this.secondaryColor()).width(32)
+              }
+              .width('100%')
+              .padding({ left: 16, right: 16, top: 10, bottom: 10 })
+              .alignItems(VerticalAlign.Center)
+
+              this.divider()
+
+              Row() {
+                Column() {
+                  Text('字体').fontSize(this.fs(15)).fontFamily(this.appFont()).fontColor(this.textColor())
+                  Text(this.fontLabel()).fontSize(this.fs(13)).fontFamily(this.appFont()).fontColor(this.secondaryColor()).margin({ top: 3 })
+                }
+                .layoutWeight(1)
+                .alignItems(HorizontalAlign.Start)
+                Image($r('sys.media.ohos_ic_public_arrow_right'))
+                  .width(18).height(18).fillColor(this.secondaryColor())
+              }
+              .width('100%')
+              .padding({ left: 16, right: 16, top: 14, bottom: 14 })
+              .onClick(() => openFontPicker('reader'))
+            }
+            .width('100%')
             .backgroundColor(this.surfaceColor())
             .borderRadius(10)
-
-            Text('排版').fontSize(this.fs(13)).fontFamily(this.appFont()).fontColor(this.secondaryColor())
-              .margin({ left: 4, top: 24, bottom: 8 })
-
-            Column() {
-              Row() {
-                Text('正文字号').fontSize(this.fs(14)).fontFamily(this.appFont()).fontColor(this.textColor()).layoutWeight(1)
-                Text(`${this.bodySize}`).fontSize(this.fs(13)).fontFamily(this.appFont()).fontColor(this.secondaryColor())
-              }
-              .width('100%')
-              Slider({
-                value: this.bodySize, min: 12, max: 30, step: 1, style: SliderStyle.OutSet,
-              })
-                .width('100%')
-                .onChange((value: number) => {
-                  this.bodySize = value;
-                  settingsStore.setReaderBodyFontSize(value);
-                })
-            }
-            .width('100%')
-            .padding({ left: 16, right: 16, top: 10, bottom: 6 })
-            .alignItems(HorizontalAlign.Start)
-            .backgroundColor(this.surfaceColor())
-
-            Column() {
-              Row() {
-                Text('页边距').fontSize(this.fs(14)).fontFamily(this.appFont()).fontColor(this.textColor()).layoutWeight(1)
-                Text(`${this.pageMargin}`).fontSize(this.fs(13)).fontFamily(this.appFont()).fontColor(this.secondaryColor())
-              }
-              .width('100%')
-              Slider({
-                value: this.pageMargin, min: 0, max: 40, step: 1, style: SliderStyle.OutSet,
-              })
-                .width('100%')
-                .onChange((value: number) => {
-                  this.pageMargin = value;
-                  settingsStore.setReaderPageMargin(value);
-                })
-            }
-            .width('100%')
-            .padding({ left: 16, right: 16, top: 10, bottom: 6 })
-            .alignItems(HorizontalAlign.Start)
-            .backgroundColor(this.surfaceColor())
-
-            Column() {
-              Row() {
-                Text('行距').fontSize(this.fs(14)).fontFamily(this.appFont()).fontColor(this.textColor()).layoutWeight(1)
-                Text(this.lineSpacing.toFixed(2)).fontSize(this.fs(13)).fontFamily(this.appFont()).fontColor(this.secondaryColor())
-              }
-              .width('100%')
-              Slider({
-                value: this.lineSpacing, min: 1.0, max: 2.5, step: 0.05, style: SliderStyle.OutSet,
-              })
-                .width('100%')
-                .onChange((value: number) => {
-                  this.lineSpacing = value;
-                  settingsStore.setReaderLineSpacing(value);
-                })
-            }
-            .width('100%')
-            .padding({ left: 16, right: 16, top: 10, bottom: 6 })
-            .alignItems(HorizontalAlign.Start)
-            .backgroundColor(this.surfaceColor())
-
-            Row() {
-              Column() {
-                Text('字体').fontSize(this.fs(15)).fontFamily(this.appFont()).fontColor(this.textColor())
-                Text(this.fontLabel()).fontSize(this.fs(12)).fontFamily(this.appFont()).fontColor(this.secondaryColor()).margin({ top: 3 })
-              }
-              .layoutWeight(1)
-              .alignItems(HorizontalAlign.Start)
-              Text('›').fontSize(this.fs(18)).fontFamily(this.appFont()).fontColor(this.secondaryColor())
-            }
-            .width('100%')
-            .padding({ left: 16, right: 16, top: 14, bottom: 14 })
-            .backgroundColor(this.surfaceColor())
-            .onClick(() => openFontPicker('reader'))
           }
           .width('100%')
           .constraintSize({ minHeight: '100%' })
           .alignItems(HorizontalAlign.Start)
-          .padding({ left: 12, right: 12, bottom: 32 + this.bottomInset })
+          .padding({ left: 12, right: 12, bottom: 48 + this.bottomInset })
         }
         .width('100%')
         .layoutWeight(1)

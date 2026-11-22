@@ -128,7 +128,7 @@ export struct FontPickerView {
 
         Scroll() {
           Column() {
-            Text('系统字体').fontSize(this.fs(13)).fontColor(this.secondaryColor())
+            Text('系统字体').fontSize(this.fs(14)).fontFamily(this.appFont()).fontColor(this.secondaryColor())
               .margin({ left: 4, bottom: 8 })
 
             ForEach(SYSTEM_FONTS, (option: SystemFontOption) => {
@@ -149,7 +149,7 @@ export struct FontPickerView {
               .onClick(() => this.select(option.key))
             }, (option: SystemFontOption) => option.key)
 
-            Text('自定义字体').fontSize(this.fs(13)).fontColor(this.secondaryColor())
+            Text('自定义字体').fontSize(this.fs(14)).fontFamily(this.appFont()).fontColor(this.secondaryColor())
               .margin({ left: 4, top: 24, bottom: 8 })
             if (this.customInstalled) {
               Row() {

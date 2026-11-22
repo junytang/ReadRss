@@ -90,6 +90,19 @@ export struct SettingsView {
       ? FontManager.familyFor(this.systemFontFamily) : 'sans-serif';
   }
 
+  /** Thin divider between items inside a grouped settings card. */
+  @Builder
+  divider(): void {
+    Row() {
+      Row()
+        .width('100%')
+        .height(1)
+        .backgroundColor(this.darkMode ? '#2A2D31' : '#ECEFF2')
+    }
+    .width('100%')
+    .padding({ left: 16 })
+  }
+
   build() {
     NavDestination() {
       Column() {
@@ -116,192 +129,218 @@ export struct SettingsView {
 
         Scroll() {
           Column() {
-            Row() {
-              Column() {
-                Text('账号管理').fontFamily(this.appFont()).fontSize(this.fs(15)).fontColor(this.textColor())
-                Text('本地 / Fever / Google Reader / FreshRSS').fontFamily(this.appFont())
-                  .fontSize(this.fs(12)).fontColor(this.secondaryColor()).margin({ top: 3 })
-              }
-              .layoutWeight(1)
-              .alignItems(HorizontalAlign.Start)
-              Text('→').fontFamily(this.appFont()).fontSize(this.fs(18)).fontColor('#2663D6')
-            }
-            .width('100%')
-            .padding({ left: 16, right: 16, top: 14, bottom: 14 })
-            .backgroundColor(this.surfaceColor())
-            .margin({ bottom: 16 })
-            .onClick(() => openAccounts())
-
-            Text('外观').fontFamily(this.appFont()).fontSize(this.fs(13)).fontColor(this.secondaryColor())
-              .alignSelf(ItemAlign.Start)
-              .margin({ left: 4, bottom: 8 })
-            Row() {
-              Column() {
-                Text('系统').fontFamily(this.appFont()).fontSize(this.fs(15)).fontColor(this.textColor())
-                Text('系统字号、字体与深色模式').fontFamily(this.appFont())
-                  .fontSize(this.fs(12)).fontColor(this.secondaryColor()).margin({ top: 3 })
-              }
-              .layoutWeight(1)
-              .alignItems(HorizontalAlign.Start)
-              Text('→').fontFamily(this.appFont()).fontSize(this.fs(18)).fontColor('#2663D6')
-            }
-            .width('100%')
-            .padding({ left: 16, right: 16, top: 14, bottom: 14 })
-            .backgroundColor(this.surfaceColor())
-            .onClick(() => openSystemStyle())
-
-            Row() {
-              Column() {
-                Text('文章列表').fontFamily(this.appFont()).fontSize(this.fs(15)).fontColor(this.textColor())
-                Text('标题、摘要、元信息的字号与字体').fontFamily(this.appFont())
-                  .fontSize(this.fs(12)).fontColor(this.secondaryColor()).margin({ top: 3 })
-              }
-              .layoutWeight(1)
-              .alignItems(HorizontalAlign.Start)
-              Text('→').fontFamily(this.appFont()).fontSize(this.fs(18)).fontColor('#2663D6')
-            }
-            .width('100%')
-            .padding({ left: 16, right: 16, top: 14, bottom: 14 })
-            .backgroundColor(this.surfaceColor())
-            .onClick(() => openArticleListStyle())
-
-            Row() {
-              Column() {
-                Text('全文阅读').fontFamily(this.appFont()).fontSize(this.fs(15)).fontColor(this.textColor())
-                Text('正文字号、页边距、行距与字体').fontFamily(this.appFont())
-                  .fontSize(this.fs(12)).fontColor(this.secondaryColor()).margin({ top: 3 })
-              }
-              .layoutWeight(1)
-              .alignItems(HorizontalAlign.Start)
-              Text('→').fontFamily(this.appFont()).fontSize(this.fs(18)).fontColor('#2663D6')
-            }
-            .width('100%')
-            .padding({ left: 16, right: 16, top: 14, bottom: 14 })
-            .backgroundColor(this.surfaceColor())
-            .onClick(() => openReaderStyle())
-
-            Text('阅读').fontFamily(this.appFont()).fontSize(this.fs(13)).fontColor(this.secondaryColor())
-              .alignSelf(ItemAlign.Start)
-              .margin({ left: 4, top: 24, bottom: 8 })
-            Row() {
-              Column() {
-                Text('启动时同步').fontFamily(this.appFont()).fontSize(this.fs(15)).fontColor(this.textColor())
-                Text('打开应用时自动刷新订阅').fontFamily(this.appFont()).fontSize(this.fs(12)).fontColor(this.secondaryColor()).margin({ top: 3 })
-              }
-              .layoutWeight(1)
-              .alignItems(HorizontalAlign.Start)
-              Toggle({ isOn: this.syncOnLaunch, type: ToggleType.Switch })
-                .onChange((value: boolean) => {
-                  this.syncOnLaunch = value;
-                  settingsStore.setSyncOnLaunch(value);
-                })
-            }
-            .width('100%')
-            .padding({ left: 16, right: 16, top: 14, bottom: 14 })
-            .backgroundColor(this.surfaceColor())
-
-            Row() {
-              Column() {
-                Text('打开文章即标已读').fontFamily(this.appFont()).fontSize(this.fs(15)).fontColor(this.textColor())
-                Text('进入阅读页后标记为已读').fontFamily(this.appFont()).fontSize(this.fs(12)).fontColor(this.secondaryColor()).margin({ top: 3 })
-              }
-              .layoutWeight(1)
-              .alignItems(HorizontalAlign.Start)
-              Toggle({ isOn: this.markReadOnOpen, type: ToggleType.Switch })
-                .onChange((value: boolean) => {
-                  this.markReadOnOpen = value;
-                  settingsStore.setMarkReadOnOpen(value);
-                })
-            }
-            .width('100%')
-            .padding({ left: 16, right: 16, top: 14, bottom: 14 })
-            .backgroundColor(this.surfaceColor())
-
-            Row() {
-              Column() {
-                Text('滚动标记已读').fontFamily(this.appFont()).fontSize(this.fs(15)).fontColor(this.textColor())
-                Text('滚动出屏幕的文章自动标为已读').fontFamily(this.appFont())
-                  .fontSize(this.fs(12)).fontColor(this.secondaryColor()).margin({ top: 3 })
-              }
-              .layoutWeight(1)
-              .alignItems(HorizontalAlign.Start)
-              Toggle({ isOn: this.markReadOnScroll, type: ToggleType.Switch })
-                .onChange((value: boolean) => {
-                  this.markReadOnScroll = value;
-                  settingsStore.setMarkReadOnScroll(value);
-                })
-            }
-            .width('100%')
-            .padding({ left: 16, right: 16, top: 14, bottom: 14 })
-            .backgroundColor(this.surfaceColor())
-
+            Text('账号').fontFamily(this.appFont()).fontSize(this.fs(14)).fontColor(this.secondaryColor())
+              .width('100%').textAlign(TextAlign.Start).padding({ left: 16, bottom: 8 })
+              .margin({ top: 16 })
             Column() {
               Row() {
-                Text('每次拉取条数').fontFamily(this.appFont()).fontSize(this.fs(15)).fontColor(this.textColor())
-                  .layoutWeight(1)
+                Column() {
+                  Text('账号管理').fontFamily(this.appFont()).fontSize(this.fs(15)).fontColor(this.textColor())
+                  Text('本地 / Fever / Google Reader / FreshRSS').fontFamily(this.appFont())
+                    .fontSize(this.fs(13)).fontColor(this.secondaryColor()).margin({ top: 3 })
+                }
+                .layoutWeight(1)
+                .alignItems(HorizontalAlign.Start)
+                Image($r('sys.media.ohos_ic_public_arrow_right'))
+                  .width(18).height(18).fillColor(this.secondaryColor())
+              }
+              .width('100%')
+              .padding({ left: 16, right: 16, top: 14, bottom: 14 })
+              .onClick(() => openAccounts())
+            }
+            .width('100%')
+            .backgroundColor(this.surfaceColor())
+            .borderRadius(10)
+
+            Text('外观').fontFamily(this.appFont()).fontSize(this.fs(14)).fontColor(this.secondaryColor())
+              .width('100%').textAlign(TextAlign.Start).padding({ left: 16, bottom: 8 })
+              .margin({ top: 24 })
+            Column() {
+              Row() {
+                Column() {
+                  Text('系统').fontFamily(this.appFont()).fontSize(this.fs(15)).fontColor(this.textColor())
+                  Text('系统字号、字体与深色模式').fontFamily(this.appFont())
+                    .fontSize(this.fs(13)).fontColor(this.secondaryColor()).margin({ top: 3 })
+                }
+                .layoutWeight(1)
+                .alignItems(HorizontalAlign.Start)
+                Image($r('sys.media.ohos_ic_public_arrow_right'))
+                  .width(18).height(18).fillColor(this.secondaryColor())
+              }
+              .width('100%')
+              .padding({ left: 16, right: 16, top: 14, bottom: 14 })
+              .onClick(() => openSystemStyle())
+
+              this.divider()
+
+              Row() {
+                Column() {
+                  Text('文章列表').fontFamily(this.appFont()).fontSize(this.fs(15)).fontColor(this.textColor())
+                  Text('标题、摘要、元信息的字号与字体').fontFamily(this.appFont())
+                    .fontSize(this.fs(13)).fontColor(this.secondaryColor()).margin({ top: 3 })
+                }
+                .layoutWeight(1)
+                .alignItems(HorizontalAlign.Start)
+                Image($r('sys.media.ohos_ic_public_arrow_right'))
+                  .width(18).height(18).fillColor(this.secondaryColor())
+              }
+              .width('100%')
+              .padding({ left: 16, right: 16, top: 14, bottom: 14 })
+              .onClick(() => openArticleListStyle())
+
+              this.divider()
+
+              Row() {
+                Column() {
+                  Text('全文阅读').fontFamily(this.appFont()).fontSize(this.fs(15)).fontColor(this.textColor())
+                  Text('正文字号、页边距、行距与字体').fontFamily(this.appFont())
+                    .fontSize(this.fs(13)).fontColor(this.secondaryColor()).margin({ top: 3 })
+                }
+                .layoutWeight(1)
+                .alignItems(HorizontalAlign.Start)
+                Image($r('sys.media.ohos_ic_public_arrow_right'))
+                  .width(18).height(18).fillColor(this.secondaryColor())
+              }
+              .width('100%')
+              .padding({ left: 16, right: 16, top: 14, bottom: 14 })
+              .onClick(() => openReaderStyle())
+            }
+            .width('100%')
+            .backgroundColor(this.surfaceColor())
+            .borderRadius(10)
+
+            Text('阅读').fontFamily(this.appFont()).fontSize(this.fs(14)).fontColor(this.secondaryColor())
+              .width('100%').textAlign(TextAlign.Start).padding({ left: 16, bottom: 8 })
+              .margin({ top: 24 })
+            Column() {
+              Row() {
+                Column() {
+                  Text('启动时同步').fontFamily(this.appFont()).fontSize(this.fs(15)).fontColor(this.textColor())
+                  Text('打开应用时自动刷新订阅').fontFamily(this.appFont()).fontSize(this.fs(13)).fontColor(this.secondaryColor()).margin({ top: 3 })
+                }
+                .layoutWeight(1)
+                .alignItems(HorizontalAlign.Start)
+                Toggle({ isOn: this.syncOnLaunch, type: ToggleType.Switch })
+                  .onChange((value: boolean) => {
+                    this.syncOnLaunch = value;
+                    settingsStore.setSyncOnLaunch(value);
+                  })
+              }
+              .width('100%')
+              .padding({ left: 16, right: 16, top: 14, bottom: 14 })
+
+              this.divider()
+
+              Row() {
+                Column() {
+                  Text('打开文章即标已读').fontFamily(this.appFont()).fontSize(this.fs(15)).fontColor(this.textColor())
+                  Text('进入阅读页后标记为已读').fontFamily(this.appFont()).fontSize(this.fs(13)).fontColor(this.secondaryColor()).margin({ top: 3 })
+                }
+                .layoutWeight(1)
+                .alignItems(HorizontalAlign.Start)
+                Toggle({ isOn: this.markReadOnOpen, type: ToggleType.Switch })
+                  .onChange((value: boolean) => {
+                    this.markReadOnOpen = value;
+                    settingsStore.setMarkReadOnOpen(value);
+                  })
+              }
+              .width('100%')
+              .padding({ left: 16, right: 16, top: 14, bottom: 14 })
+
+              this.divider()
+
+              Row() {
+                Column() {
+                  Text('滚动标记已读').fontFamily(this.appFont()).fontSize(this.fs(15)).fontColor(this.textColor())
+                  Text('滚动出屏幕的文章自动标为已读').fontFamily(this.appFont())
+                    .fontSize(this.fs(13)).fontColor(this.secondaryColor()).margin({ top: 3 })
+                }
+                .layoutWeight(1)
+                .alignItems(HorizontalAlign.Start)
+                Toggle({ isOn: this.markReadOnScroll, type: ToggleType.Switch })
+                  .onChange((value: boolean) => {
+                    this.markReadOnScroll = value;
+                    settingsStore.setMarkReadOnScroll(value);
+                  })
+              }
+              .width('100%')
+              .padding({ left: 16, right: 16, top: 14, bottom: 14 })
+
+              this.divider()
+
+              Row() {
+                Column() {
+                  Text('每次拉取条数').fontFamily(this.appFont()).fontSize(this.fs(15)).fontColor(this.textColor())
+                  Text('同步时每批拉取并入库的文章数量')
+                    .fontFamily(this.appFont()).fontSize(this.fs(13)).fontColor(this.secondaryColor())
+                    .margin({ top: 3 })
+                }
+                .layoutWeight(1)
+                .alignItems(HorizontalAlign.Start)
                 Row() {
                   Text(`${this.fetchBatchSize}`).fontFamily(this.appFont())
-                    .fontSize(this.fs(14)).fontColor(this.secondaryColor())
-                  Text('›').fontSize(this.fs(18)).fontColor(this.secondaryColor()).margin({ left: 4 })
+                    .fontSize(this.fs(15)).fontColor(this.secondaryColor())
+                  Image($r('sys.media.ohos_ic_public_arrow_right'))
+                    .width(18).height(18).fillColor(this.secondaryColor()).margin({ left: 4 })
                 }
+                .alignItems(VerticalAlign.Center)
                 .bindMenu(this.fetchBatchMenu(), { placement: Placement.BottomRight })
               }
               .width('100%')
-              Text('同步时每批拉取并入库的文章数量')
-                .fontFamily(this.appFont()).fontSize(this.fs(12)).fontColor(this.secondaryColor())
-                .margin({ top: 6 })
-                .alignSelf(ItemAlign.Start)
-            }
-            .width('100%')
-            .alignItems(HorizontalAlign.Start)
-            .padding({ left: 16, right: 16, top: 14, bottom: 14 })
-            .backgroundColor(this.surfaceColor())
+              .alignItems(VerticalAlign.Center)
+              .padding({ left: 16, right: 16, top: 14, bottom: 14 })
 
-            Column() {
+              this.divider()
+
               Row() {
-                Text('保留文章时间').fontFamily(this.appFont()).fontSize(this.fs(15)).fontColor(this.textColor())
-                  .layoutWeight(1)
+                Column() {
+                  Text('保留文章时间').fontFamily(this.appFont()).fontSize(this.fs(15)).fontColor(this.textColor())
+                  Text('清理超过该时间的文章')
+                    .fontFamily(this.appFont()).fontSize(this.fs(13)).fontColor(this.secondaryColor())
+                    .margin({ top: 3 })
+                }
+                .layoutWeight(1)
+                .alignItems(HorizontalAlign.Start)
                 Row() {
                   Text(this.keepDaysLabel()).fontFamily(this.appFont())
-                    .fontSize(this.fs(14)).fontColor(this.secondaryColor())
-                  Text('›').fontSize(this.fs(18)).fontColor(this.secondaryColor()).margin({ left: 4 })
+                    .fontSize(this.fs(15)).fontColor(this.secondaryColor())
+                  Image($r('sys.media.ohos_ic_public_arrow_right'))
+                    .width(18).height(18).fillColor(this.secondaryColor()).margin({ left: 4 })
                 }
+                .alignItems(VerticalAlign.Center)
                 .bindMenu(this.keepDaysMenu(), { placement: Placement.BottomRight })
               }
               .width('100%')
-              Text('清理超过该时间的文章')
-                .fontFamily(this.appFont()).fontSize(this.fs(12)).fontColor(this.secondaryColor())
-                .margin({ top: 6 })
-                .alignSelf(ItemAlign.Start)
+              .alignItems(VerticalAlign.Center)
+              .padding({ left: 16, right: 16, top: 14, bottom: 14 })
             }
             .width('100%')
-            .alignItems(HorizontalAlign.Start)
-            .padding({ left: 16, right: 16, top: 14, bottom: 14 })
             .backgroundColor(this.surfaceColor())
+            .borderRadius(10)
 
             Column() {
-              Text('调试').fontFamily(this.appFont()).fontSize(this.fs(15)).fontWeight(FontWeight.Medium).fontColor(this.textColor())
+              Text('调试').fontFamily(this.appFont()).fontSize(this.fs(14)).fontWeight(FontWeight.Medium).fontColor(this.textColor())
               Text('清除全文缓存（重新打开文章将使用新的提取算法）')
                 .fontFamily(this.appFont())
-                .fontSize(this.fs(13)).fontColor('#2663D6')
+                .fontSize(this.fs(15)).fontColor('#2663D6')
                 .margin({ top: 10 })
                 .onClick(async () => {
                   await rssRepository.clearFullContentCache();
                   this.getUIContext().getPromptAction().showToast({ message: '全文缓存已清除' });
                 })
-              Text('关于').fontFamily(this.appFont()).fontSize(this.fs(15)).fontWeight(FontWeight.Medium).fontColor(this.textColor())
+              Text('关于').fontFamily(this.appFont()).fontSize(this.fs(14)).fontWeight(FontWeight.Medium).fontColor(this.textColor())
                 .margin({ top: 20 })
               Text('ReadYou HarmonyOS 版 · v0.1.0').fontFamily(this.appFont())
                 .fontSize(this.fs(13)).fontColor(this.secondaryColor()).margin({ top: 10 })
-                .margin({ bottom: 16 })
             }
             .width('100%')
             .padding(16)
             .backgroundColor(this.surfaceColor())
+            .borderRadius(10)
             .margin({ top: 24 })
           }
           .width('100%')
-          .padding({ left: 12, right: 12, bottom: 32 + this.bottomInset })
+          .padding({ left: 12, right: 12, bottom: 48 + this.bottomInset })
         }
         .width('100%')
         .layoutWeight(1)
