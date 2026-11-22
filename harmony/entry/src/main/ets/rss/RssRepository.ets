@@ -108,6 +108,11 @@ class FeedRepository {
     return database.getArticle(id);
   }
 
+  /** Metadata without the HTML bodies, for actions that only need title/link. */
+  getArticleMeta(id: string): Promise<Article | undefined> {
+    return database.getArticleMeta(id);
+  }
+
   /** Lazily fetch the body for articles that were only stored as read-state ids. */
   async ensureArticleContent(articleId: string): Promise<Article | undefined> {
     let article: Article | undefined = await database.getArticle(articleId);
@@ -278,6 +283,18 @@ class FeedRepository {
       return;
     }
     await service.markRead(account, ids, true);
+  }
+
+  /** Mark unread articles in scope that were published before `before` (ms).
+   *  Mirrors Android's markAsReadFromListByDate for the 1/3/7-day bar options. */
+  async markAllReadBefore(feedId: string, groupId: string | undefined, before: number): Promise<void> {
+    const account: Account = await this.activeAccount();
+    const service: FeedSyncService = syncServiceFor(account);
+    const ids: string[] = await database.listArticleIds(account.id, 'unread', feedId, groupId, before);
+    if (ids.length === 0) {
+      return;
+    }
+    await service.markRead(account, ids, true, before);
   }
 }
 

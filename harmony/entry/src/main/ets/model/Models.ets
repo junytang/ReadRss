@@ -69,6 +69,14 @@ export interface AppSettings {
   articleSummaryFontSize: number;
   articleMetaFontSize: number;
   articleFontFamily: string;
+  // Article list behavior (Android FlowPageStyle / Interaction preferences).
+  sortUnreadEarliest: boolean;          // false = Latest, true = Earliest
+  swipeStartAction: number;             // SWIPE_NONE / SWIPE_TOGGLE_READ / SWIPE_TOGGLE_STARRED
+  swipeEndAction: number;
+  showFeedIcon: boolean;
+  showFeedName: boolean;
+  showArticleImage: boolean;            // thumbnail on the right
+  articleDescLength: number;            // DESC_NONE / DESC_SHORT / DESC_LONG
   // Full-text reader appearance.
   readerBodyFontSize: number;
   readerPageMargin: number;
@@ -95,6 +103,14 @@ export function defaultSettings(): AppSettings {
     articleSummaryFontSize: 15,
     articleMetaFontSize: 13,
     articleFontFamily: 'sans-serif',
+    sortUnreadEarliest: false,
+    // Android defaults: start = ToggleStarred, end = ToggleRead.
+    swipeStartAction: 2,
+    swipeEndAction: 1,
+    showFeedIcon: true,
+    showFeedName: true,
+    showArticleImage: false,
+    articleDescLength: 2,
     readerBodyFontSize: 17,
     readerPageMargin: 16,
     readerLineSpacing: 1.75,

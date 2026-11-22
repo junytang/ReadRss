@@ -1,4 +1,4 @@
-import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
+import { AbilityConstant, ConfigurationConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { window, display } from '@kit.ArkUI';
 import { database } from '../data/Database';
 import { settingsStore } from '../data/SettingsStore';
@@ -83,6 +83,18 @@ export default class EntryAbility extends UIAbility {
       .then(() => settingsStore.init(context))
       .then(() => gReaderTokenStore.init(context))
       .then(async () => {
+        // Apply the persisted color mode BEFORE loadContent. Calling setColorMode
+        // after the UI starts building triggers a global config change that
+        // re-lays out every Text component, visible as a one-frame font jitter.
+        try {
+          context.getApplicationContext().setColorMode(
+            settingsStore.get().darkMode
+              ? ConfigurationConstant.ColorMode.COLOR_MODE_DARK
+              : ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT
+          );
+        } catch (error) {
+          Logger.warn(`setColorMode skipped: ${(error as Error).message}`);
+        }
         await accountRepository.ensureDefault();
         // Startup retention cleanup (non-blocking for UI).
         rssRepository.cleanExpiredArticles(settingsStore.get().keepArticleDays)
@@ -106,6 +118,7 @@ export default class EntryAbility extends UIAbility {
         AppStorage.setOrCreate<number>('syncFinishedTick', 0);
         AppStorage.setOrCreate<number>('navBackTick', 0);
         AppStorage.setOrCreate<number>('fontDataTick', 0);
+        AppStorage.setOrCreate<number>('listSettingsTick', 0);
         AppStorage.setOrCreate<number>('readStatusTick', 0);
         AppStorage.setOrCreate<number>('bannerTick', 0);
         AppStorage.setOrCreate<number>('optimisticUnreadDelta', 0);
@@ -116,6 +129,9 @@ export default class EntryAbility extends UIAbility {
       });
 
     Promise.all([windowReady, dataReady]).then(() => {
+      // Note: the custom font is registered in Index.aboutToAppear using the
+      // page's own UIContext. Registering here via the window's UIContext (before
+      // loadContent) has no bound page yet and the registration is discarded.
       windowStage.loadContent('pages/Index', (err) => {
         if (err.code) {
           Logger.error(`loadContent failed: ${err.code} ${err.message}`);

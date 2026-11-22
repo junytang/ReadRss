@@ -1,4 +1,3 @@
-import { common, ConfigurationConstant } from '@kit.AbilityKit';
 import {
   AccountEditorParam,
   ArticleScope,
@@ -80,22 +79,13 @@ struct Index {
     const settings = settingsStore.get();
     AppStorage.setOrCreate<boolean>('darkMode', settings.darkMode);
     this.darkMode = settings.darkMode;
+    // Color-mode switching happens in EntryAbility BEFORE loadContent (doing it
+    // here triggers a global re-layout — all text jitters once on first paint).
+    // The custom font must be registered here with THIS page's UIContext; using
+    // the window's context before loadContent has no bound page and is discarded.
     FontManager.register(this.getUIContext(), settings.customFontPath);
     FontManager.setSystemFamily(settings.systemFontFamily);
     AppStorage.set<number>('fontScale', settings.systemFontScale);
-    try {
-      const hostContext = this.getUIContext().getHostContext();
-      if (hostContext) {
-        const context = hostContext as common.UIAbilityContext;
-        context.getApplicationContext().setColorMode(
-          settings.darkMode
-            ? ConfigurationConstant.ColorMode.COLOR_MODE_DARK
-            : ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT
-        );
-      }
-    } catch (error) {
-      // Color mode API may be unavailable on some form factors; ignore for MVP.
-    }
   }
 
   build() {

@@ -866,7 +866,7 @@ class ReadYouDatabase {
   /** Ids only, no article bodies. `markAllRead` used to load up to 100k full
    *  articles (content + full_content) just to collect their ids. */
   async listArticleIds(
-    accountId: string, filter: string, feedId?: string, groupId?: string
+    accountId: string, filter: string, feedId?: string, groupId?: string, before?: number
   ): Promise<string[]> {
     let sql: string = 'SELECT id FROM article WHERE account_id = ?';
     const args: Array<string | number> = [accountId];
@@ -882,6 +882,11 @@ class ReadYouDatabase {
     if (groupId && groupId.length > 0) {
       sql += ' AND feed_id IN (SELECT id FROM feed WHERE group_id = ?)';
       args.push(groupId);
+    }
+    // Only articles published before `before` (for "mark older than N days").
+    if (before !== undefined && before > 0) {
+      sql += ' AND published_at < ?';
+      args.push(before);
     }
     const rs = await this.query(sql, args);
     const ids: string[] = [];

@@ -23,6 +23,13 @@ class ReadYouSettingsStore {
       articleSummaryFontSize: await this.readInt('articleSummaryFontSize', this.cache.articleSummaryFontSize),
       articleMetaFontSize: await this.readInt('articleMetaFontSize', this.cache.articleMetaFontSize),
       articleFontFamily: await this.readString('articleFontFamily', this.cache.articleFontFamily),
+      sortUnreadEarliest: await this.readBool('sortUnreadEarliest', this.cache.sortUnreadEarliest),
+      swipeStartAction: await this.readInt('swipeStartAction', this.cache.swipeStartAction),
+      swipeEndAction: await this.readInt('swipeEndAction', this.cache.swipeEndAction),
+      showFeedIcon: await this.readBool('showFeedIcon', this.cache.showFeedIcon),
+      showFeedName: await this.readBool('showFeedName', this.cache.showFeedName),
+      showArticleImage: await this.readBool('showArticleImage', this.cache.showArticleImage),
+      articleDescLength: await this.readInt('articleDescLength', this.cache.articleDescLength),
       readerBodyFontSize: await this.readInt('readerBodyFontSize', this.cache.readerBodyFontSize),
       readerPageMargin: await this.readInt('readerPageMargin', this.cache.readerPageMargin),
       readerLineSpacing: await this.readInt('readerLineSpacing', this.cache.readerLineSpacing),
@@ -66,12 +73,29 @@ class ReadYouSettingsStore {
     AppStorage.setOrCreate<number>('articleSummaryFontSize', this.cache.articleSummaryFontSize);
     AppStorage.setOrCreate<number>('articleMetaFontSize', this.cache.articleMetaFontSize);
     AppStorage.setOrCreate<string>('articleFontFamily', this.cache.articleFontFamily);
+    AppStorage.setOrCreate<boolean>('sortUnreadEarliest', this.cache.sortUnreadEarliest);
+    AppStorage.setOrCreate<number>('swipeStartAction', this.cache.swipeStartAction);
+    AppStorage.setOrCreate<number>('swipeEndAction', this.cache.swipeEndAction);
+    AppStorage.setOrCreate<boolean>('showFeedIcon', this.cache.showFeedIcon);
+    AppStorage.setOrCreate<boolean>('showFeedName', this.cache.showFeedName);
+    AppStorage.setOrCreate<boolean>('showArticleImage', this.cache.showArticleImage);
+    AppStorage.setOrCreate<number>('articleDescLength', this.cache.articleDescLength);
     AppStorage.setOrCreate<number>('readerBodyFontSize', this.cache.readerBodyFontSize);
     AppStorage.setOrCreate<number>('readerPageMargin', this.cache.readerPageMargin);
     AppStorage.setOrCreate<number>('readerLineSpacing', this.cache.readerLineSpacing);
     AppStorage.setOrCreate<string>('readerFontFamily', this.cache.readerFontFamily);
     AppStorage.setOrCreate<number>('fontScale', this.cache.systemFontScale);
     AppStorage.setOrCreate<string>('systemFontFamily', this.cache.systemFontFamily);
+    // Publish every setting that any page binds to, so AppStorage is always the
+    // single source of truth and a change in one page updates all listeners.
+    AppStorage.setOrCreate<boolean>('darkMode', this.cache.darkMode);
+    AppStorage.setOrCreate<string>('activeAccountId', this.cache.activeAccountId);
+    AppStorage.setOrCreate<boolean>('syncOnLaunch', this.cache.syncOnLaunch);
+    AppStorage.setOrCreate<boolean>('markReadOnOpen', this.cache.markReadOnOpen);
+    AppStorage.setOrCreate<boolean>('markReadOnScroll', this.cache.markReadOnScroll);
+    AppStorage.setOrCreate<number>('keepArticleDays', this.cache.keepArticleDays);
+    AppStorage.setOrCreate<number>('fetchBatchSize', this.cache.fetchBatchSize);
+    AppStorage.setOrCreate<string>('customFontName', this.cache.customFontName);
   }
 
   private async write(key: string, value: boolean | number): Promise<void> {
@@ -84,6 +108,8 @@ class ReadYouSettingsStore {
 
   async setActiveAccountId(value: string): Promise<void> {
     this.cache.activeAccountId = value;
+    AppStorage.setOrCreate<string>('activeAccountId', value);
+    AppStorage.setOrCreate<number>('accountSwitchTick', Date.now());
     if (this.pref) {
       await this.pref.put('activeAccountId', value);
       await this.pref.flush();
@@ -92,37 +118,48 @@ class ReadYouSettingsStore {
 
   async setDarkMode(value: boolean): Promise<void> {
     this.cache.darkMode = value;
+    AppStorage.setOrCreate<boolean>('darkMode', value);
     await this.write('darkMode', value);
   }
 
   async setSyncOnLaunch(value: boolean): Promise<void> {
     this.cache.syncOnLaunch = value;
+    AppStorage.setOrCreate<boolean>('syncOnLaunch', value);
     await this.write('syncOnLaunch', value);
   }
 
   async setMarkReadOnOpen(value: boolean): Promise<void> {
     this.cache.markReadOnOpen = value;
+    AppStorage.setOrCreate<boolean>('markReadOnOpen', value);
     await this.write('markReadOnOpen', value);
   }
 
   async setKeepArticleDays(value: number): Promise<void> {
     this.cache.keepArticleDays = value;
+    AppStorage.setOrCreate<number>('keepArticleDays', value);
     await this.write('keepArticleDays', value);
   }
 
   async setMarkReadOnScroll(value: boolean): Promise<void> {
     this.cache.markReadOnScroll = value;
+    // Publish so the always-mounted ArticleListView reacts immediately. A plain
+    // @State there only refreshed via load()/onShown, which may not fire when
+    // returning from the settings page — leaving the old value in effect.
+    AppStorage.setOrCreate<boolean>('markReadOnScroll', value);
     await this.write('markReadOnScroll', value);
   }
 
   async setFetchBatchSize(value: number): Promise<void> {
     this.cache.fetchBatchSize = value;
+    AppStorage.setOrCreate<number>('fetchBatchSize', value);
     await this.write('fetchBatchSize', value);
   }
 
   async setCustomFontPath(value: string, name: string = ''): Promise<void> {
     this.cache.customFontPath = value;
     this.cache.customFontName = name;
+    AppStorage.setOrCreate<string>('customFontName', name);
+    AppStorage.setOrCreate<number>('fontDataTick', Date.now());
     if (this.pref) {
       await this.pref.put('customFontPath', value);
       await this.pref.put('customFontName', name);
@@ -183,6 +220,71 @@ class ReadYouSettingsStore {
       await this.pref.put('articleFontFamily', value);
       await this.pref.flush();
     }
+  }
+
+  /** Generic boolean setter for article-list behavior toggles. */
+  private async setBool(key: string, value: boolean): Promise<void> {
+    AppStorage.setOrCreate<boolean>(key, value);
+    if (this.pref) {
+      await this.pref.put(key, value);
+      await this.pref.flush();
+    }
+  }
+
+  /** Generic number setter for article-list behavior choices. */
+  private async setInt(key: string, value: number): Promise<void> {
+    AppStorage.setOrCreate<number>(key, value);
+    if (this.pref) {
+      await this.pref.put(key, value);
+      await this.pref.flush();
+    }
+  }
+
+  /** Bump a tick so the visible article list reloads after a behavior change. */
+  private bumpListSettings(): void {
+    AppStorage.setOrCreate<number>('listSettingsTick', Date.now());
+  }
+
+  async setSortUnreadEarliest(value: boolean): Promise<void> {
+    this.cache.sortUnreadEarliest = value;
+    await this.setBool('sortUnreadEarliest', value);
+    this.bumpListSettings();
+  }
+
+  async setSwipeStartAction(value: number): Promise<void> {
+    this.cache.swipeStartAction = value;
+    await this.setInt('swipeStartAction', value);
+    this.bumpListSettings();
+  }
+
+  async setSwipeEndAction(value: number): Promise<void> {
+    this.cache.swipeEndAction = value;
+    await this.setInt('swipeEndAction', value);
+    this.bumpListSettings();
+  }
+
+  async setShowFeedIcon(value: boolean): Promise<void> {
+    this.cache.showFeedIcon = value;
+    await this.setBool('showFeedIcon', value);
+    this.bumpListSettings();
+  }
+
+  async setShowFeedName(value: boolean): Promise<void> {
+    this.cache.showFeedName = value;
+    await this.setBool('showFeedName', value);
+    this.bumpListSettings();
+  }
+
+  async setShowArticleImage(value: boolean): Promise<void> {
+    this.cache.showArticleImage = value;
+    await this.setBool('showArticleImage', value);
+    this.bumpListSettings();
+  }
+
+  async setArticleDescLength(value: number): Promise<void> {
+    this.cache.articleDescLength = value;
+    await this.setInt('articleDescLength', value);
+    this.bumpListSettings();
   }
 
   async setReaderBodyFontSize(value: number): Promise<void> {

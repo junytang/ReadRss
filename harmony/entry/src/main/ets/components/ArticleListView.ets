@@ -1,4 +1,6 @@
 import { common } from '@kit.AbilityKit';
+import { systemShare } from '@kit.ShareKit';
+import { uniformTypeDescriptor as utd } from '@kit.ArkData';
 import { Article, Feed, FeedGroup, filterFeedsByDrawer } from '../model/Models';
 import { rssRepository } from '../rss/RssRepository';
 import { ArticleCounts } from '../data/Database';
@@ -7,13 +9,17 @@ import { Logger } from '../common/Logger';
 import { settingsStore } from '../data/SettingsStore';
 import { readStatusBatcher } from '../rss/ReadStatusBatcher';
 import { goBack, openArticle, openSettings } from '../common/NavigationService';
-import { FILTER_ALL, FILTER_STARRED, FILTER_UNREAD } from '../common/Constants';
+import {
+  DESC_LONG, DESC_NONE, DESC_SHORT, FILTER_ALL, FILTER_STARRED, FILTER_UNREAD,
+  SWIPE_NONE, SWIPE_TOGGLE_READ, SWIPE_TOGGLE_STARRED,
+} from '../common/Constants';
 import { FilterBarView } from './FilterBarView';
 import { FontManager } from '../common/FontManager';
 import { FeedIcon } from '../common/FeedIcon';
 import { accountRepository } from '../account/AccountRepository';
 import { accountTypeShortName } from '../account/AccountModels';
 import { FeedListView } from './FeedListView';
+import { ArticleRowView } from './ArticleRowView';
 
 /** Offscreen distance (vp) used by the filter/feed slide transition. */
 const DISTANCE: number = 1000;
@@ -28,6 +34,9 @@ const FULL_PAGE_SIZE: number = 100;
 const EXPAND_CHUNK: number = 100;
 /** Rows added per loadMore page when scrolling past the expanded batch. */
 const LOAD_MORE_STEP: number = 100;
+/** Largest single onScrollIndex jump treated as genuine scrolling. Bigger jumps
+ *  are stale offsets from a context switch and must not mass-mark articles read. */
+const MAX_SCROLL_MARK_STEP: number = 30;
 
 /** Article list for one feed (or all feeds when feedId is empty). */
 @Component
@@ -51,7 +60,15 @@ export struct ArticleListView {
   @StorageProp('articleTitleFontSize') articleTitleFontSize: number = 17;
   @StorageProp('articleSummaryFontSize') articleSummaryFontSize: number = 15;
   @StorageProp('articleMetaFontSize') articleMetaFontSize: number = 13;
-  @StorageProp('articleFontFamily') articleFontFamily: string = 'sans-serif';
+  // Article-list behavior settings (from Settings > Article List).
+  @StorageProp('sortUnreadEarliest') sortUnreadEarliest: boolean = false;
+  @StorageProp('swipeStartAction') swipeStartAction: number = SWIPE_TOGGLE_STARRED;
+  @StorageProp('swipeEndAction') swipeEndAction: number = SWIPE_TOGGLE_READ;
+  @StorageProp('showFeedIcon') showFeedIcon: boolean = true;
+  @StorageProp('showFeedName') showFeedName: boolean = true;
+  @StorageProp('showArticleImage') showArticleImage: boolean = true;
+  @StorageProp('articleDescLength') articleDescLength: number = DESC_SHORT;
+  @StorageProp('listSettingsTick') @Watch('onListSettingsChanged') listSettingsTick: number = 0;
   @StorageProp('readStatusTick') @Watch('onReadStatusChanged') readStatusTick: number = 0;
   @StorageProp('readStatusFlushedTick') @Watch('onReadStatusFlushed') readStatusFlushedTick: number = 0;
   @StorageProp('feedIconTick') @Watch('onFeedIconChanged') feedIconTick: number = 0;
@@ -92,12 +109,18 @@ export struct ArticleListView {
   private displayLimit: number = 500;
   private isLoadingMore: boolean = false;
   private pageLoadSeq: number = 0;
+  // Snapshot of the ordering scope (feed/group/filter/search/sort). In-flight
+  // paged appends are discarded if it changes, so a sort switch can never mix
+  // rows from two different orderings into one list.
+  private orderKey: string = '';
   // True while more rows may exist beyond the currently loaded prefix.
   private hasMore: boolean = true;
   // Unread rows optimistically marked read in the CURRENT scope but not yet
   // written to the DB by the batcher. Used to correct DB-based count re-reads.
   private scopeUnreadDelta: number = 0;
-  @State markReadOnScroll: boolean = false;
+  // AppStorage-backed so toggling it in Settings updates this always-mounted
+  // list immediately, without relying on load()/onShown refresh timing.
+  @StorageProp('markReadOnScroll') markReadOnScroll: boolean = false;
   @State unreadCount: number = 0;
   @State starredCount: number = 0;
   @State allCount: number = 0;
@@ -106,7 +129,6 @@ export struct ArticleListView {
   @State globalUnread: number = 0;
   @State globalStarred: number = 0;
   @State globalAll: number = 0;
-  @State showMarkAllConfirm: boolean = false;
   // Slide transition between filter/feed contexts: the previous list slides out
   // while the new one slides in from the opposite edge.
   @State prevArticles: Article[] = [];
@@ -116,6 +138,14 @@ export struct ArticleListView {
   private scrollOffset: number = 0;
   // Drives the visible article list; used by the title-bar tap to scroll to top.
   private listScroller: Scroller = new Scroller();
+  // Context switches replace the rows while the List keeps its old scroll
+  // offset. Until it snaps back to index 0, onScrollIndex reports the stale
+  // offset against the NEW rows and would mark off-screen articles as read.
+  private suppressScrollMark: boolean = false;
+  private contextSeq: number = 0;
+  // True while waiting for onScrollIndex(0) to confirm the snap-to-top after a
+  // context switch. A stale large start arriving in this window is ignored.
+  private awaitingTopConfirm: boolean = false;
   // Target offsets frozen at prepareSlide time so a late replayed onChange
   // cannot reverse the direction mid-transition.
   private targetCurOffset: number = 0;
@@ -216,9 +246,42 @@ export struct ArticleListView {
     const winH: number = stored !== undefined && stored > 0 ? stored : this.windowHeightVp;
     const chrome: number = this.topInset + this.bottomInset + 160;
     const usable: number = Math.max(240, winH - chrome);
-    const estimatedRows: number = Math.max(5, Math.floor(usable / (120 * this.fontScale)));
+    const estimatedRows: number = Math.max(5, Math.floor(usable / this.estimatedRowHeight()));
     const perScreen: number = this.visibleCount > 0 ? this.visibleCount : estimatedRows;
     return Math.min(80, Math.max(20, perScreen * 2));
+  }
+
+  /** Sort ascending only for the unread filter (Android: starred/all are fixed DESC). */
+  private sortAscending(): boolean {
+    return this.sortUnreadEarliest && this.currentFilter === FILTER_UNREAD;
+  }
+
+  /** Identity of the current ordering. Any change invalidates paged appends. */
+  private computeOrderKey(): string {
+    return [
+      this.currentFeedId, this.currentGroupId, this.currentFilter,
+      this.searchText, this.sortAscending() ? 'asc' : 'desc',
+    ].join('|');
+  }
+
+  /** Estimated height of one article row (vp), derived from the same display
+   *  settings the row renderer uses. Display toggles change row height, so the
+   *  first-page estimate must track them; otherwise the initial batch is too
+   *  small (blank space) or too large (wasted rows) before real measurement. */
+  private estimatedRowHeight(): number {
+    const titleLines: number = 2;
+    const summaryLines: number = this.articleDescLength === DESC_NONE
+      ? 0 : (this.articleDescLength === DESC_LONG ? 3 : 2);
+    // ~1.3 line-height factor, plus top margins and vertical padding.
+    const title: number = titleLines * this.articleTitleFontSize * this.fontScale * 1.3;
+    const summary: number = summaryLines > 0
+      ? 6 * this.fontScale + summaryLines * this.articleSummaryFontSize * this.fontScale * 1.3
+      : 0;
+    const meta: number = 6 * this.fontScale + this.articleMetaFontSize * this.fontScale * 1.4;
+    // A thumbnail sits on the right; when shown it sets a minimum row height.
+    const image: number = this.showArticleImage ? 64 : 0;
+    const padding: number = 28 * this.fontScale;
+    return Math.max(title + summary + meta + padding, image + padding);
   }
 
   /** Begin a slide transition: snapshot old rows on top, covering the list. */
@@ -339,6 +402,12 @@ export struct ArticleListView {
     this.load();
   }
 
+  /** A list-behavior setting changed (sort / display toggles): reload so the
+   *  query uses the new sort order and rows render with the new visibility. */
+  onListSettingsChanged(): void {
+    this.load();
+  }
+
   private async loadAccount(): Promise<void> {
     const account = await accountRepository.active();
     if (account) {
@@ -356,7 +425,6 @@ export struct ArticleListView {
 
   aboutToAppear(): void {
     this.currentFeedId = this.feedId;
-    this.markReadOnScroll = settingsStore.get().markReadOnScroll;
     this.loadAccount();
     this.load();
   }
@@ -366,13 +434,17 @@ export struct ArticleListView {
     readStatusBatcher.flush();
   }
 
-  private readColor(): string {
-    return this.darkMode ? '#6B7076' : '#9AA0A6';
-  }
-
   /** Mark rows above the visible range as read; commit is batched by ReadStatusBatcher. */
   private markScrolledArticles(start: number): void {
     if (!this.markReadOnScroll || start <= this.lastMarkedIndex) {
+      return;
+    }
+    // Normal scrolling advances `start` by only a few rows per frame. A large
+    // single jump means a stale scroll offset from a context switch slipped
+    // through (e.g. a delayed onScrollIndex delivered after the guard lifted).
+    // Re-anchor instead of mass-marking off-screen articles as read.
+    if (start - this.lastMarkedIndex > MAX_SCROLL_MARK_STEP) {
+      this.lastMarkedIndex = start;
       return;
     }
     let markedCount: number = 0;
@@ -504,7 +576,9 @@ export struct ArticleListView {
     this.articles = next;
   }
 
-  private async load(resetPaging: boolean = true, fromSync: boolean = false): Promise<void> {
+  private async load(
+    resetPaging: boolean = true, fromSync: boolean = false, snapToTop: boolean = true
+  ): Promise<void> {
     // During a sync the DB is being written batch by batch. An externally
     // triggered load would read an intermediate state and reset paging/scroll
     // markers, so ignore it. The sync's own refreshes pass fromSync=true.
@@ -524,14 +598,16 @@ export struct ArticleListView {
     const seq: number = ++this.loadSeq;
     // Invalidate any in-flight loadMore so it cannot append stale rows after us.
     this.pageLoadSeq++;
+    // Freeze the ordering scope: paged appends captured before this point are stale.
+    this.orderKey = this.computeOrderKey();
     // Reset to the first page only on a genuine context switch (filter/feed/search).
     // A sync-completed refresh passes false to preserve how deep the user scrolled.
     if (resetPaging) {
       this.displayLimit = this.firstPageSize();
       // A scope switch invalidates the old scope's pending scroll marks.
       this.scopeUnreadDelta = 0;
+      this.beginContextSwitch();
     }
-    this.markReadOnScroll = settingsStore.get().markReadOnScroll;
     const allFeeds: Feed[] = await rssRepository.listFeeds();
     if (seq !== this.loadSeq) return;
     this.iconFeeds = allFeeds;
@@ -543,12 +619,15 @@ export struct ArticleListView {
     FeedIcon.prefetch(this.getUIContext().getHostContext() as common.Context, this.feeds);
     const articles: Article[] = await rssRepository.listArticles(
       this.currentFeedId, this.currentFilter, this.displayLimit,
-      this.currentGroupId, false, this.searchText, true
+      this.currentGroupId, this.sortAscending(), this.searchText, true
     );
     if (seq !== this.loadSeq) return;
     this.articles = articles;
     this.hasMore = articles.length >= this.displayLimit;
     this.finishSlide();
+    if (resetPaging) {
+      this.finishContextSwitch(snapToTop);
+    }
     this.scheduleExpand(seq);
     this.lastMarkedIndex = 0;
     this.lastPrefetchIndex = 0;
@@ -576,14 +655,16 @@ export struct ArticleListView {
   private async reloadForFilterSwitch(): Promise<void> {
     const seq: number = ++this.loadSeq;
     this.pageLoadSeq++;
+    this.orderKey = this.computeOrderKey();
     this.displayLimit = this.firstPageSize();
     this.scopeUnreadDelta = 0;
+    this.beginContextSwitch();
     // Re-derive BOTH feeds and groups from the cached unfiltered lists. Leaving
     // groups stale here is what shows empty groups when switching to starred.
     this.applyFeedFilter();
     const articles: Article[] = await rssRepository.listArticles(
       this.currentFeedId, this.currentFilter, this.displayLimit,
-      this.currentGroupId, false, this.searchText, true
+      this.currentGroupId, this.sortAscending(), this.searchText, true
     );
     if (seq !== this.loadSeq) return;
     this.articles = articles;
@@ -592,6 +673,7 @@ export struct ArticleListView {
     this.lastPrefetchIndex = 0;
     this.scrollMarksPending = false;
     this.finishSlide();
+    this.finishContextSwitch();
     fullContentPrefetcher.ensureWindow(this.articles, this.firstVisibleIndex, this.visibleCount);
     this.scheduleExpand(seq);
   }
@@ -619,11 +701,14 @@ export struct ArticleListView {
    *  the query while the optimistic (grayed-out) row stays in the list, so the
    *  two prefixes diverge. Returns true if any genuinely new row was appended. */
   private async fetchAppend(targetLimit: number, seq: number, pageSeq: number): Promise<boolean> {
+    // Capture the ordering at request time. If a sort/feed/filter switch lands
+    // while the DB query is in flight, orderKey changes and these rows are stale.
+    const orderKey: string = this.orderKey;
     const rows: Article[] = await rssRepository.listArticles(
       this.currentFeedId, this.currentFilter, targetLimit,
-      this.currentGroupId, false, this.searchText, true
+      this.currentGroupId, this.sortAscending(), this.searchText, true
     );
-    if (seq !== this.loadSeq || pageSeq !== this.pageLoadSeq) {
+    if (seq !== this.loadSeq || pageSeq !== this.pageLoadSeq || orderKey !== this.orderKey) {
       return false;
     }
     // Fewer rows than requested means the data source is exhausted.
@@ -756,164 +841,162 @@ export struct ArticleListView {
     });
   }
 
-  private doMarkAllRead(): void {
-    this.showMarkAllConfirm = false;
+  /** Mark unread articles as read. `days <= 0` means all; otherwise only
+   *  articles older than N days (Android MarkAsReadBar 1/3/7/All). */
+  private doMarkRead(days: number): void {
+    const before: number = days > 0 ? Date.now() - days * 24 * 60 * 60 * 1000 : 0;
     const ids: string[] = [];
     for (const article of this.articles) {
-      if (!article.isRead) {
+      if (article.isRead) {
+        continue;
+      }
+      if (days <= 0 || article.publishedAt < before) {
         ids.push(article.id);
       }
     }
+    if (ids.length === 0) {
+      this.getUIContext().getPromptAction().showToast({ message: '没有符合条件的文章' });
+      return;
+    }
+    const count: number = ids.length;
     const previousUnread: number = this.unreadCount;
     this.setLocalRead(ids, true);
-    // Marking all currently-unread rows: unreadCount drops to zero in this scope.
-    this.scopeUnreadDelta += previousUnread;
-    this.optimisticUnreadChange(-previousUnread);
-    rssRepository.markAllRead(this.currentFeedId, this.currentGroupId).then(() => {
-      // DB is authoritative now; drop only this mark's optimistic contribution.
-      if (this.scopeUnreadDelta >= previousUnread) { this.scopeUnreadDelta -= previousUnread; }
-      this.decrementOptimisticDelta(-previousUnread);
+    this.scopeUnreadDelta += count;
+    this.optimisticUnreadChange(-count);
+    const task: Promise<void> = days <= 0
+      ? rssRepository.markAllRead(this.currentFeedId, this.currentGroupId)
+      : rssRepository.markAllReadBefore(this.currentFeedId, this.currentGroupId, before);
+    task.then(() => {
+      if (this.scopeUnreadDelta >= count) { this.scopeUnreadDelta -= count; }
+      this.decrementOptimisticDelta(-count);
       this.refreshFeeds();
       this.notifyBannerTick();
     }).catch((error: Error) => {
       this.setLocalRead(ids, false);
-      if (this.scopeUnreadDelta >= previousUnread) { this.scopeUnreadDelta -= previousUnread; }
-      this.decrementOptimisticDelta(-previousUnread);
+      if (this.scopeUnreadDelta >= count) { this.scopeUnreadDelta -= count; }
+      this.decrementOptimisticDelta(-count);
       this.unreadCount = previousUnread;
       this.refreshCounts();
       this.notifyBannerTick();
-      Logger.error(`Mark all read failed: ${error.message}`);
+      Logger.error(`Mark read failed: ${error.message}`);
     });
   }
 
-  private formatDate(timestamp: number): string {
-    if (timestamp <= 0) {
-      return '';
-    }
-    const date: Date = new Date(timestamp);
-    const now: Date = new Date();
-    const sameDay: boolean = date.getFullYear() === now.getFullYear() &&
-      date.getMonth() === now.getMonth() &&
-      date.getDate() === now.getDate();
-    if (sameDay) {
-      return `${date.getHours()}:${date.getMinutes().toString().padStart(2, '0')}`;
-    }
-    return `${date.getMonth() + 1}月${date.getDate()}日`;
+  /** Optimistically toggle read state for one row (shared by swipe + menu). */
+  private toggleRead(article: Article): void {
+    const read: boolean = !article.isRead;
+    this.setLocalRead([article.id], read);
+    const delta: number = read ? -1 : 1;
+    if (read) { this.scopeUnreadDelta += 1; }
+    this.optimisticUnreadChange(delta);
+    rssRepository.markRead(article.id, read).then(() => {
+      if (read && this.scopeUnreadDelta > 0) { this.scopeUnreadDelta -= 1; }
+      this.decrementOptimisticDelta(delta);
+      this.refreshFeeds();
+      this.notifyBannerTick();
+    }).catch((error: Error) => {
+      this.setLocalRead([article.id], !read);
+      if (read && this.scopeUnreadDelta > 0) { this.scopeUnreadDelta -= 1; }
+      this.decrementOptimisticDelta(delta);
+      this.unreadCount = Math.max(0, this.unreadCount - delta);
+      this.refreshCounts();
+      this.notifyBannerTick();
+      Logger.error(`Mark read failed: ${error.message}`);
+    });
   }
 
+  /** Optimistically toggle starred state for one row (shared by swipe + menu). */
+  private toggleStar(article: Article): void {
+    const starred: boolean = !article.isStarred;
+    this.setLocalStarred(article.id, starred);
+    this.starredCount = Math.max(0, this.starredCount + (starred ? 1 : -1));
+    rssRepository.markStarred(article.id, starred).then(() => {
+      this.refreshFeeds();
+      this.notifyBannerTick();
+    }).catch((error: Error) => {
+      this.setLocalStarred(article.id, !starred);
+      this.starredCount = Math.max(0, this.starredCount + (starred ? -1 : 1));
+      this.refreshCounts();
+      this.notifyBannerTick();
+      Logger.error(`Toggle starred failed: ${error.message}`);
+    });
+  }
+
+  /** Mark-as-read options as a standard Array<MenuElement> menu. Using the
+   *  system menu (same as SettingsView) instead of a Menu() CustomBuilder avoids
+   *  the oversized / blank-strip rendering seen on some devices; the title is
+   *  supplied via MenuOptions.title (only applies to Array<MenuElement>). */
+  private markReadMenu(): Array<MenuElement> {
+    return [
+      { value: '1 天内', action: () => this.doMarkRead(1) },
+      { value: '3 天内', action: () => this.doMarkRead(3) },
+      { value: '7 天内', action: () => this.doMarkRead(7) },
+      { value: '全部', action: () => this.doMarkRead(0) },
+    ];
+  }
+
+  /** Icon-only action button shown by a swipe. A fixed-size container with a
+   *  centred icon avoids the icon being squeezed by padding (ArkUI width/height
+   *  includes padding), which otherwise shows only a small gray circle. */
   @Builder
-  swipeMark(article: Article): void {
-    Row() {
-      Button(article.isRead ? '标未读' : '标已读')
-        .backgroundColor('#5E636A')
-        .fontColor(Color.White)
-        .onClick(() => {
-          const read: boolean = !article.isRead;
-          // UI first; the server is only asked to correct the state afterwards.
-          this.setLocalRead([article.id], read);
-          const delta: number = read ? -1 : 1;
-          if (read) { this.scopeUnreadDelta += 1; }
-          this.optimisticUnreadChange(delta);
-          rssRepository.markRead(article.id, read).then(() => {
-            if (read && this.scopeUnreadDelta > 0) { this.scopeUnreadDelta -= 1; }
-            this.decrementOptimisticDelta(delta);
-            this.refreshFeeds();
-            this.notifyBannerTick();
-          }).catch((error: Error) => {
-            this.setLocalRead([article.id], !read);
-            if (read && this.scopeUnreadDelta > 0) { this.scopeUnreadDelta -= 1; }
-            this.decrementOptimisticDelta(delta);
-            this.unreadCount = Math.max(0, this.unreadCount - delta);
-            this.refreshCounts();
-            this.notifyBannerTick();
-            Logger.error(`Mark read failed: ${error.message}`);
-          });
-        })
+  swipeActionButton(article: Article, action: number): void {
+    if (action === SWIPE_TOGGLE_READ || action === SWIPE_TOGGLE_STARRED) {
+      Row() {
+        Image(action === SWIPE_TOGGLE_READ
+          ? $r('app.media.ic_mark_read')
+          : (article.isStarred ? $r('app.media.ic_filter_star') : $r('app.media.ic_star_outline')))
+          .width(22)
+          .height(22)
+          .fillColor(Color.White)
+      }
+      .width(52)
+      .height(52)
+      .justifyContent(FlexAlign.Center)
+      .alignItems(VerticalAlign.Center)
+      .margin({ left: 8, right: 8 })
+      .backgroundColor(action === SWIPE_TOGGLE_STARRED && article.isStarred ? '#F9A825' : '#5E636A')
+      .borderRadius(26)
+      .onClick(() => {
+        if (action === SWIPE_TOGGLE_READ) {
+          this.toggleRead(article);
+        } else {
+          this.toggleStar(article);
+        }
+      })
     }
   }
 
   @Builder
   articleItem(article: Article): void {
-    Row() {
-      Column() {
-        Text(article.title).fontFamily(this.listFont())
-          .fontSize(this.articleTitleFontSize * this.fontScale)
-          .fontWeight(article.isRead ? FontWeight.Normal : FontWeight.Medium)
-          .fontColor(article.isRead ? this.readColor() : this.textColor())
-          .maxLines(2)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-        if (article.summary.length > 0) {
-          Text(article.summary).fontFamily(this.listFont())
-            .fontSize(this.articleSummaryFontSize * this.fontScale)
-            .fontColor(article.isRead ? this.readColor() : this.secondaryColor())
-            .maxLines(3)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-            .margin({ top: 6 * this.fontScale })
-            .width('100%')
-        }
-        Row() {
-          if (this.iconForFeed(article.feedId).length > 0) {
-            Image(this.iconForFeed(article.feedId))
-              .width(14)
-              .height(14)
-              .borderRadius(3)
-              .syncLoad(true)
-              .margin({ right: 4 })
-          } else {
-            Image($r('app.media.app_icon'))
-              .width(14)
-              .height(14)
-              .borderRadius(3)
-              .syncLoad(true)
-              .margin({ right: 4 })
-          }
-          Text(article.feedTitle).fontFamily(this.listFont())
-            .fontSize(this.articleMetaFontSize * this.fontScale)
-            .fontColor(article.isRead ? this.readColor() : this.secondaryColor())
-            .layoutWeight(1)
-            .maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-          if (article.isStarred) {
-            Text('★').fontFamily(this.appFont()).fontSize(this.fs(12)).fontColor('#F9A825')
-              .margin({ right: 6 })
-          }
-          Text(this.formatDate(article.publishedAt)).fontFamily(this.listFont())
-            .fontSize(this.articleMetaFontSize * this.fontScale)
-            .fontColor(article.isRead ? this.readColor() : this.secondaryColor())
-        }
-        .width('100%')
-        .margin({ top: 6 * this.fontScale })
-      }
-      .layoutWeight(1)
-      .alignItems(HorizontalAlign.Start)
-    }
-    .width('100%')
-    .padding({
-      left: 16, right: 16,
-      top: 14 * this.fontScale, bottom: 14 * this.fontScale,
-    })
-    .backgroundColor(this.surfaceColor())
-    .gesture(
-      LongPressGesture().onAction(() => {
+    // Reuses the same row layout as the Settings > Article List preview.
+    ArticleRowView({
+      article: article,
+      feedIconSrc: this.iconForFeed(article.feedId),
+      onLongPress: () => {
         this.menuArticleId = article.id;
         this.menuArticleRead = article.isRead;
         this.menuArticleStarred = article.isStarred;
         this.menuArticleTime = article.publishedAt;
         this.setArticleMenuVisible(true);
-      })
-    )
+      },
+    })
   }
 
-  /** Android ArticleListReaderViewModel.markAsReadFromListByDate: newest first,
-   *  so "above" means newer (date > current) and "below" means older. */
+  /** Android ArticleListReaderViewModel.markAsReadFromListByDate. "Above" and
+   *  "below" follow the visible sort direction: with the default newest-first
+   *  order above = newer; with oldest-first above = older. */
   private menuMarkByDate(above: boolean): void {
     const ids: string[] = [];
+    // In ASC order "above" is older; in DESC (default) "above" is newer.
+    const aboveIsOlder: boolean = this.sortAscending();
+    const wantOlder: boolean = above ? aboveIsOlder : !aboveIsOlder;
     for (const article of this.articles) {
       if (article.id === this.menuArticleId || article.isRead) {
         continue;
       }
-      if (above ? article.publishedAt > this.menuArticleTime
-                : article.publishedAt < this.menuArticleTime) {
+      if (wantOlder
+            ? article.publishedAt < this.menuArticleTime
+            : article.publishedAt > this.menuArticleTime) {
         ids.push(article.id);
       }
     }
@@ -982,6 +1065,34 @@ export struct ArticleListView {
       this.notifyBannerTick();
       Logger.error(`Toggle starred failed: ${error.message}`);
     });
+  }
+
+  /** Share the long-pressed article via the system share sheet (Android menu item). */
+  private async menuShare(): Promise<void> {
+    const article: Article | undefined = await rssRepository.getArticleMeta(this.menuArticleId);
+    const link: string = article?.link ?? '';
+    if (link.length === 0) {
+      this.getUIContext().getPromptAction().showToast({ message: '这篇文章没有原文链接' });
+      return;
+    }
+    try {
+      const title: string = article?.title ?? '';
+      const shareData: systemShare.SharedData = new systemShare.SharedData({
+        utd: utd.UniformDataType.HYPERLINK,
+        content: link,
+        title: title,
+        description: title,
+      });
+      const controller: systemShare.ShareController = new systemShare.ShareController(shareData);
+      const context: common.UIAbilityContext =
+        this.getUIContext().getHostContext() as common.UIAbilityContext;
+      await controller.show(context, {
+        selectionMode: systemShare.SelectionMode.SINGLE,
+        previewMode: systemShare.SharePreviewMode.DETAIL,
+      });
+    } catch (error) {
+      this.getUIContext().getPromptAction().showToast({ message: `分享失败：${(error as Error).message}` });
+    }
   }
 
   private setArticleMenuVisible(visible: boolean): void {
@@ -1129,12 +1240,6 @@ export struct ArticleListView {
       ? FontManager.familyFor(this.systemFontFamily) : 'sans-serif';
   }
 
-  private listFont(): string {
-    // Font selection is per context; the tick also covers custom font installs.
-    return this.fontDataTick >= 0
-      ? FontManager.familyFor(this.articleFontFamily) : 'sans-serif';
-  }
-
   /** Force the row list to rebuild when an article font size changes. */
   onFontSizeChanged(): void {
     if (this.articles.length > 0) {
@@ -1151,6 +1256,51 @@ export struct ArticleListView {
     } catch (error) {
       // List may not have laid out yet (e.g. tapped before the first paint).
     }
+  }
+
+  /** Begin a genuine context switch (filter/feed/group/search): freeze scroll
+   *  marking immediately so the stale List offset can't mark off-screen rows. */
+  private beginContextSwitch(): void {
+    this.contextSeq++;
+    this.suppressScrollMark = true;
+    this.awaitingTopConfirm = true;
+    this.lastMarkedIndex = 0;
+  }
+
+  /** Settle a replaced list and release the marking guard. When snapToTop is
+   *  true (filter/feed/group/search switches) scroll to index 0; when false
+   *  (page re-shown after reading) keep the current offset. Either way the
+   *  guard stays until layout settles, so a stale offset can't mark rows. */
+  private finishContextSwitch(snapToTop: boolean = true): void {
+    const seq: number = this.contextSeq;
+    if (snapToTop) {
+      this.firstVisibleIndex = 0;
+      try {
+        this.listScroller.scrollToIndex(0, false, ScrollAlign.START);
+      } catch (error) {
+        // List may not have laid out yet.
+      }
+    } else {
+      // Keeping position (page re-shown): no top confirmation is coming.
+      this.awaitingTopConfirm = false;
+    }
+    // Safety net only. Normal release happens when onScrollIndex reports 0.
+    setTimeout(() => {
+      if (seq !== this.contextSeq) return;
+      if (snapToTop) {
+        // Re-snap in case the first one ran before the new rows were measured.
+        try {
+          this.listScroller.scrollToIndex(0, false, ScrollAlign.START);
+        } catch (error) {
+          // ignore
+        }
+        // Force-release even if no onScrollIndex fired (e.g. empty list).
+        this.firstVisibleIndex = 0;
+      }
+      this.lastMarkedIndex = this.firstVisibleIndex;
+      this.awaitingTopConfirm = false;
+      this.suppressScrollMark = false;
+    }, 150);
   }
 
   /** Search button, mirroring Android FlowPage.kt: when scrolled down, animate
@@ -1261,7 +1411,11 @@ export struct ArticleListView {
           .height(38)
           .backgroundColor(Color.White)
           .margin({ left: 8 })
-          .onClick(() => { this.showMarkAllConfirm = true; })
+          // Standard ArkUI menu, titled "标记为已读" (Android MarkAsReadBar).
+          .bindMenu(this.markReadMenu(), {
+            title: '标记为已读',
+            placement: Placement.BottomRight,
+          })
         }
         .width('100%')
         .padding({ left: 12, right: 16, top: 14, bottom: 14 })
@@ -1311,8 +1465,11 @@ export struct ArticleListView {
                 }
                 .onClick(() => this.open(article))
                 .swipeAction({
-                  end: {
-                    builder: () => { this.swipeMark(article); },
+                  start: this.swipeStartAction === SWIPE_NONE ? undefined : {
+                    builder: () => { this.swipeActionButton(article, this.swipeStartAction); },
+                  },
+                  end: this.swipeEndAction === SWIPE_NONE ? undefined : {
+                    builder: () => { this.swipeActionButton(article, this.swipeEndAction); },
                   },
                 })
               }, (article: Article) => `${article.id}-${article.isRead}-${article.isStarred}`)
@@ -1332,6 +1489,32 @@ export struct ArticleListView {
             .divider({ strokeWidth: 1, color: this.darkMode ? '#2A2D31' : '#ECEFF2' })
             .onReachEnd(() => { this.loadMore(); })
             .onScrollIndex((start: number, end: number) => {
+              // A context switch swaps the rows but the List briefly keeps the
+              // OLD scroll offset. A stale large `start` against the new rows
+              // would mark off-screen articles as read, so gate everything on
+              // the snap-to-top confirmation.
+              if (this.suppressScrollMark) {
+                if (this.awaitingTopConfirm) {
+                  if (start === 0) {
+                    // Snap confirmed: the visible list is genuinely at the top.
+                    this.firstVisibleIndex = 0;
+                    this.visibleCount = end >= start ? end - start + 1 : 0;
+                    this.lastMarkedIndex = 0;
+                    this.lastPrefetchIndex = 0;
+                    this.awaitingTopConfirm = false;
+                    this.suppressScrollMark = false;
+                  }
+                  // start > 0 here is a stale offset from before the switch —
+                  // ignore it entirely (no mark, no prefetch, no search toggle).
+                } else {
+                  // Page re-shown while keeping position: track it, but still
+                  // suppress marking until the safety net releases the guard.
+                  this.firstVisibleIndex = start;
+                  this.visibleCount = end >= start ? end - start + 1 : 0;
+                }
+                return;
+              }
+
               this.firstVisibleIndex = start;
               this.visibleCount = end >= start ? end - start + 1 : 0;
               // Deferred reveal from toggleSearch: the list is now at the top,
@@ -1392,46 +1575,6 @@ export struct ArticleListView {
         })
       }
 
-      if (this.showMarkAllConfirm) {
-        Column() {
-          Column() {
-            Text('全部标记为已读').fontFamily(this.appFont())
-              .fontSize(this.fs(18))
-              .fontWeight(FontWeight.Medium)
-              .fontColor(this.textColor())
-            Text('确定将当前列表中的文章全部标记为已读吗？').fontFamily(this.appFont())
-              .fontSize(this.fs(14))
-              .fontColor(this.secondaryColor())
-              .margin({ top: 12 })
-            Row() {
-              Text('取消').fontFamily(this.appFont())
-                .fontSize(this.fs(15))
-                .fontColor(this.secondaryColor())
-                .layoutWeight(1)
-                .textAlign(TextAlign.Center)
-                .onClick(() => { this.showMarkAllConfirm = false; })
-              Text('确定').fontFamily(this.appFont())
-                .fontSize(this.fs(15))
-                .fontColor('#2663D6')
-                .layoutWeight(1)
-                .textAlign(TextAlign.Center)
-                .onClick(() => this.doMarkAllRead())
-            }
-            .width('100%')
-            .margin({ top: 24 })
-          }
-          .width('85%')
-          .padding(24)
-          .borderRadius(12)
-          .backgroundColor(this.surfaceColor())
-        }
-        .width('100%')
-        .height('100%')
-        .backgroundColor('#99000000')
-        .justifyContent(FlexAlign.Center)
-        .zIndex(20)
-      }
-
       if (this.showArticleMenu) {
         Stack() {
           Column()
@@ -1470,6 +1613,20 @@ export struct ArticleListView {
             .onClick(() => {
               this.setArticleMenuVisible(false);
               this.menuToggleStarred();
+            })
+
+            Row() {
+              Image($r('app.media.ic_share'))
+                .width(24).height(24).fillColor(this.textColor())
+                .margin({ right: 12 })
+              Text('分享').fontFamily(this.appFont())
+                .fontSize(this.fs(16)).fontColor(this.textColor()).layoutWeight(1)
+            }
+            .width('100%')
+            .padding({ top: 14, bottom: 14 })
+            .onClick(() => {
+              this.setArticleMenuVisible(false);
+              this.menuShare();
             })
 
             Row() {
@@ -1557,6 +1714,9 @@ export struct ArticleListView {
       .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
     }
     .hideTitleBar(true)
-    .onShown(() => this.load())
+    // Returning from the reader re-runs load() to refresh read state. Keep the
+    // user's scroll position here (still suppressing stale-offset marking),
+    // unlike filter/feed/group switches which snap to the top.
+    .onShown(() => this.load(true, false, false))
   }
 }

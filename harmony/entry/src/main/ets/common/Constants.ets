@@ -32,6 +32,16 @@ export const FILTER_UNREAD: string = 'unread';
 export const FILTER_STARRED: string = 'starred';
 export const FILTER_ALL: string = 'all';
 
+/** Swipe action values (Android SwipeGestureActions). */
+export const SWIPE_NONE: number = 0;
+export const SWIPE_TOGGLE_READ: number = 1;
+export const SWIPE_TOGGLE_STARRED: number = 2;
+
+/** Article summary length values (Android FlowArticleListDescPreference). */
+export const DESC_NONE: number = 0;
+export const DESC_SHORT: number = 1;
+export const DESC_LONG: number = 2;
+
 /** The list scope an article was opened from. Prev/next must follow the same
  *  feed/group/filter/search as the visible list, not just the article's feed. */
 export interface ArticleScope {
