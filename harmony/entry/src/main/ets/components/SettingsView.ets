@@ -346,8 +346,11 @@ export struct SettingsView {
                 })
               Text('关于').fontFamily(this.appFont()).fontSize(this.fs(14)).fontWeight(FontWeight.Medium).fontColor(this.textColor())
                 .margin({ top: 20 })
-              Text(`ReadYou HarmonyOS 版 · ${this.versionLabel}`).fontFamily(this.appFont())
+              Text(`ReadRss HarmonyOS · ${this.versionLabel}`).fontFamily(this.appFont())
                 .fontSize(this.fs(13)).fontColor(this.secondaryColor()).margin({ top: 10 })
+              Text('This version is a hard fork of ReadYou Android version.')
+                .fontFamily(this.appFont())
+                .fontSize(this.fs(13)).fontColor(this.secondaryColor()).margin({ top: 6 })
             }
             .width('100%')
             .padding(16)

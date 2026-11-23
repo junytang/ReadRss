@@ -2,15 +2,15 @@
   "string": [
     {
       "name": "module_desc",
-      "value": "ReadYou HarmonyOS entry module"
+      "value": "ReadRss HarmonyOS entry module"
     },
     {
       "name": "EntryAbility_desc",
-      "value": "ReadYou RSS reader"
+      "value": "ReadRss RSS reader"
     },
     {
       "name": "EntryAbility_label",
-      "value": "ReadYou"
+      "value": "ReadRss"
     }
   ]
 }

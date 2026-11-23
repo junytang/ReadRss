@@ -19,7 +19,10 @@
   "targets": [
     {
       "name": "default",
-      "runtimeOS": "HarmonyOS"
+      "runtimeOS": "HarmonyOS",
+      "output": {
+        "artifactName": "ReadRss"
+      }
     }
   ]
 }
