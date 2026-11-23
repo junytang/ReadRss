@@ -4,6 +4,8 @@ import {
   goBack, openAccounts, openArticleListStyle, openReaderStyle, openSystemStyle,
 } from '../common/NavigationService';
 import { FontManager } from '../common/FontManager';
+import { bundleManager } from '@kit.AbilityKit';
+import { Logger } from '../common/Logger';
 
 /** Minimal settings screen covering the preferences that affect the MVP. */
 @Component
@@ -22,6 +24,7 @@ export struct SettingsView {
   @State markReadOnScroll: boolean = false;
   @State keepArticleDays: number = 30;
   @State fetchBatchSize: number = 100;
+  @State versionLabel: string = 'v1.0.0';
 
   private surfaceColor(): string {
     return this.darkMode ? '#1F2226' : '#FFFFFF';
@@ -42,6 +45,19 @@ export struct SettingsView {
     this.markReadOnScroll = settings.markReadOnScroll;
     this.keepArticleDays = settings.keepArticleDays;
     this.fetchBatchSize = settings.fetchBatchSize;
+    this.loadVersion();
+  }
+
+  /** Read versionName (1.0.0) and versionCode (build number) from the manifest. */
+  private loadVersion(): void {
+    try {
+      const info: bundleManager.BundleInfo = bundleManager.getBundleInfoForSelfSync(
+        bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_APPLICATION
+      );
+      this.versionLabel = `v${info.versionName} (build ${info.versionCode})`;
+    } catch (error) {
+      Logger.warn(`getBundleInfoForSelfSync failed: ${(error as Error).message}`);
+    }
   }
 
   private fetchBatchMenu(): Array<MenuElement> {
@@ -330,7 +346,7 @@ export struct SettingsView {
                 })
               Text('关于').fontFamily(this.appFont()).fontSize(this.fs(14)).fontWeight(FontWeight.Medium).fontColor(this.textColor())
                 .margin({ top: 20 })
-              Text('ReadYou HarmonyOS 版 · v0.1.0').fontFamily(this.appFont())
+              Text(`ReadYou HarmonyOS 版 · ${this.versionLabel}`).fontFamily(this.appFont())
                 .fontSize(this.fs(13)).fontColor(this.secondaryColor()).margin({ top: 10 })
             }
             .width('100%')

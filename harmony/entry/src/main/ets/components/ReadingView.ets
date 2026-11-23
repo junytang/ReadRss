@@ -492,7 +492,7 @@ export struct ReadingView {
     const id: string = this.currentArticleId;
     this.isStarred = next;
     this.getUIContext().getPromptAction().showToast({ message: next ? '已收藏' : '已取消收藏' });
-    readStatusStore.markStarred(id, next, !next);
+    readStatusStore.markStarred(id, next, !next, this.article?.feedId ?? '');
   }
 
   private openOriginal(): void {

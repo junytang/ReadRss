@@ -70,6 +70,7 @@ export struct ArticleListView {
   @StorageProp('articleDescLength') articleDescLength: number = DESC_SHORT;
   @StorageProp('listSettingsTick') @Watch('onListSettingsChanged') listSettingsTick: number = 0;
   @StorageProp('readStatusTick') @Watch('onReadStatusChanged') readStatusTick: number = 0;
+  @StorageProp('readStatusFlushedTick') @Watch('onReadStatusFlushed') readStatusFlushedTick: number = 0;
   @StorageProp('feedIconTick') @Watch('onFeedIconChanged') feedIconTick: number = 0;
   @StorageProp('accountSwitchTick') @Watch('onAccountSwitched') accountSwitchTick: number = 0;
   @StorageProp('feedDataTick') @Watch('onSyncBatch') syncBatchTick: number = 0;
@@ -190,18 +191,24 @@ export struct ArticleListView {
     this.notifyBannerTick();
   }
 
+  /** The store committed a batch to the DB: re-read per-feed unread badges so
+   *  the subscription drawer shows the authoritative counts. */
+  private onReadStatusFlushed(): void {
+    this.refreshFeeds();
+  }
+
   private async refreshCounts(): Promise<void> {
     // Counts = DB aggregate + local diff delta. No dual counters to keep in sync.
     const scoped: ArticleCounts = await rssRepository.articleCounts(this.currentFeedId, this.currentGroupId);
     const scopedUnreadDelta: number =
       readStatusStore.unreadDelta(this.currentFeedId, this.currentGroupId, false);
     this.unreadCount = Math.max(0, scoped.unread + scopedUnreadDelta);
-    this.starredCount = scoped.starred + readStatusStore.starredDelta();
+    this.starredCount = scoped.starred + readStatusStore.starredDelta('');
     this.allCount = scoped.total;
     // Global totals for the drawer top row, never scoped by feed/group.
     const global: ArticleCounts = await rssRepository.articleCounts();
     this.globalUnread = Math.max(0, global.unread + readStatusStore.unreadDelta('', '', true));
-    this.globalStarred = global.starred + readStatusStore.starredDelta();
+    this.globalStarred = global.starred + readStatusStore.starredDelta('');
     this.globalAll = global.total;
   }
 
@@ -812,14 +819,15 @@ export struct ArticleListView {
       for (const id of ids) {
         readStatusStore.clearConfirmed(id);
       }
-      this.refreshCounts();
+      // markAllRead wrote the DB directly: re-read per-feed badges (and counts).
+      this.refreshFeeds();
       this.notifyBannerTick();
     }).catch((error: Error) => {
       for (const id of ids) {
         readStatusStore.clearConfirmed(id);
       }
       this.setLocalRead(ids, false);
-      this.refreshCounts();
+      this.refreshFeeds();
       this.notifyBannerTick();
       Logger.error(`Mark read failed: ${error.message}`);
     });
@@ -838,7 +846,7 @@ export struct ArticleListView {
   private toggleStar(article: Article): void {
     const starred: boolean = !article.isStarred;
     this.setLocalStarred(article.id, starred);
-    readStatusStore.markStarred(article.id, starred, article.isStarred);
+    readStatusStore.markStarred(article.id, starred, article.isStarred, article.feedId);
   }
 
   /** Mark-as-read options as a standard Array<MenuElement> menu. Using the
@@ -934,10 +942,8 @@ export struct ArticleListView {
         readStatusStore.markRead(article.id, false, true, article.feedId, this.currentGroupId);
       }
     }
-    // This path uses the store's background flush (markRead diffs), not the
-    // direct service call, so failures are retried by the store automatically.
-    this.refreshCounts();
-    this.notifyBannerTick();
+    // The markX calls publish readStatusTick; the watcher re-derives rows and
+    // counts. This path uses the store's background flush, so failures retry.
   }
 
   private menuToggleRead(): void {
@@ -948,18 +954,15 @@ export struct ArticleListView {
     this.setLocalRead([id], read);
     this.menuArticleRead = read;
     readStatusStore.markRead(id, !read, dbUnread, article?.feedId ?? '', this.currentGroupId);
-    this.refreshCounts();
-    this.notifyBannerTick();
   }
 
   private menuToggleStarred(): void {
     const id: string = this.menuArticleId;
     const starred: boolean = !this.menuArticleStarred;
+    const article: Article | undefined = this.articles.find((a: Article): boolean => a.id === id);
     this.setLocalStarred(id, starred);
     this.menuArticleStarred = starred;
-    readStatusStore.markStarred(id, starred, !starred);
-    this.refreshCounts();
-    this.notifyBannerTick();
+    readStatusStore.markStarred(id, starred, !starred, article?.feedId ?? '');
   }
 
   /** Share the long-pressed article via the system share sheet (Android menu item). */

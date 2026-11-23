@@ -4,6 +4,7 @@ import { openAccounts } from '../common/NavigationService';
 import { FontManager } from '../common/FontManager';
 import { FeedIcon } from '../common/FeedIcon';
 import { FILTER_ALL, FILTER_STARRED } from '../common/Constants';
+import { readStatusStore } from '../rss/ReadStatusStore';
 
 interface FeedListRow {
   key: string;
@@ -24,6 +25,9 @@ export struct FeedListView {
   @StorageProp('fontScale') uiFontScale: number = 1;
   @StorageProp('systemFontFamily') systemFontFamily: string = 'sans-serif';
   @StorageProp('bottomInset') bottomInset: number = 0;
+  // Re-render badges as soon as a local status diff changes, without waiting
+  // for the parent to re-read the DB (which only happens on flush/sync).
+  @StorageProp('readStatusTick') readStatusTick: number = 0;
 
   private scroller: Scroller = new Scroller();
   // Three @Watch callbacks plus aboutToAppear can each schedule a 30ms
@@ -131,7 +135,13 @@ export struct FeedListView {
   }
 
   private badgeCount(feed: Feed): number {
-    return this.currentFilter === FILTER_STARRED ? feed.starredCount : feed.unreadCount;
+    // Badge = authoritative DB count + locally-pending diff delta, so it
+    // updates the instant a row is marked (not after the 5s flush).
+    const delta: number = this.currentFilter === FILTER_STARRED
+      ? readStatusStore.starredDelta(feed.id)
+      : readStatusStore.unreadDelta(feed.id, '', false);
+    return Math.max(0, (this.currentFilter === FILTER_STARRED
+      ? feed.starredCount : feed.unreadCount) + delta);
   }
 
   private feedsInGroup(groupId: string): Feed[] {

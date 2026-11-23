@@ -14,6 +14,13 @@ interface ReadDiff {
   groupId: string;
 }
 
+/** One pending star-state change, tracking feedId so per-feed starred badges
+ *  can be derived just like unread badges. */
+interface StarDiff {
+  starred: boolean;
+  feedId: string;
+}
+
 /**
  * Local-first read/star status holder (ArkTS port of Android's DiffMapHolder).
  *
@@ -30,7 +37,7 @@ class ReadStatusStore {
   private static readonly RETRY_MAX_MS: number = 60000;
 
   private readDiffs: Map<string, ReadDiff> = new Map<string, ReadDiff>();
-  private starDiffs: Map<string, boolean> = new Map<string, boolean>();
+  private starDiffs: Map<string, StarDiff> = new Map<string, StarDiff>();
   private attempts: Map<string, number> = new Map<string, number>();
   private static readonly CACHE_WRITE_MS: number = 500;
 
@@ -79,7 +86,7 @@ class ReadStatusStore {
             });
             pendingStatusRegistry.add(parts[1]);
           } else if (parts[0] === 's' && parts.length >= 3) {
-            this.starDiffs.set(parts[1], parts[2] === '1');
+            this.starDiffs.set(parts[1], { starred: parts[2] === '1', feedId: parts.length >= 4 ? parts[3] : '' });
             pendingStatusRegistry.add(parts[1]);
           }
         }
@@ -118,8 +125,8 @@ class ReadStatusStore {
       this.readDiffs.forEach((d: ReadDiff, id: string): void => {
         lines.push(`r|${id}|${d.unread ? '1' : '0'}|${d.feedId}|${d.groupId}`);
       });
-      this.starDiffs.forEach((s: boolean, id: string): void => {
-        lines.push(`s|${id}|${s ? '1' : '0'}`);
+      this.starDiffs.forEach((s: StarDiff, id: string): void => {
+        lines.push(`s|${id}|${s.starred ? '1' : '0'}|${s.feedId}`);
       });
       const file = fs.openSync(this.cachePath(), fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE);
       try {
@@ -141,8 +148,8 @@ class ReadStatusStore {
   }
 
   effectiveStarred(articleId: string, dbStarred: boolean): boolean {
-    const value: boolean | undefined = this.starDiffs.get(articleId);
-    return value === undefined ? dbStarred : value;
+    const diff: StarDiff | undefined = this.starDiffs.get(articleId);
+    return diff === undefined ? dbStarred : diff.starred;
   }
 
   /** Project the diff map onto freshly loaded rows so the UI shows local state
@@ -182,12 +189,14 @@ class ReadStatusStore {
     return delta;
   }
 
-  /** Star diffs do not track scope, so the delta is global. Applied to both
-   *  scoped and global starred counts. */
-  starredDelta(): number {
+  /** Starred count delta, optionally scoped to one feed (empty = global). */
+  starredDelta(feedId: string): number {
     let delta: number = 0;
-    this.starDiffs.forEach((starred: boolean): void => {
-      delta += starred ? 1 : -1;
+    this.starDiffs.forEach((diff: StarDiff): void => {
+      if (feedId.length > 0 && diff.feedId !== feedId) {
+        return;
+      }
+      delta += diff.starred ? 1 : -1;
     });
     return delta;
   }
@@ -228,15 +237,15 @@ class ReadStatusStore {
 
   /** Record a desired star state. `currentStarred` is the UI state before the
    *  toggle (equal to the DB state unless a diff already exists). */
-  markStarred(articleId: string, starred: boolean, currentStarred: boolean): void {
+  markStarred(articleId: string, starred: boolean, currentStarred: boolean, feedId: string): void {
     const baseline: boolean = this.starDiffs.has(articleId)
-      ? !this.starDiffs.get(articleId)!
+      ? !this.starDiffs.get(articleId)!.starred
       : currentStarred;
     if (starred === baseline) {
       this.starDiffs.delete(articleId);
       this.attempts.delete(articleId);
     } else {
-      this.starDiffs.set(articleId, starred);
+      this.starDiffs.set(articleId, { starred: starred, feedId: feedId });
       pendingStatusRegistry.add(articleId);
     }
     this.publish();
@@ -283,8 +292,8 @@ class ReadStatusStore {
     });
     const starredIds: string[] = [];
     const unstarredIds: string[] = [];
-    this.starDiffs.forEach((starred: boolean, id: string): void => {
-      if (starred) {
+    this.starDiffs.forEach((diff: StarDiff, id: string): void => {
+      if (diff.starred) {
         starredIds.push(id);
       } else {
         unstarredIds.push(id);
@@ -308,7 +317,12 @@ class ReadStatusStore {
         const done: string[] = await rssRepository.markStarredBatch(unstarredIds, false);
         highest = Math.max(highest, this.resolve(unstarredIds, done));
       }
-      this.publish();
+      // Batch committed to DB. Do NOT broadcast readStatusTick here: diffs are
+      // already cleared (delta=0) but feed baselines in the views are still the
+      // old DB snapshot — broadcasting now would flash stale counts. Instead
+      // signal only the authoritative refresh, which re-reads feeds + counts.
+      this.markCacheDirty();
+      AppStorage.setOrCreate<number>('readStatusFlushedTick', Date.now());
       if (highest > 0) {
         this.schedule(this.backoffFor(highest));
       }
@@ -316,7 +330,7 @@ class ReadStatusStore {
       Logger.error(`Read status flush failed: ${(error as Error).message}`);
       const all: string[] = [];
       this.readDiffs.forEach((_diff: ReadDiff, id: string): void => { all.push(id); });
-      this.starDiffs.forEach((_star: boolean, id: string): void => { all.push(id); });
+      this.starDiffs.forEach((_star: StarDiff, id: string): void => { all.push(id); });
       for (const id of all) {
         highest = Math.max(highest, this.fail(id));
       }

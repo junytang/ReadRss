@@ -122,6 +122,7 @@ export default class EntryAbility extends UIAbility {
         AppStorage.setOrCreate<number>('fontDataTick', 0);
         AppStorage.setOrCreate<number>('listSettingsTick', 0);
         AppStorage.setOrCreate<number>('readStatusTick', 0);
+        AppStorage.setOrCreate<number>('readStatusFlushedTick', 0);
         AppStorage.setOrCreate<number>('bannerTick', 0);
         AppStorage.setOrCreate<number>('feedIconTick', 0);
         AppStorage.set<string>('currentFilter', FILTER_UNREAD);
