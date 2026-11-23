@@ -44,6 +44,16 @@ export class StatusDiffs {
     return diff === undefined ? dbStarred : diff.starred;
   }
 
+  /** Read-only access to a diff, used when handing a committed change over to
+   *  the independent server-retry queue (see ReadStatusStore). */
+  readDiffOf(id: string): ReadDiff | undefined {
+    return this.readDiffs.get(id);
+  }
+
+  starDiffOf(id: string): StarDiff | undefined {
+    return this.starDiffs.get(id);
+  }
+
   hasRead(id: string): boolean {
     return this.readDiffs.has(id);
   }
@@ -177,6 +187,16 @@ export class StatusDiffs {
     this.readDiffs.delete(id);
     this.starDiffs.delete(id);
     this.attempts.delete(id);
+  }
+
+  /** Remove only the read diff for an id, leaving a pending star diff intact. */
+  clearRead(id: string): void {
+    this.readDiffs.delete(id);
+  }
+
+  /** Remove only the star diff for an id, leaving a pending read diff intact. */
+  clearStar(id: string): void {
+    this.starDiffs.delete(id);
   }
 
   /** Bump attempt count; returns the new count, or -1 if the id was dropped. */

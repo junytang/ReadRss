@@ -21,10 +21,21 @@ class ReadStatusStore {
   private static readonly RETRY_MAX_MS: number = 60000;
   private static readonly CACHE_WRITE_MS: number = 500;
 
+  // Local changes not yet committed to the DB. This is the ONLY map that
+  // drives read/star counts and row projection (Android's DiffMapHolder.diffMap).
   private diffs: StatusDiffs = new StatusDiffs();
+  // Server-push retries, kept separate (Android's pendingSyncDiffs). The sync
+  // services write to the DB for every id they receive but only confirm ids
+  // whose remote tag edit succeeded. Keeping a failed id in `diffs` would make
+  // unreadDelta subtract an already-committed change a second time, collapsing
+  // the count to 0 while genuinely unread rows still render unread.
+  private remoteReads: StatusDiffs = new StatusDiffs();
+  private remoteStars: StatusDiffs = new StatusDiffs();
   private timer: number = -1;
+  private remoteTimer: number = -1;
   private cacheTimer: number = -1;
   private flushing: boolean = false;
+  private retryingRemote: boolean = false;
   private cacheDirty: boolean = false;
   private context: common.Context | undefined = undefined;
 
@@ -141,6 +152,15 @@ class ReadStatusStore {
     return this.diffs.hasRead(articleId) || this.diffs.hasStar(articleId);
   }
 
+  /** Number of ids waiting for a server-push retry (excluded from counts). */
+  remotePendingCount(): number {
+    return this.remoteReads.readCount() + this.remoteStars.starCount();
+  }
+
+  hasRemotePending(articleId: string): boolean {
+    return this.remoteReads.hasRead(articleId) || this.remoteStars.hasStar(articleId);
+  }
+
   clearConfirmed(articleId: string): void {
     this.clear(articleId);
   }
@@ -159,6 +179,8 @@ class ReadStatusStore {
     if (this.diffs.markRead(articleId, unread, currentUnread, feedId, groupId)) {
       pendingStatusRegistry.add(articleId);
     }
+    // A fresh local change supersedes any older server retry for this id.
+    this.remoteReads.clear(articleId);
     this.publish();
     this.schedule();
   }
@@ -167,6 +189,7 @@ class ReadStatusStore {
     if (this.diffs.markRead(articleId, unread, currentUnread, feedId, groupId)) {
       pendingStatusRegistry.add(articleId);
     }
+    this.remoteReads.clear(articleId);
     this.publish();
   }
 
@@ -174,6 +197,7 @@ class ReadStatusStore {
     if (this.diffs.markStarred(articleId, starred, currentStarred, feedId)) {
       pendingStatusRegistry.add(articleId);
     }
+    this.remoteStars.clear(articleId);
     this.publish();
     this.schedule();
   }
@@ -207,33 +231,39 @@ class ReadStatusStore {
     }
     const read: ReadIdPartition = this.diffs.readIdsByState();
     const star: StarIdPartition = this.diffs.starIdsByState();
-    let highest: number = 0;
     try {
+      // markReadBatch/markStarredBatch write EVERY submitted id to the DB before
+      // pushing to the server, and return only the ids whose remote edit
+      // succeeded. Once the call resolves the local diff is committed, so it
+      // must go even for a remote failure — otherwise unreadDelta would subtract
+      // the same change twice (DB already updated) and the unread count would
+      // collapse to 0 while genuinely unread rows still show unread.
       if (read.readIds.length > 0) {
         const done: string[] = await rssRepository.markReadBatch(read.readIds, true);
-        highest = Math.max(highest, this.resolve(read.readIds, done));
+        this.commitRead(read.readIds, done);
       }
       if (read.unreadIds.length > 0) {
         const done: string[] = await rssRepository.markReadBatch(read.unreadIds, false);
-        highest = Math.max(highest, this.resolve(read.unreadIds, done));
+        this.commitRead(read.unreadIds, done);
       }
       if (star.starredIds.length > 0) {
         const done: string[] = await rssRepository.markStarredBatch(star.starredIds, true);
-        highest = Math.max(highest, this.resolve(star.starredIds, done));
+        this.commitStar(star.starredIds, done);
       }
       if (star.unstarredIds.length > 0) {
         const done: string[] = await rssRepository.markStarredBatch(star.unstarredIds, false);
-        highest = Math.max(highest, this.resolve(star.unstarredIds, done));
+        this.commitStar(star.unstarredIds, done);
       }
       // Commit only broadcasts the authoritative refresh (not readStatusTick):
-      // diffs are cleared (delta=0) while views still hold old DB baselines.
+      // local diffs are cleared (delta=0) while views still hold old DB baselines.
       this.markCacheDirty();
       AppStorage.setOrCreate<number>('readStatusFlushedTick', Date.now());
-      if (highest > 0) {
-        this.schedule(this.backoffFor(highest));
-      }
+      this.scheduleRemoteIfPending();
     } catch (error) {
+      // The DB write itself failed: keep the local diffs and retry them (they
+      // are still the only representation of the change).
       Logger.error(`Read status flush failed: ${(error as Error).message}`);
+      let highest: number = 0;
       for (const id of this.diffs.allIds()) {
         const attempt: number = this.fail(id);
         if (attempt > highest) {
@@ -249,20 +279,117 @@ class ReadStatusStore {
     }
   }
 
-  private resolve(ids: string[], done: string[]): number {
-    const highest: number = this.diffs.resolve(ids, done, ReadStatusStore.MAX_ATTEMPTS);
-    // Sync the pending registry for ids removed by the pure state machine.
+  /** Drop the local diffs committed to the DB; failed remote pushes move to the
+   *  independent retry queue and no longer affect counts/rows. */
+  private commitRead(ids: string[], done: string[]): void {
     const ok: Set<string> = new Set<string>(done);
     for (const id of ids) {
-      if (ok.has(id) || !this.diffs.hasRead(id) && !this.diffs.hasStar(id)) {
-        pendingStatusRegistry.remove(id);
+      const diff: ReadDiff | undefined = this.diffs.readDiffOf(id);
+      this.diffs.clearRead(id);
+      if (ok.has(id)) {
+        this.releaseRegistry(id);
+      } else {
+        // The server view is stale: keep protecting this id during sync while
+        // retrying only the remote push.
+        this.remoteReads.setReadDiff(id, diff ?? { unread: false, feedId: '', groupId: '' });
       }
     }
-    return highest;
+  }
+
+  private commitStar(ids: string[], done: string[]): void {
+    const ok: Set<string> = new Set<string>(done);
+    for (const id of ids) {
+      const diff: StarDiff | undefined = this.diffs.starDiffOf(id);
+      this.diffs.clearStar(id);
+      if (ok.has(id)) {
+        this.releaseRegistry(id);
+      } else {
+        this.remoteStars.setStarDiff(id, diff ?? { starred: false, feedId: '' });
+      }
+    }
+  }
+
+  /** Keep an id protected from stale server reconciliation until every local
+   *  and remote change for it has been accounted for. */
+  private releaseRegistry(id: string): void {
+    if (!this.diffs.hasRead(id) && !this.diffs.hasStar(id)
+      && !this.remoteReads.hasRead(id) && !this.remoteStars.hasStar(id)) {
+      pendingStatusRegistry.remove(id);
+    }
+  }
+
+  private scheduleRemoteIfPending(): void {
+    if (this.remoteReads.readCount() === 0 && this.remoteStars.starCount() === 0) {
+      return;
+    }
+    this.scheduleRemote(ReadStatusStore.RETRY_BASE_MS);
+  }
+
+  private scheduleRemote(delay: number): void {
+    if (this.remoteTimer >= 0) {
+      clearTimeout(this.remoteTimer);
+    }
+    this.remoteTimer = setTimeout((): void => {
+      this.remoteTimer = -1;
+      this.retryRemote();
+    }, delay);
+  }
+
+  /** Retry only the server push for changes already committed to the DB. */
+  private async retryRemote(): Promise<void> {
+    if (this.retryingRemote
+      || (this.remoteReads.readCount() === 0 && this.remoteStars.starCount() === 0)) {
+      return;
+    }
+    this.retryingRemote = true;
+    let highest: number = 0;
+    try {
+      const read: ReadIdPartition = this.remoteReads.readIdsByState();
+      const star: StarIdPartition = this.remoteStars.starIdsByState();
+      if (read.readIds.length > 0) {
+        const done: string[] = await rssRepository.markReadBatch(read.readIds, true);
+        highest = Math.max(highest, this.remoteReads.resolve(read.readIds, done, ReadStatusStore.MAX_ATTEMPTS));
+        for (const id of done) { this.releaseRegistry(id); }
+      }
+      if (read.unreadIds.length > 0) {
+        const done: string[] = await rssRepository.markReadBatch(read.unreadIds, false);
+        highest = Math.max(highest, this.remoteReads.resolve(read.unreadIds, done, ReadStatusStore.MAX_ATTEMPTS));
+        for (const id of done) { this.releaseRegistry(id); }
+      }
+      if (star.starredIds.length > 0) {
+        const done: string[] = await rssRepository.markStarredBatch(star.starredIds, true);
+        highest = Math.max(highest, this.remoteStars.resolve(star.starredIds, done, ReadStatusStore.MAX_ATTEMPTS));
+        for (const id of done) { this.releaseRegistry(id); }
+      }
+      if (star.unstarredIds.length > 0) {
+        const done: string[] = await rssRepository.markStarredBatch(star.unstarredIds, false);
+        highest = Math.max(highest, this.remoteStars.resolve(star.unstarredIds, done, ReadStatusStore.MAX_ATTEMPTS));
+        for (const id of done) { this.releaseRegistry(id); }
+      }
+    } catch (error) {
+      Logger.error(`Remote status retry failed: ${(error as Error).message}`);
+      for (const id of this.remoteReads.allIds()) {
+        const attempt: number = this.remoteReads.fail(id, ReadStatusStore.MAX_ATTEMPTS);
+        if (attempt > highest) { highest = attempt; }
+        else if (attempt < 0) { this.releaseRegistry(id); }
+      }
+      for (const id of this.remoteStars.allIds()) {
+        const attempt: number = this.remoteStars.fail(id, ReadStatusStore.MAX_ATTEMPTS);
+        if (attempt > highest) { highest = attempt; }
+        else if (attempt < 0) { this.releaseRegistry(id); }
+      }
+    } finally {
+      this.retryingRemote = false;
+    }
+    if (highest > 0) {
+      this.scheduleRemote(this.backoffFor(highest));
+    }
   }
 
   private clear(id: string): void {
     this.diffs.clear(id);
+    this.remoteReads.clear(id);
+    this.remoteStars.clear(id);
     pendingStatusRegistry.remove(id);
     this.markCacheDirty();
   }

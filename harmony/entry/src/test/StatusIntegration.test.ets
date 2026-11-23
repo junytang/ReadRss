@@ -3,6 +3,9 @@ import { readStatusStore } from '../main/ets/rss/ReadStatusStore';
 import { rssRepository } from '../main/ets/rss/RssRepository';
 import { StatusDiffs } from '../main/ets/rss/StatusDiffs';
 
+// Access to the private server-retry entry point (ArkTS: `as object as Interface`).
+interface RetryAccess { retryRemote(): Promise<void>; }
+
 /**
  * Integration tests for the read/star status pipeline. MockKit replaces the
  * repository so no DB/network is touched: verifies store flush commits the
@@ -95,7 +98,7 @@ export default function statusIntegrationTest(): void {
       mock.clear(rssRepository);
     });
 
-    it('flush drops confirmed ids and keeps failed ones', 0, async () => {
+    it('flush drops confirmed ids and moves failed remote ones to the retry queue', 0, async () => {
       const mock: MockKit = new MockKit();
       const rm = mock.mockFunc(rssRepository, rssRepository.markReadBatch);
       when(rm)(ArgumentMatchers.any, ArgumentMatchers.any).afterAction(
@@ -110,8 +113,54 @@ export default function statusIntegrationTest(): void {
       readStatusStore.markRead('fail1', false, true, 'f1', 'g1');
       await readStatusStore.flush();
 
+      // The DB write covered BOTH ids; the local diff is committed for both.
       expect(readStatusStore.hasPending('ok1')).assertFalse();
-      expect(readStatusStore.hasPending('fail1')).assertTrue();
+      expect(readStatusStore.hasPending('fail1')).assertFalse();
+      // Only the failed remote push moves to the independent retry queue.
+      expect(readStatusStore.hasRemotePending('fail1')).assertTrue();
+      expect(readStatusStore.hasRemotePending('ok1')).assertFalse();
+      readStatusStore.clearConfirmed('fail1');
+      mock.clear(rssRepository);
+    });
+
+    it('failed remote push does not double-subtract from unread counts', 0, async () => {
+      const mock: MockKit = new MockKit();
+      const rm = mock.mockFunc(rssRepository, rssRepository.markReadBatch);
+      // Simulate a remote failure: the service already wrote the DB for the id
+      // but returns no confirmed id (e.g. editTag / markItem threw).
+      when(rm)(ArgumentMatchers.any, ArgumentMatchers.any).afterAction(
+        (_ids: string[]): Promise<string[]> => Promise.resolve([]));
+
+      await readStatusStore.flush();
+      const dbUnreadBefore: number = 3;
+      readStatusStore.markRead('x1', false, true, 'f1', 'g1');
+      // Before flush: DB still has x1 unread, diff subtracts it once.
+      expect(dbUnreadBefore + readStatusStore.unreadDelta('', '', true)).assertEqual(2);
+      await readStatusStore.flush();
+      // After DB commit x1 is no longer unread; the failed remote retry must NOT
+      // keep subtracting it (which used to collapse the count to 0 while other
+      // unread articles still render unread).
+      const dbUnreadAfter: number = dbUnreadBefore - 1;
+      expect(dbUnreadAfter + readStatusStore.unreadDelta('', '', true)).assertEqual(2);
+      expect(readStatusStore.hasRemotePending('x1')).assertTrue();
+      readStatusStore.clearConfirmed('x1');
+      mock.clear(rssRepository);
+    });
+
+    it('successful remote retry clears the retry queue', 0, async () => {
+      const mock: MockKit = new MockKit();
+      const rm = mock.mockFunc(rssRepository, rssRepository.markReadBatch);
+      let failOnce: boolean = true;
+      when(rm)(ArgumentMatchers.any, ArgumentMatchers.any).afterAction(
+        (ids: string[]): Promise<string[]> => Promise.resolve(failOnce ? [] : ids));
+
+      await readStatusStore.flush();
+      readStatusStore.markRead('y1', false, true, 'f1', 'g1');
+      await readStatusStore.flush();
+      expect(readStatusStore.hasRemotePending('y1')).assertTrue();
+      failOnce = false;
+      await (readStatusStore as object as RetryAccess).retryRemote();
+      expect(readStatusStore.hasRemotePending('y1')).assertFalse();
       mock.clear(rssRepository);
     });
   });
