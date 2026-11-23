@@ -295,6 +295,21 @@ toFetch=0 → contentReady signaled → onSyncFinished → load done → toast �
 2. 按 P1 清单对齐 Android 的关键交互与设置行为。
 3. 视真机反馈逐步推进 P2 / P3；平台相关项（小组件、Material You、原生渲染器）需单独设计。
 
+## 自动化测试
+
+本工程建立了两层自动化测试，统一入口为仓库根目录的 `run_tests.sh`：
+
+```bash
+cd <repo-root> && ./run_tests.sh
+```
+
+1. **ArkTS 单元测试**（`harmony/entry/src/test/`，Hypium 框架）：覆盖解析层（XmlParser / RssParser / HtmlDom / HtmlBuilder / WebViewHtml）、ID/模型助手、纯状态机（StatusDiffs / ArticlePaging）、同步进度节流、网络分页、SettingsStore / GReaderTokenStore（注入假 Preferences）、ReadStatusStore flush（MockKit mock repository）、Database SQL 构造（mock RdbStore）等。
+   - 单独运行：`cd harmony && hvigorw --mode module -p product=default -p buildMode=debug test`
+   - 结果：`harmony/entry/.test/default/intermediates/test/coverage_data/test_result.txt`
+2. **全文提取 fixture**（仓库根 `testcases/`，`verify.py`）：用真实站点保存的 HTML 验证正文容器选择算法（Python 参考实现，与 ArkTS 的 `HtmlDom` / `FullContentFetcher` 镜像同步）。单独运行：`cd testcases && python3 verify.py`。
+
+> MockKit 注意（已踩坑并规避）：本版本 `@ohos/hypium` 的 `ArgumentMatchers.any()` 返回 `undefined`，多参数 stub 必须用**精确值匹配**；清理 mock 必须用 `mock.clear(obj)`，不能用 `mock.clearAll()`（后者不还原被 mock 的单例方法，会污染后续测试）。
+
 ## 许可
 
 与 Android 原项目一致：GPL-3.0。

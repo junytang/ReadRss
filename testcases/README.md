@@ -17,6 +17,8 @@ python3 verify.py
 
 输出每个用例是否选中了期望的正文容器。新增用例：把页面源码另存为 `xxx.html`，在 `cases.json` 里追加一条记录。
 
+**统一测试入口**：在仓库根目录运行 `./run_tests.sh`，会依次执行 ArkTS 单元测试（hvigor）和本目录的 `verify.py`，任一失败则整体返回非零。这套 fixture 验证的是 Python 参考实现；它与 ArkTS 的 `HtmlDom` / `FullContentFetcher` 是镜像关系，两边逻辑需同步（见下方维护约定）。
+
 ## 维护约定
 
 1. 修改 ArkTS 提取算法（`HtmlDom.bestContentNode` / `drillToContent`、`FullContentFetcher.clean`）时，同步更新 `verify.py` 里的 `best` / `drill` / `clean` 逻辑，保持两边一致。
