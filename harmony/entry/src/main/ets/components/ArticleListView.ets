@@ -5,6 +5,7 @@ import { Article, Feed, FeedGroup, filterFeedsByDrawer } from '../model/Models';
 import { rssRepository } from '../rss/RssRepository';
 import { ArticleCounts } from '../data/Database';
 import { fullContentPrefetcher } from '../rss/FullContentPrefetcher';
+import { ArticlePaging, AppendResult } from '../rss/ArticlePaging';
 import { Logger } from '../common/Logger';
 import { settingsStore } from '../data/SettingsStore';
 import { readStatusStore } from '../rss/ReadStatusStore';
@@ -102,19 +103,12 @@ export struct ArticleListView {
   private lastMarkedIndex: number = 0;
   private scrollMarksPending: boolean = false;
   private lastPrefetchIndex: number = 0;
-  private loadSeq: number = 0;
+  // Pagination state machine (stale-result guards / hasMore / dedupe) is a pure
+  // class so it can be unit-tested; the component adds DB/UI side effects.
+  private paging: ArticlePaging = new ArticlePaging();
   // Separate guard for badge/count refreshes so overlapping Watch callbacks
   // cannot pair feeds from one filter with groups from another.
   private feedRefreshSeq: number = 0;
-  private displayLimit: number = 500;
-  private isLoadingMore: boolean = false;
-  private pageLoadSeq: number = 0;
-  // Snapshot of the ordering scope (feed/group/filter/search/sort). In-flight
-  // paged appends are discarded if it changes, so a sort switch can never mix
-  // rows from two different orderings into one list.
-  private orderKey: string = '';
-  // True while more rows may exist beyond the currently loaded prefix.
-  private hasMore: boolean = true;
   // AppStorage-backed so toggling it in Settings updates this always-mounted
   // list immediately, without relying on load()/onShown refresh timing.
   @StorageProp('markReadOnScroll') markReadOnScroll: boolean = false;
@@ -545,36 +539,33 @@ export struct ArticleListView {
     }
     // Discard results from an older load: selecting a feed then tapping a filter
     // tab can start two overlapping loads whose DB queries resolve out of order.
-    const seq: number = ++this.loadSeq;
-    // Invalidate any in-flight loadMore so it cannot append stale rows after us.
-    this.pageLoadSeq++;
-    // Freeze the ordering scope: paged appends captured before this point are stale.
-    this.orderKey = this.computeOrderKey();
     // Reset to the first page only on a genuine context switch (filter/feed/search).
     // A sync-completed refresh passes false to preserve how deep the user scrolled.
+    const seq: number = this.paging.beginLoad(
+      this.firstPageSize(), this.computeOrderKey(), resetPaging
+    );
     if (resetPaging) {
-      this.displayLimit = this.firstPageSize();
       this.beginContextSwitch();
     }
     const allFeeds: Feed[] = await rssRepository.listFeeds();
-    if (seq !== this.loadSeq) return;
+    if (this.paging.isStale(seq, this.paging.getPageSeq(), this.paging.getOrderKey())) return;
     this.iconFeeds = allFeeds;
     this.rebuildIconMap();
     const allGroups: FeedGroup[] = await rssRepository.listGroups();
-    if (seq !== this.loadSeq) return;
+    if (seq !== this.paging.getLoadSeq()) return;
     this.allGroups = allGroups;
     this.applyFeedFilter();
     FeedIcon.prefetch(this.getUIContext().getHostContext() as common.Context, this.feeds);
     const articles: Article[] = await rssRepository.listArticles(
-      this.currentFeedId, this.currentFilter, this.displayLimit,
+      this.currentFeedId, this.currentFilter, this.paging.getDisplayLimit(),
       this.currentGroupId, this.sortAscending(), this.searchText, true
     );
-    if (seq !== this.loadSeq) return;
+    if (seq !== this.paging.getLoadSeq()) return;
     // Re-project local diffs onto DB rows so locally-changed read/star state
     // survives a reload (the DB commit is still pending in the store).
     readStatusStore.applyTo(articles);
     this.articles = articles;
-    this.hasMore = articles.length >= this.displayLimit;
+    this.paging.updateHasMore(articles.length, this.paging.getDisplayLimit());
     this.finishSlide();
     if (resetPaging) {
       this.finishContextSwitch(snapToTop);
@@ -583,10 +574,10 @@ export struct ArticleListView {
     this.lastMarkedIndex = 0;
     this.lastPrefetchIndex = 0;
     this.scrollMarksPending = false;
-    if (seq !== this.loadSeq) return;
+    if (seq !== this.paging.getLoadSeq()) return;
     // Derive counts from DB + local diff (refreshCounts does both queries).
     await this.refreshCounts();
-    if (seq !== this.loadSeq) return;
+    if (seq !== this.paging.getLoadSeq()) return;
     fullContentPrefetcher.ensureWindow(
       this.articles, this.firstVisibleIndex, this.visibleCount
     );
@@ -595,22 +586,19 @@ export struct ArticleListView {
   /** Filter-tab switch: only the article list changes. Skip the feed/group/count
    *  queries and the icon prefetch, which are unaffected by the filter. */
   private async reloadForFilterSwitch(): Promise<void> {
-    const seq: number = ++this.loadSeq;
-    this.pageLoadSeq++;
-    this.orderKey = this.computeOrderKey();
-    this.displayLimit = this.firstPageSize();
+    const seq: number = this.paging.beginLoad(this.firstPageSize(), this.computeOrderKey(), true);
     this.beginContextSwitch();
     // Re-derive BOTH feeds and groups from the cached unfiltered lists. Leaving
     // groups stale here is what shows empty groups when switching to starred.
     this.applyFeedFilter();
     const articles: Article[] = await rssRepository.listArticles(
-      this.currentFeedId, this.currentFilter, this.displayLimit,
+      this.currentFeedId, this.currentFilter, this.paging.getDisplayLimit(),
       this.currentGroupId, this.sortAscending(), this.searchText, true
     );
-    if (seq !== this.loadSeq) return;
+    if (seq !== this.paging.getLoadSeq()) return;
     readStatusStore.applyTo(articles);
     this.articles = articles;
-    this.hasMore = articles.length >= this.displayLimit;
+    this.paging.updateHasMore(articles.length, this.paging.getDisplayLimit());
     this.lastMarkedIndex = 0;
     this.lastPrefetchIndex = 0;
     this.scrollMarksPending = false;
@@ -623,7 +611,7 @@ export struct ArticleListView {
   /** Load the remaining (up to FULL_PAGE_SIZE) lightweight rows after the first
    *  batch has painted and the slide finished. Keeps the tab switch snappy. */
   private scheduleExpand(seq: number): void {
-    if (this.displayLimit >= FULL_PAGE_SIZE) {
+    if (this.paging.getDisplayLimit() >= FULL_PAGE_SIZE) {
       return;
     }
     if (this.expandTimer !== 0) {
@@ -645,44 +633,33 @@ export struct ArticleListView {
   private async fetchAppend(targetLimit: number, seq: number, pageSeq: number): Promise<boolean> {
     // Capture the ordering at request time. If a sort/feed/filter switch lands
     // while the DB query is in flight, orderKey changes and these rows are stale.
-    const orderKey: string = this.orderKey;
+    const orderKey: string = this.paging.getOrderKey();
     const rows: Article[] = await rssRepository.listArticles(
       this.currentFeedId, this.currentFilter, targetLimit,
       this.currentGroupId, this.sortAscending(), this.searchText, true
     );
-    if (seq !== this.loadSeq || pageSeq !== this.pageLoadSeq || orderKey !== this.orderKey) {
+    if (this.paging.isStale(seq, pageSeq, orderKey)) {
       return false;
     }
     // Fewer rows than requested means the data source is exhausted.
-    this.hasMore = rows.length >= targetLimit;
-    const known: Set<string> = new Set<string>();
-    for (const article of this.articles) {
-      known.add(article.id);
-    }
-    const fresh: Article[] = [];
-    for (const row of rows) {
-      if (!known.has(row.id)) {
-        known.add(row.id);
-        fresh.push(row);
-      }
-    }
-    if (fresh.length > 0) {
-      this.articles = this.articles.concat(fresh);
-    }
-    this.displayLimit = targetLimit;
-    return fresh.length > 0;
+    this.paging.updateHasMore(rows.length, targetLimit);
+    const merged: AppendResult = this.paging.mergeAppend(this.articles, rows);
+    this.articles = merged.articles;
+    this.paging.setDisplayLimit(targetLimit);
+    return merged.appended;
   }
 
   private async expandToFullPage(seq: number): Promise<void> {
-    if (seq !== this.loadSeq || this.displayLimit >= FULL_PAGE_SIZE || this.isLoadingMore) {
+    if (seq !== this.paging.getLoadSeq() || this.paging.getDisplayLimit() >= FULL_PAGE_SIZE
+      || this.paging.isLoadingMore()) {
       return;
     }
-    const pageSeq: number = this.pageLoadSeq;
-    while (this.displayLimit < FULL_PAGE_SIZE && this.hasMore) {
-      if (this.disposed || seq !== this.loadSeq || pageSeq !== this.pageLoadSeq || this.isLoadingMore) {
+    const pageSeq: number = this.paging.getPageSeq();
+    while (this.paging.getDisplayLimit() < FULL_PAGE_SIZE && this.paging.getHasMore()) {
+      if (this.disposed || this.paging.isPageStale(seq, pageSeq) || this.paging.isLoadingMore()) {
         return;
       }
-      const target: number = Math.min(this.displayLimit + EXPAND_CHUNK, FULL_PAGE_SIZE);
+      const target: number = this.paging.nextExpandTarget(FULL_PAGE_SIZE, EXPAND_CHUNK);
       const appended: boolean = await this.fetchAppend(target, seq, pageSeq);
       if (!appended) {
         // No genuinely new rows: either data is exhausted (hasMore now false) or
@@ -698,25 +675,27 @@ export struct ArticleListView {
   /** Load the next page when scrolling reaches the end. Appends to keep the
    *  current scroll position and already-read markings intact. */
   private async loadMore(): Promise<void> {
-    if (this.isLoadingMore) {
+    if (this.paging.isLoadingMore()) {
       return;
     }
     // While a sync is committing batches the DB holds an intermediate state;
     // loading another page now could mix partial rows into the list. Triggered
     // automatically by scrolling, so ignore silently (no toast) to avoid spam.
-    if (this.isSyncing || !this.hasMore) {
+    if (this.isSyncing || !this.paging.getHasMore()) {
       return;
     }
-    const seq: number = this.loadSeq;
-    this.isLoadingMore = true;
-    const pageSeq: number = ++this.pageLoadSeq;
+    const seq: number = this.paging.getLoadSeq();
+    const pageSeq: number = this.paging.beginLoadMore();
+    if (pageSeq < 0) {
+      return;
+    }
     try {
-      const nextLimit: number = this.displayLimit + LOAD_MORE_STEP;
+      const nextLimit: number = this.paging.getDisplayLimit() + LOAD_MORE_STEP;
       await this.fetchAppend(nextLimit, seq, pageSeq);
     } catch (error) {
       Logger.error(`Load more failed: ${(error as Error).message}`);
     } finally {
-      this.isLoadingMore = false;
+      this.paging.endLoadMore();
     }
   }
 
