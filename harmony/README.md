@@ -13,8 +13,10 @@ Android 原工程保持原样，鸿蒙工程作为独立 DevEco 项目放在 `ha
 - 调试签名：首次打开工程后，在 DevEco 中登录华为账号并自动生成调试签名
   （`File > Project Structure > Signing Configs`）
 
-> 本机当前没有安装 DevEco Studio / HarmonyOS SDK，因此该工程**未在真机上编译验证过**。
-> 请在你的 DevEco 环境中首次构建后，根据编译报错做少量 API 微调。
+> 工程已配置 API 26（`compatibleSdkVersion` / `targetSdkVersion = "26.0.0"`，
+> `modelVersion = "7.0.0"`，见 `build-profile.json5` / `oh-package.json5` / `hvigor/hvigor-config.json5`），
+> 已用 DevEco 自带命令行工具链（`hvigorw assembleHap` / `test`）编译与测试通过。
+> 真机运行时行为仍以真机日志为准。
 
 ## 打开与运行
 

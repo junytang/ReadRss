@@ -1,0 +1,64 @@
+name: Build HarmonyOS (unsigned HAP)
+
+# Manually triggered first; switch to push/pull_request once verified on CI.
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux dependencies (texture compression)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1-mesa-dev
+
+      - name: Setup HarmonyOS CLI tools
+        uses: ErBWs/setup-ohos@v2
+        with:
+          version: 26.0.0.821
+          cache: true
+
+      - name: Verify toolchain
+        run: |
+          hvigorw -v
+          ohpm -v
+
+      - name: Install dependencies
+        working-directory: harmony
+        run: ohpm install --all
+
+      - name: Run ArkTS unit tests
+        working-directory: harmony
+        run: |
+          hvigorw --mode module -p product=default -p buildMode=debug test --analyze=normal --no-daemon
+          RESULT="entry/.test/default/intermediates/test/coverage_data/test_result.txt"
+          cat "$RESULT"
+          # Fail the job if any test failed/errored.
+          if grep -qE 'result=Failed|result=Error' "$RESULT"; then
+            echo "::error::Unit tests reported failures"
+            exit 1
+          fi
+
+      - name: Run full-text extraction fixtures
+        working-directory: testcases
+        run: python3 verify.py
+
+      - name: Build unsigned HAP
+        working-directory: harmony
+        run: |
+          hvigorw --mode module -p product=default -p buildMode=release assembleHap \
+            --analyze=normal --parallel --no-daemon
+
+      - name: Upload unsigned HAP
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReadYou-HarmonyOS-unsigned-${{ github.sha }}
+          path: harmony/entry/build/default/outputs/default/*.hap
+          if-no-files-found: error

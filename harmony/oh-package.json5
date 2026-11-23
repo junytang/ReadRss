@@ -1,5 +1,5 @@
 {
-  "modelVersion": "5.1.0",
+  "modelVersion": "7.0.0",
   "name": "readyou-harmony",
   "version": "0.1.0",
   "description": "ReadYou RSS reader - HarmonyOS 7 (ArkTS/ArkUI) port",
