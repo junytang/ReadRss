@@ -13,15 +13,26 @@ import { WindowInsets } from '../common/WindowInsets';
 export default class EntryAbility extends UIAbility {
   /** Convert physical pixels to vp using the standard display density API. */
   private pxToVp(px: number): number {
-    const density: number = display.getDefaultDisplaySync().densityDPI / 160;
-    return density > 0 ? px / density : px;
+    try {
+      const density: number = display.getDefaultDisplaySync().densityDPI / 160;
+      return density > 0 ? px / density : px;
+    } catch (error) {
+      Logger.warn(`Display density unavailable: ${(error as Error).message}`);
+      return px;
+    }
   }
 
   /** Read the real system-safe-area insets and publish them to the UI. */
   private applySafeArea(win: window.Window): void {
-    const area: window.AvoidArea = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM);
-    const top: number = this.pxToVp(area.topRect.height);
-    const bottom: number = this.pxToVp(area.bottomRect.height);
+    let top: number = 0;
+    let bottom: number = 0;
+    try {
+      const area: window.AvoidArea = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM);
+      top = this.pxToVp(area.topRect.height);
+      bottom = this.pxToVp(area.bottomRect.height);
+    } catch (error) {
+      Logger.warn(`Avoid area unavailable: ${(error as Error).message}`);
+    }
     // Some devices report zero avoid areas; fall back to typical system-bar sizes.
     WindowInsets.top = top > 0 ? top : 28;
     WindowInsets.bottom = bottom > 0 ? bottom : 16;
@@ -63,12 +74,16 @@ export default class EntryAbility extends UIAbility {
           Logger.warn(`setWindowBackgroundColor skipped: ${(error as Error).message}`);
         }
         await win.setWindowLayoutFullScreen(true);
+        // System-bar tinting is not available on every device form factor
+        // (e.g. 2in1); the transparent full-screen layout works without it.
         try {
-          await win.setWindowSystemBarProperties({
-            statusBarColor: '#00000000',
-            navigationBarColor: '#00000000',
-            statusBarContentColor: '#FF1A1C1E',
-          } as window.SystemBarProperties);
+          if (canIUse('SystemCapability.WindowManager.WindowManager.Core')) {
+            await win.setWindowSystemBarProperties({
+              statusBarColor: '#00000000',
+              navigationBarColor: '#00000000',
+              statusBarContentColor: '#FF1A1C1E',
+            } as window.SystemBarProperties);
+          }
         } catch (error) {
           Logger.warn(`setWindowSystemBarProperties skipped: ${(error as Error).message}`);
         }

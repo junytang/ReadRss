@@ -1,7 +1,4 @@
 import { notificationManager } from '@kit.NotificationKit';
-// The contentType field of NotificationRequest uses @ohos.notification.ContentType,
-// which is a different enum from notificationManager.ContentType in API 26.
-import notification from '@ohos.notification';
 import { Logger } from './Logger';
 import { FeedNotify } from '../rss/SyncService';
 
@@ -18,7 +15,9 @@ export class NotificationHelper {
       const request: notificationManager.NotificationRequest = {
         id: NotificationHelper.nextId++,
         content: {
-          contentType: notification.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
+          // contentType is deprecated since API 11; notificationContentType is
+          // the supported replacement and uses notificationManager.ContentType.
+          notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
           normal: content,
         },
       };

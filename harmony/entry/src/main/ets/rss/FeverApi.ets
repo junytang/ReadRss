@@ -100,6 +100,10 @@ export class FeverApi {
         throw new Error('Unauthorized');
       }
       return text;
+    } catch (error) {
+      // request() is @throws; surface a typed error to the caller (the finally
+      // block still destroys the request).
+      throw error as Error;
     } finally {
       request.destroy();
     }

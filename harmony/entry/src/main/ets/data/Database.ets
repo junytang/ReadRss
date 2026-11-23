@@ -96,9 +96,18 @@ class ReadYouDatabase {
       name: DB_NAME,
       securityLevel: relationalStore.SecurityLevel.S1,
     };
-    this.store = await relationalStore.getRdbStore(context, config);
+    // getRdbStore is @throws; surface a clear failure instead of leaking a raw
+    // platform exception from init().
+    try {
+      this.store = await relationalStore.getRdbStore(context, config);
+    } catch (error) {
+      Logger.error(`Open database failed: ${(error as Error).message}`);
+      throw new Error(`Open database failed: ${(error as Error).message}`);
+    }
 
-    await this.store.executeSql(
+    // exec() wraps relationalStore's @throws executeSql API with logging and
+    // rethrow, keeping schema setup consistent with all other DB writes.
+    await this.exec(
       `CREATE TABLE IF NOT EXISTS account (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
@@ -114,7 +123,7 @@ class ReadYouDatabase {
         sync_block_list TEXT NOT NULL DEFAULT ''
       )`
     );
-    await this.store.executeSql(
+    await this.exec(
       `CREATE TABLE IF NOT EXISTS feed_group (
         id TEXT PRIMARY KEY,
         account_id TEXT NOT NULL,
@@ -122,7 +131,7 @@ class ReadYouDatabase {
         sort_order INTEGER NOT NULL DEFAULT 0
       )`
     );
-    await this.store.executeSql(
+    await this.exec(
       `CREATE TABLE IF NOT EXISTS feed (
         id TEXT PRIMARY KEY,
         account_id TEXT NOT NULL DEFAULT '1',
@@ -133,7 +142,7 @@ class ReadYouDatabase {
         sort_order INTEGER NOT NULL DEFAULT 0
       )`
     );
-    await this.store.executeSql(
+    await this.exec(
       `CREATE TABLE IF NOT EXISTS article (
         id TEXT PRIMARY KEY,
         account_id TEXT NOT NULL DEFAULT '1',
@@ -151,7 +160,7 @@ class ReadYouDatabase {
         is_starred INTEGER NOT NULL DEFAULT 0
       )`
     );
-    await this.store.executeSql(
+    await this.exec(
       'CREATE INDEX IF NOT EXISTS idx_article_feed ON article(feed_id, published_at DESC)'
     );
 
@@ -165,24 +174,24 @@ class ReadYouDatabase {
     await this.tryExecute('ALTER TABLE account ADD COLUMN sync_only_when_charging INTEGER NOT NULL DEFAULT 0');
     await this.tryExecute('ALTER TABLE account ADD COLUMN keep_archived INTEGER NOT NULL DEFAULT 2592000000');
     await this.tryExecute('ALTER TABLE account ADD COLUMN sync_block_list TEXT NOT NULL DEFAULT \'\'');
-    await this.store.executeSql('CREATE INDEX IF NOT EXISTS idx_feed_account ON feed(account_id)');
-    await this.store.executeSql('CREATE INDEX IF NOT EXISTS idx_article_account ON article(account_id)');
-    await this.store.executeSql('CREATE INDEX IF NOT EXISTS idx_group_account ON feed_group(account_id)');
+    await this.exec('CREATE INDEX IF NOT EXISTS idx_feed_account ON feed(account_id)');
+    await this.exec('CREATE INDEX IF NOT EXISTS idx_article_account ON article(account_id)');
+    await this.exec('CREATE INDEX IF NOT EXISTS idx_group_account ON feed_group(account_id)');
     // Composite indexes covering the list queries: account scope + the
     // filter column + the secondary-sorted ORDER BY (published_at, id). Without
     // these, unread/starred listings and per-feed counts do a full scan + temp
     // sort on every badge refresh during sync.
-    await this.store.executeSql(
+    await this.exec(
       'CREATE INDEX IF NOT EXISTS idx_article_account_feed_pub ON article(account_id, feed_id, published_at DESC, id DESC)'
     );
-    await this.store.executeSql(
+    await this.exec(
       'CREATE INDEX IF NOT EXISTS idx_article_account_read_pub ON article(account_id, is_read, published_at DESC, id DESC)'
     );
-    await this.store.executeSql(
+    await this.exec(
       'CREATE INDEX IF NOT EXISTS idx_article_account_star_pub ON article(account_id, is_starred, published_at DESC, id DESC)'
     );
     // Covers listFeeds' per-feed unread/star sums without touching full text.
-    await this.store.executeSql(
+    await this.exec(
       'CREATE INDEX IF NOT EXISTS idx_article_feed_state ON article(feed_id, is_read, is_starred)'
     );
     Logger.info('Database schema ready (multi-account)');

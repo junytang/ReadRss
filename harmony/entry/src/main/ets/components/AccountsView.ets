@@ -2,6 +2,7 @@ import { Account, accountTypeName } from '../account/AccountModels';
 import { accountRepository } from '../account/AccountRepository';
 import { goBack, openAccountEditor } from '../common/NavigationService';
 import { FontManager } from '../common/FontManager';
+import { ToastUtil } from '../common/ToastUtil';
 
 /** Account list: switch, edit, add and remove accounts. */
 @Component
@@ -44,7 +45,7 @@ export struct AccountsView {
     await accountRepository.switchTo(account.id);
     this.activeAccountId = account.id;
     AppStorage.setOrCreate<number>('accountSwitchTick', Date.now());
-    this.getUIContext().getPromptAction().showToast({ message: `已切换到 ${account.name}` });
+    ToastUtil.show(this.getUIContext(), `已切换到 ${account.name}`);
     goBack();
   }
 
@@ -61,13 +62,13 @@ export struct AccountsView {
     try {
       const removed: boolean = await accountRepository.remove(account.id);
       if (!removed) {
-        this.getUIContext().getPromptAction().showToast({ message: '必须至少有一个账户' });
+        ToastUtil.show(this.getUIContext(), '必须至少有一个账户');
         return;
       }
       await this.load();
       AppStorage.setOrCreate<number>('accountSwitchTick', Date.now());
     } catch (error) {
-      this.getUIContext().getPromptAction().showToast({ message: (error as Error).message });
+      ToastUtil.show(this.getUIContext(), (error as Error).message);
     }
   }
 

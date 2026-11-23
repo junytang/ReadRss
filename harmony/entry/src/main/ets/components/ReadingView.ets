@@ -16,6 +16,7 @@ import { FeedIcon } from '../common/FeedIcon';
 import { ArticleImageConverter } from '../common/ArticleImageConverter';
 import { ReaderFont } from '../common/ReaderFont';
 import { readStatusStore } from '../rss/ReadStatusStore';
+import { ToastUtil } from '../common/ToastUtil';
 
 /** Minimum vertical pull (vp) at a scroll edge that switches articles. Applies
  *  to both pull-down (previous) and pull-up (next). Large enough that ordinary
@@ -491,14 +492,14 @@ export struct ReadingView {
     const next: boolean = !this.isStarred;
     const id: string = this.currentArticleId;
     this.isStarred = next;
-    this.getUIContext().getPromptAction().showToast({ message: next ? '已收藏' : '已取消收藏' });
+    ToastUtil.show(this.getUIContext(), next ? '已收藏' : '已取消收藏');
     readStatusStore.markStarred(id, next, !next, this.article?.feedId ?? '');
   }
 
   private openOriginal(): void {
     const link: string = this.article?.link ?? '';
     if (link.length === 0) {
-      this.getUIContext().getPromptAction().showToast({ message: '这篇文章没有原文链接' });
+      ToastUtil.show(this.getUIContext(), '这篇文章没有原文链接');
       return;
     }
     try {
@@ -508,29 +509,29 @@ export struct ReadingView {
         context.startAbility({ action: 'ohos.want.action.viewData', uri: link });
       }
     } catch (error) {
-      this.getUIContext().getPromptAction().showToast({ message: `无法打开链接：${(error as Error).message}` });
+      ToastUtil.show(this.getUIContext(), `无法打开链接：${(error as Error).message}`);
     }
   }
 
   private async copyLink(): Promise<void> {
     const link: string = this.article?.link ?? '';
     if (link.length === 0) {
-      this.getUIContext().getPromptAction().showToast({ message: '这篇文章没有原文链接' });
+      ToastUtil.show(this.getUIContext(), '这篇文章没有原文链接');
       return;
     }
     try {
       const pasteData: pasteboard.PasteData = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, link);
       await pasteboard.getSystemPasteboard().setData(pasteData);
-      this.getUIContext().getPromptAction().showToast({ message: '链接已复制' });
+      ToastUtil.show(this.getUIContext(), '链接已复制');
     } catch (error) {
-      this.getUIContext().getPromptAction().showToast({ message: `复制失败：${(error as Error).message}` });
+      ToastUtil.show(this.getUIContext(), `复制失败：${(error as Error).message}`);
     }
   }
 
   private async shareArticle(): Promise<void> {
     const link: string = this.article?.link ?? '';
     if (link.length === 0) {
-      this.getUIContext().getPromptAction().showToast({ message: '这篇文章没有原文链接' });
+      ToastUtil.show(this.getUIContext(), '这篇文章没有原文链接');
       return;
     }
     try {
@@ -549,7 +550,7 @@ export struct ReadingView {
         previewMode: systemShare.SharePreviewMode.DETAIL,
       });
     } catch (error) {
-      this.getUIContext().getPromptAction().showToast({ message: `分享失败：${(error as Error).message}` });
+      ToastUtil.show(this.getUIContext(), `分享失败：${(error as Error).message}`);
     }
   }
 

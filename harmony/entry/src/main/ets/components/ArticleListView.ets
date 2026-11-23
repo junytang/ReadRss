@@ -21,6 +21,7 @@ import { accountRepository } from '../account/AccountRepository';
 import { accountTypeShortName } from '../account/AccountModels';
 import { FeedListView } from './FeedListView';
 import { ArticleRowView } from './ArticleRowView';
+import { ToastUtil } from '../common/ToastUtil';
 
 /** Offscreen distance (vp) used by the filter/feed slide transition. */
 const DISTANCE: number = 1000;
@@ -355,7 +356,7 @@ export struct ArticleListView {
     // A page-level pull refresh (isSyncing=true) shows its own toast; this covers
     // syncs started elsewhere (first install / launch sync from EntryAbility).
     if (!this.isSyncing) {
-      this.getUIContext().getPromptAction().showToast({ message: '同步完成' });
+      ToastUtil.show(this.getUIContext(), '同步完成');
     }
   }
 
@@ -729,7 +730,7 @@ export struct ArticleListView {
     // spinner and notify instead of silently returning.
     if (this.isSyncing) {
       this.isRefreshing = false;
-      this.getUIContext().getPromptAction().showToast({ message: '正在同步中，请稍候' });
+      ToastUtil.show(this.getUIContext(), '正在同步中，请稍候');
       return;
     }
     this.isSyncing = true;
@@ -738,9 +739,9 @@ export struct ArticleListView {
       await rssRepository.syncAll();
       // No load() here: syncAll emits syncFinishedTick internally, whose watcher
       // (onSyncFinished) already reloaded the list while preserving paging depth.
-      this.getUIContext().getPromptAction().showToast({ message: '同步完成' });
+      ToastUtil.show(this.getUIContext(), '同步完成');
     } catch (error) {
-      this.getUIContext().getPromptAction().showToast({ message: `同步失败：${(error as Error).message}` });
+      ToastUtil.show(this.getUIContext(), `同步失败：${(error as Error).message}`);
     } finally {
       this.isSyncing = false;
       this.isRefreshing = false;
@@ -776,7 +777,7 @@ export struct ArticleListView {
       }
     }
     if (ids.length === 0) {
-      this.getUIContext().getPromptAction().showToast({ message: '没有符合条件的文章' });
+      ToastUtil.show(this.getUIContext(), '没有符合条件的文章');
       return;
     }
     // Local diff drives rows and counts; the bulk service call persists to DB
@@ -949,7 +950,7 @@ export struct ArticleListView {
     const article: Article | undefined = await rssRepository.getArticleMeta(this.menuArticleId);
     const link: string = article?.link ?? '';
     if (link.length === 0) {
-      this.getUIContext().getPromptAction().showToast({ message: '这篇文章没有原文链接' });
+      ToastUtil.show(this.getUIContext(), '这篇文章没有原文链接');
       return;
     }
     try {
@@ -968,7 +969,7 @@ export struct ArticleListView {
         previewMode: systemShare.SharePreviewMode.DETAIL,
       });
     } catch (error) {
-      this.getUIContext().getPromptAction().showToast({ message: `分享失败：${(error as Error).message}` });
+      ToastUtil.show(this.getUIContext(), `分享失败：${(error as Error).message}`);
     }
   }
 
@@ -1417,7 +1418,7 @@ export struct ArticleListView {
             })
             // Flush the deferred row rebuilds when scrolling settles, so the
             // ForEach is rebuilt once instead of on every scroll frame.
-            .onScroll((offset: number, scrollState: ScrollState) => {
+            .onDidScroll((offset: number, scrollState: ScrollState) => {
               this.scrollOffset = offset;
               if (scrollState === ScrollState.Idle) {
                 // Mark everything scrolled past in one pass when scrolling

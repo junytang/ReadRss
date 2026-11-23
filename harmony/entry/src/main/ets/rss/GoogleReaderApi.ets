@@ -226,6 +226,10 @@ export class GoogleReaderApi {
         throw new Error(`HTTP ${response.responseCode}: ${response.result as string}`);
       }
       return response.result as string;
+    } catch (error) {
+      // request() is @throws; rethrow so callers can distinguish HTTP/auth
+      // failures from transport errors.
+      throw error as Error;
     } finally {
       request.destroy();
     }

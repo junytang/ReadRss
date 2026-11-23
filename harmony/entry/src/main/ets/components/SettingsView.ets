@@ -6,6 +6,7 @@ import {
 import { FontManager } from '../common/FontManager';
 import { bundleManager } from '@kit.AbilityKit';
 import { Logger } from '../common/Logger';
+import { ToastUtil } from '../common/ToastUtil';
 
 /** Minimal settings screen covering the preferences that affect the MVP. */
 @Component
@@ -335,20 +336,20 @@ export struct SettingsView {
             .borderRadius(10)
 
             Column() {
-              Text('调试').fontFamily(this.appFont()).fontSize(this.fs(14)).fontWeight(FontWeight.Medium).fontColor(this.textColor())
-              Text('清除全文缓存（重新打开文章将使用新的提取算法）')
+              Text('调试').fontFamily(this.appFont()).fontSize(this.fs(15)).fontWeight(FontWeight.Medium).fontColor(this.textColor())
+              Text('清除全文缓存')
                 .fontFamily(this.appFont())
-                .fontSize(this.fs(15)).fontColor('#2663D6')
+                .fontSize(this.fs(13)).fontColor('#2663D6')
                 .margin({ top: 10 })
                 .onClick(async () => {
                   await rssRepository.clearFullContentCache();
-                  this.getUIContext().getPromptAction().showToast({ message: '全文缓存已清除' });
+                  ToastUtil.show(this.getUIContext(), '全文缓存已清除');
                 })
-              Text('关于').fontFamily(this.appFont()).fontSize(this.fs(14)).fontWeight(FontWeight.Medium).fontColor(this.textColor())
+              Text('关于').fontFamily(this.appFont()).fontSize(this.fs(15)).fontWeight(FontWeight.Medium).fontColor(this.textColor())
                 .margin({ top: 20 })
-              Text(`ReadRss HarmonyOS · ${this.versionLabel}`).fontFamily(this.appFont())
+              Text(`ReadRss · ${this.versionLabel}`).fontFamily(this.appFont())
                 .fontSize(this.fs(13)).fontColor(this.secondaryColor()).margin({ top: 10 })
-              Text('This version is a hard fork of ReadYou Android version.')
+              Text('This version is a hard fork of Android ReadYou version.')
                 .fontFamily(this.appFont())
                 .fontSize(this.fs(13)).fontColor(this.secondaryColor()).margin({ top: 6 })
             }

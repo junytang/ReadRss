@@ -14,6 +14,7 @@ import { syncServiceFor } from '../rss/SyncServiceFactory';
 import { goBack } from '../common/NavigationService';
 import { Logger } from '../common/Logger';
 import { FontManager } from '../common/FontManager';
+import { ToastUtil } from '../common/ToastUtil';
 
 interface TypeChoice {
   type: AccountType;
@@ -144,7 +145,7 @@ export struct AccountEditorView {
         syncServiceFor(account).clearAuthorization();
       }
       AppStorage.setOrCreate<number>('accountSwitchTick', Date.now());
-      this.getUIContext().getPromptAction().showToast({ message: '账号已保存' });
+      ToastUtil.show(this.getUIContext(), '账号已保存');
       goBack();
     } catch (error) {
       this.errorMessage = (error as Error).message;

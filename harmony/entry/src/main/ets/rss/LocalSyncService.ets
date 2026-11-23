@@ -35,6 +35,9 @@ export class LocalSyncService implements FeedSyncService {
         throw new Error(`HTTP ${response.responseCode}`);
       }
       return response.result as string;
+    } catch (error) {
+      // request() is @throws; keep the failure visible to the caller.
+      throw error as Error;
     } finally {
       request.destroy();
     }

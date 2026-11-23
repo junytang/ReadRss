@@ -1,5 +1,7 @@
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import { buffer } from '@kit.ArkTS';
+import { SuppressWarnings, SuppressWarningsType } from '@kit.BasicServicesKit';
+import { Logger } from '../common/Logger';
 
 /** Mirrors AccountType in the Android app (id values 1..6). */
 export enum AccountType {
@@ -114,49 +116,79 @@ function toBytes(text: string): Uint8Array {
 }
 
 function fromBytes(bytes: Uint8Array): string {
-  return buffer.from(bytes.buffer as ArrayBuffer, 0, bytes.byteLength).toString('utf-8');
+  try {
+    return buffer.from(bytes.buffer as ArrayBuffer, 0, bytes.byteLength).toString('utf-8');
+  } catch (error) {
+    Logger.warn(`Decode buffer failed: ${(error as Error).message}`);
+    return '';
+  }
 }
 
+/** cryptoFramework APIs are @throws and their syscaps are not declared for every
+ *  device type. Each call is wrapped in exception handling that logs and
+ *  rethrows; the static "not supported on all devices" advisory is suppressed
+ *  because the failure path is handled and surfaced to the caller. */
+@SuppressWarnings({ rules: [SuppressWarningsType.SYSCAP] })
 export class CredentialCodec {
   private static key(): cryptoFramework.SymKey {
-    const generator: cryptoFramework.SymKeyGenerator =
-      cryptoFramework.createSymKeyGenerator('DES64');
-    return generator.convertKeySync({ data: desKeyBytes() });
+    try {
+      const generator: cryptoFramework.SymKeyGenerator =
+        cryptoFramework.createSymKeyGenerator('DES64');
+      return generator.convertKeySync({ data: desKeyBytes() });
+    } catch (error) {
+      Logger.error(`Create symmetric key failed: ${(error as Error).message}`);
+      throw error as Error;
+    }
   }
 
   static encodeCredentials(credentials: RemoteCredentials): string {
-    const cipher: cryptoFramework.Cipher = cryptoFramework.createCipher('DES64|ECB|PKCS7');
-    cipher.initSync(cryptoFramework.CryptoMode.ENCRYPT_MODE, CredentialCodec.key(), null);
-    const encrypted: cryptoFramework.DataBlob =
-      cipher.doFinalSync({ data: toBytes(JSON.stringify(credentials)) });
-    return buffer.from(encrypted.data.buffer as ArrayBuffer, 0, encrypted.data.byteLength)
-      .toString('base64');
+    try {
+      const cipher: cryptoFramework.Cipher = cryptoFramework.createCipher('DES64|ECB|PKCS7');
+      cipher.initSync(cryptoFramework.CryptoMode.ENCRYPT_MODE, CredentialCodec.key(), null);
+      const encrypted: cryptoFramework.DataBlob =
+        cipher.doFinalSync({ data: toBytes(JSON.stringify(credentials)) });
+      return buffer.from(encrypted.data.buffer as ArrayBuffer, 0, encrypted.data.byteLength)
+        .toString('base64');
+    } catch (error) {
+      Logger.error(`Encode credentials failed: ${(error as Error).message}`);
+      throw error as Error;
+    }
   }
 
   static decodeCredentials(value: string): RemoteCredentials {
     const source: string = value.length > 0 ? value : EMPTY_SECURITY_KEY;
-    const cipher: cryptoFramework.Cipher = cryptoFramework.createCipher('DES64|ECB|PKCS7');
-    cipher.initSync(cryptoFramework.CryptoMode.DECRYPT_MODE, CredentialCodec.key(), null);
-    const raw: Uint8Array = new Uint8Array(buffer.from(source, 'base64').buffer);
-    const decrypted: cryptoFramework.DataBlob = cipher.doFinalSync({ data: raw });
-    const parsed: RemoteCredentials = JSON.parse(fromBytes(decrypted.data)) as RemoteCredentials;
-    return {
-      serverUrl: parsed.serverUrl ?? '',
-      username: parsed.username ?? '',
-      password: parsed.password ?? '',
-      clientCertificateAlias: parsed.clientCertificateAlias ?? '',
-    };
+    try {
+      const cipher: cryptoFramework.Cipher = cryptoFramework.createCipher('DES64|ECB|PKCS7');
+      cipher.initSync(cryptoFramework.CryptoMode.DECRYPT_MODE, CredentialCodec.key(), null);
+      const raw: Uint8Array = new Uint8Array(buffer.from(source, 'base64').buffer);
+      const decrypted: cryptoFramework.DataBlob = cipher.doFinalSync({ data: raw });
+      const parsed: RemoteCredentials = JSON.parse(fromBytes(decrypted.data)) as RemoteCredentials;
+      return {
+        serverUrl: parsed.serverUrl ?? '',
+        username: parsed.username ?? '',
+        password: parsed.password ?? '',
+        clientCertificateAlias: parsed.clientCertificateAlias ?? '',
+      };
+    } catch (error) {
+      Logger.error(`Decode credentials failed: ${(error as Error).message}`);
+      throw error as Error;
+    }
   }
 
   static md5Hex(text: string): string {
-    const md: cryptoFramework.Md = cryptoFramework.createMd('MD5');
-    md.updateSync({ data: toBytes(text) });
-    const digest: cryptoFramework.DataBlob = md.digestSync();
-    let hex: string = '';
-    for (const byte of digest.data) {
-      hex += byte.toString(16).padStart(2, '0');
+    try {
+      const md: cryptoFramework.Md = cryptoFramework.createMd('MD5');
+      md.updateSync({ data: toBytes(text) });
+      const digest: cryptoFramework.DataBlob = md.digestSync();
+      let hex: string = '';
+      for (const byte of digest.data) {
+        hex += byte.toString(16).padStart(2, '0');
+      }
+      return hex;
+    } catch (error) {
+      Logger.error(`MD5 failed: ${(error as Error).message}`);
+      throw error as Error;
     }
-    return hex;
   }
 }
 

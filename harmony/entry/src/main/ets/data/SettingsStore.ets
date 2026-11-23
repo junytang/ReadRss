@@ -10,7 +10,13 @@ class ReadYouSettingsStore {
   private cache: AppSettings = defaultSettings();
 
   async init(context: common.Context): Promise<void> {
-    this.pref = await preferences.getPreferences(context, PREFS_NAME);
+    // getPreferences is @throws: fall back to in-memory defaults when the
+    // preferences service is unavailable instead of aborting app startup.
+    try {
+      this.pref = await preferences.getPreferences(context, PREFS_NAME);
+    } catch (error) {
+      Logger.warn(`Preferences unavailable, using defaults: ${(error as Error).message}`);
+    }
     this.cache = {
       activeAccountId: await this.readString('activeAccountId', this.cache.activeAccountId),
       darkMode: await this.readBool('darkMode', this.cache.darkMode),
@@ -46,21 +52,36 @@ class ReadYouSettingsStore {
     if (!this.pref) {
       return fallback;
     }
-    return await this.pref.get(key, fallback) as boolean;
+    try {
+      return await this.pref.get(key, fallback) as boolean;
+    } catch (error) {
+      Logger.warn(`Read setting ${key} failed: ${(error as Error).message}`);
+      return fallback;
+    }
   }
 
   private async readInt(key: string, fallback: number): Promise<number> {
     if (!this.pref) {
       return fallback;
     }
-    return await this.pref.get(key, fallback) as number;
+    try {
+      return await this.pref.get(key, fallback) as number;
+    } catch (error) {
+      Logger.warn(`Read setting ${key} failed: ${(error as Error).message}`);
+      return fallback;
+    }
   }
 
   private async readString(key: string, fallback: string): Promise<string> {
     if (!this.pref) {
       return fallback;
     }
-    return await this.pref.get(key, fallback) as string;
+    try {
+      return await this.pref.get(key, fallback) as string;
+    } catch (error) {
+      Logger.warn(`Read setting ${key} failed: ${(error as Error).message}`);
+      return fallback;
+    }
   }
 
   get(): AppSettings {
@@ -98,22 +119,29 @@ class ReadYouSettingsStore {
     AppStorage.setOrCreate<string>('customFontName', this.cache.customFontName);
   }
 
-  private async write(key: string, value: boolean | number): Promise<void> {
+  private async write(key: string, value: boolean | number | string): Promise<void> {
     if (!this.pref) {
       return;
     }
-    await this.pref.put(key, value);
-    await this.pref.flush();
+    try {
+      await this.pref.put(key, value);
+      await this.pref.flush();
+    } catch (error) {
+      Logger.warn(`Persist setting ${key} failed: ${(error as Error).message}`);
+    }
+  }
+
+  /** String variant kept separate so ArkTS keeps the value type precise at
+   *  each call site while sharing the @throws handling with write(). */
+  private async writeString(key: string, value: string): Promise<void> {
+    await this.write(key, value);
   }
 
   async setActiveAccountId(value: string): Promise<void> {
     this.cache.activeAccountId = value;
     AppStorage.setOrCreate<string>('activeAccountId', value);
     AppStorage.setOrCreate<number>('accountSwitchTick', Date.now());
-    if (this.pref) {
-      await this.pref.put('activeAccountId', value);
-      await this.pref.flush();
-    }
+    await this.writeString('activeAccountId', value);
   }
 
   async setDarkMode(value: boolean): Promise<void> {
@@ -160,11 +188,8 @@ class ReadYouSettingsStore {
     this.cache.customFontName = name;
     AppStorage.setOrCreate<string>('customFontName', name);
     AppStorage.setOrCreate<number>('fontDataTick', Date.now());
-    if (this.pref) {
-      await this.pref.put('customFontPath', value);
-      await this.pref.put('customFontName', name);
-      await this.pref.flush();
-    }
+    await this.writeString('customFontPath', value);
+    await this.writeString('customFontName', name);
   }
 
   // Debounced disk writes for slider-backed settings. onChange fires every
@@ -216,28 +241,19 @@ class ReadYouSettingsStore {
   async setArticleFontFamily(value: string): Promise<void> {
     this.cache.articleFontFamily = value;
     AppStorage.setOrCreate<string>('articleFontFamily', value);
-    if (this.pref) {
-      await this.pref.put('articleFontFamily', value);
-      await this.pref.flush();
-    }
+    await this.writeString('articleFontFamily', value);
   }
 
   /** Generic boolean setter for article-list behavior toggles. */
   private async setBool(key: string, value: boolean): Promise<void> {
     AppStorage.setOrCreate<boolean>(key, value);
-    if (this.pref) {
-      await this.pref.put(key, value);
-      await this.pref.flush();
-    }
+    await this.write(key, value);
   }
 
   /** Generic number setter for article-list behavior choices. */
   private async setInt(key: string, value: number): Promise<void> {
     AppStorage.setOrCreate<number>(key, value);
-    if (this.pref) {
-      await this.pref.put(key, value);
-      await this.pref.flush();
-    }
+    await this.write(key, value);
   }
 
   /** Bump a tick so the visible article list reloads after a behavior change. */
@@ -311,10 +327,7 @@ class ReadYouSettingsStore {
   async setReaderFontFamily(value: string): Promise<void> {
     this.cache.readerFontFamily = value;
     AppStorage.setOrCreate<string>('readerFontFamily', value);
-    if (this.pref) {
-      await this.pref.put('readerFontFamily', value);
-      await this.pref.flush();
-    }
+    await this.writeString('readerFontFamily', value);
   }
 
   async setSystemFontScale(value: number): Promise<void> {
@@ -326,10 +339,7 @@ class ReadYouSettingsStore {
   async setSystemFontFamily(value: string): Promise<void> {
     this.cache.systemFontFamily = value;
     AppStorage.setOrCreate<string>('systemFontFamily', value);
-    if (this.pref) {
-      await this.pref.put('systemFontFamily', value);
-      await this.pref.flush();
-    }
+    await this.writeString('systemFontFamily', value);
   }
 }
 

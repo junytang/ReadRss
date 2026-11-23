@@ -8,9 +8,6 @@ interface QueryAccess { queryString(p: ApiParams): string; }
 interface FormAccess { formBody(p: ApiParams, withToken: boolean): string; }
 interface AddParamAccess { addParam(parts: string[], key: string, value: string | undefined): void; }
 interface CsvAccess { csv(value: string | undefined): string[]; }
-interface CharsetAccess { charsetFrom(value: string): string; }
-interface ClassIdAccess { classAndId(attrs: string): string; }
-interface MaskAccess { maskScripts(html: string): string; }
 
 export default function privateApiTest(): void {
   describe('GoogleReaderApi parameter builders', () => {
@@ -69,37 +66,26 @@ export default function privateApiTest(): void {
 
   describe('FullContentFetcher pure helpers', () => {
     it('charsetFrom extracts charset case-insensitively', 0, () => {
-      const mock: MockKit = new MockKit();
-      mock.mockPrivateFunc(FullContentFetcher as object, 'charsetFrom');
-      const cf = FullContentFetcher as object as CharsetAccess;
-      expect(cf.charsetFrom('text/html; charset=UTF-8')).assertEqual('utf-8');
-      expect(cf.charsetFrom('text/html; charset="GBK"')).assertEqual('gbk');
-      expect(cf.charsetFrom('text/html')).assertEqual('');
-      mock.clear(FullContentFetcher as object);
+      expect(FullContentFetcher.charsetFrom('text/html; charset=UTF-8')).assertEqual('utf-8');
+      expect(FullContentFetcher.charsetFrom('text/html; charset="GBK"')).assertEqual('gbk');
+      expect(FullContentFetcher.charsetFrom('text/html')).assertEqual('');
     });
 
     it('classAndId collects tokens lowercased', 0, () => {
-      const mock: MockKit = new MockKit();
-      mock.mockPrivateFunc(FullContentFetcher as object, 'classAndId');
-      const ci = FullContentFetcher as object as ClassIdAccess;
-      const r: string = ci.classAndId('class="Article Content" id="MainBody"');
+      const r: string = FullContentFetcher.classAndId('class="Article Content" id="MainBody"');
       expect(r.indexOf('article') >= 0).assertTrue();
       expect(r.indexOf('content') >= 0).assertTrue();
       expect(r.indexOf('mainbody') >= 0).assertTrue();
-      mock.clear(FullContentFetcher as object);
     });
 
     it('maskScripts blanks script/style preserving length', 0, () => {
-      const mock: MockKit = new MockKit();
-      mock.mockPrivateFunc(FullContentFetcher as object, 'maskScripts');
-      const ms = FullContentFetcher as object as MaskAccess;
       const input: string = '<p>keep</p><script>var x="<div>";</script><p>tail</p>';
-      const masked: string = ms.maskScripts(input);
+      const masked: string = FullContentFetcher.maskScripts(input);
       expect(masked.length).assertEqual(input.length);
       expect(masked.indexOf('var x') >= 0).assertFalse();
       expect(masked.indexOf('keep') >= 0).assertTrue();
       expect(masked.indexOf('tail') >= 0).assertTrue();
-      mock.clear(FullContentFetcher as object);
     });
   });
+
 }

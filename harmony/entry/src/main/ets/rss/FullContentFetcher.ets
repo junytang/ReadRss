@@ -65,7 +65,7 @@ export class FullContentFetcher {
     return charset.length > 0 ? charset : 'utf-8';
   }
 
-  private static charsetFrom(value: string): string {
+  static charsetFrom(value: string): string {
     const match: Array<string> | null =
       value.match(/charset\s*=\s*["']?\s*([\w-]+)/i);
     if (match === null || match.length < 2) {
@@ -97,7 +97,7 @@ export class FullContentFetcher {
   }
 
   /** Only the values of class/id matter for junk detection, not URLs/titles in other attributes. */
-  private static classAndId(attrs: string): string {
+  static classAndId(attrs: string): string {
     let result: string = '';
     const matcher: RegExp = /\b(?:class|id)\s*=\s*(["'])([^"']*)\1/gi;
     let match: Array<string> | null = matcher.exec(attrs);
@@ -132,7 +132,7 @@ export class FullContentFetcher {
   /** Replace script/style/noscript bodies with spaces, keeping indices stable.
    *  Single regex pass: the previous implementation lowercased and rebuilt the
    *  whole document once per script tag, i.e. O(n²) on script-heavy pages. */
-  private static maskScripts(html: string): string {
+  static maskScripts(html: string): string {
     return html.replace(/<(script|style|noscript)\b[\s\S]*?<\/\1\s*>/gi, (match: string) => {
       return ' '.repeat(match.length);
     });

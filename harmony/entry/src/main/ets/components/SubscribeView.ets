@@ -2,6 +2,7 @@ import { FeedSuggestion, SUGGESTED_FEEDS } from '../common/Constants';
 import { rssRepository } from '../rss/RssRepository';
 import { goBack } from '../common/NavigationService';
 import { FontManager } from '../common/FontManager';
+import { ToastUtil } from '../common/ToastUtil';
 
 /** Add-subscription screen: URL entry plus a few suggested feeds. */
 @Component
@@ -34,7 +35,7 @@ export struct SubscribeView {
     this.errorMessage = '';
     try {
       await rssRepository.subscribe(url);
-      this.getUIContext().getPromptAction().showToast({ message: '订阅成功' });
+      ToastUtil.show(this.getUIContext(), '订阅成功');
       goBack();
     } catch (error) {
       this.errorMessage = `订阅失败：${(error as Error).message}`;
