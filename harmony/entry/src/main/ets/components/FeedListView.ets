@@ -26,6 +26,10 @@ export struct FeedListView {
   @StorageProp('bottomInset') bottomInset: number = 0;
 
   private scroller: Scroller = new Scroller();
+  // Three @Watch callbacks plus aboutToAppear can each schedule a 30ms
+  // scroll-to-selection in one selection change. Coalesce into one trailing
+  // timer and cancel it when the drawer closes.
+  private scrollTimer: number = -1;
 
   @Prop feeds: Feed[] = [];
   @Prop groups: FeedGroup[] = [];
@@ -37,9 +41,19 @@ export struct FeedListView {
   @Prop @Watch('onSelectionChanged') selectedFeedId: string = '';
   @Prop @Watch('onSelectionChanged') selectedGroupId: string = '';
 
+  private scheduleScrollToSelection(): void {
+    if (this.scrollTimer >= 0) {
+      clearTimeout(this.scrollTimer);
+    }
+    this.scrollTimer = setTimeout(() => {
+      this.scrollTimer = -1;
+      this.scrollToSelection();
+    }, 30);
+  }
+
   onSelectionChanged(): void {
     // Re-scroll when filter/selection changes while the drawer is open.
-    setTimeout(() => { this.scrollToSelection(); }, 30);
+    this.scheduleScrollToSelection();
   }
 
   onSelectFeed: (feedId: string) => void = () => {};
@@ -50,7 +64,14 @@ export struct FeedListView {
 
   aboutToAppear(): void {
     // Scroll the last-selected source/group into view when the drawer opens.
-    setTimeout(() => { this.scrollToSelection(); }, 30);
+    this.scheduleScrollToSelection();
+  }
+
+  aboutToDisappear(): void {
+    if (this.scrollTimer >= 0) {
+      clearTimeout(this.scrollTimer);
+      this.scrollTimer = -1;
+    }
   }
 
   /** Locate the selected row in listRows and center it in the List. */

@@ -168,6 +168,23 @@ class ReadYouDatabase {
     await this.store.executeSql('CREATE INDEX IF NOT EXISTS idx_feed_account ON feed(account_id)');
     await this.store.executeSql('CREATE INDEX IF NOT EXISTS idx_article_account ON article(account_id)');
     await this.store.executeSql('CREATE INDEX IF NOT EXISTS idx_group_account ON feed_group(account_id)');
+    // Composite indexes covering the list queries: account scope + the
+    // filter column + the secondary-sorted ORDER BY (published_at, id). Without
+    // these, unread/starred listings and per-feed counts do a full scan + temp
+    // sort on every badge refresh during sync.
+    await this.store.executeSql(
+      'CREATE INDEX IF NOT EXISTS idx_article_account_feed_pub ON article(account_id, feed_id, published_at DESC, id DESC)'
+    );
+    await this.store.executeSql(
+      'CREATE INDEX IF NOT EXISTS idx_article_account_read_pub ON article(account_id, is_read, published_at DESC, id DESC)'
+    );
+    await this.store.executeSql(
+      'CREATE INDEX IF NOT EXISTS idx_article_account_star_pub ON article(account_id, is_starred, published_at DESC, id DESC)'
+    );
+    // Covers listFeeds' per-feed unread/star sums without touching full text.
+    await this.store.executeSql(
+      'CREATE INDEX IF NOT EXISTS idx_article_feed_state ON article(feed_id, is_read, is_starred)'
+    );
     Logger.info('Database schema ready (multi-account)');
   }
 
@@ -639,13 +656,18 @@ class ReadYouDatabase {
   /** Returns the number of articles written. Runs as one transaction: the
    *  previous per-row commit cost one disk sync per article, which dominated
    *  large batch inserts (100-500 rows per sync batch). */
-  async insertArticles(articles: Article[], accountId: string): Promise<number> {
+  async insertArticles(articles: Article[], accountId: string, ignoreExisting: boolean = false): Promise<number> {
     if (articles.length === 0) {
       return 0;
     }
-    // Android ArticleDao uses OnConflictStrategy.REPLACE.
+    // Local subscriptions must not overwrite existing rows: Android's
+    // insertListIfNotExist filters out links already in the DB, otherwise a
+    // re-sync would reset is_read/is_starred and clear full_content (forcing a
+    // re-fetch from the origin on every sync). Remote services insert only
+    // id-difference sets, so they keep REPLACE to mirror ArticleDao.insert.
+    const conflict: string = ignoreExisting ? 'IGNORE' : 'REPLACE';
     const sql: string =
-      `INSERT OR REPLACE INTO article
+      `INSERT OR ${conflict} INTO article
        (id, account_id, feed_id, feed_title, title, author, link, summary, content, full_content,
         image_url, published_at, is_read, is_starred)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
@@ -942,9 +964,13 @@ class ReadYouDatabase {
       where += ' AND feed_id = ?';
       scopeArgs.push(feedId);
     }
-    if (filter === 'unread') {
-      where += ' AND is_read = 0';
-    } else if (filter === 'starred') {
+    // Unread tab: do NOT filter by is_read. Opening the current article marks it
+    // read, and scrolling marks newer rows read; the list keeps those rows in
+    // place (grayed out). An is_read=0 filter would exclude them from "previous",
+    // breaking pull-to-previous. So unread/All both search the full feed/group scope.
+    // Starred tab: DO restrict to is_starred=1 so prev/next stay within the
+    // starred list the user is actually viewing (matches Android's list snapshot).
+    if (filter === 'starred') {
       where += ' AND is_starred = 1';
     }
     if (groupId.length > 0) {

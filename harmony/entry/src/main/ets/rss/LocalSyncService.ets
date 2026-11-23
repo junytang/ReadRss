@@ -70,7 +70,7 @@ export class LocalSyncService implements FeedSyncService {
       starredCount: 0,
     };
     await database.upsertFeed(feed, account.id);
-    await database.insertArticles(parsed.articles, account.id);
+    await database.insertArticles(parsed.articles, account.id, true);
     return feed;
   }
 
@@ -88,7 +88,9 @@ export class LocalSyncService implements FeedSyncService {
         }
         for (let start: number = 0; start < parsed.articles.length; start += batchSize) {
           const chunk: Article[] = parsed.articles.slice(start, start + batchSize);
-          result.newArticles += await database.insertArticles(chunk, account.id);
+          // Ignore existing rows: a re-sync must not reset read/starred state or
+          // wipe cached full text (matches Android's insertListIfNotExist).
+          result.newArticles += await database.insertArticles(chunk, account.id, true);
           notifySyncBatch();
         }
         result.succeeded += 1;

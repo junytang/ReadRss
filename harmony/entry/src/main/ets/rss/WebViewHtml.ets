@@ -23,7 +23,31 @@ export class WebViewHtml {
 </html>`;
 
   /** Minimal port of WebViewScript.get() (image load states). */
-  static readonly SCRIPT: string = `function collapseEmptyParagraphs() {
+  static readonly SCRIPT: string = `(function(){
+  // Avoid a flash of unstyled text: a custom @font-face is served asynchronously
+  // through onInterceptRequest, so keep the document hidden until fonts settle,
+  // with a timeout fallback in case the Font Loading API is unavailable.
+  var root = document.documentElement;
+  root.style.visibility = 'hidden';
+  var revealed = false;
+  function reveal() {
+    if (revealed) return;
+    revealed = true;
+    root.style.visibility = 'visible';
+    // Tell native that THIS document (the one whose script is running) is
+    // rendered and visible. Because the callback comes from the new document,
+    // it cannot be a stale onPageEnd from a previous load - safe to gate the
+    // prev/next slide-in on this signal.
+    if (window.readYouBridge && window.readYouBridge.onPageReady) {
+      try { window.readYouBridge.onPageReady(); } catch (e) {}
+    }
+  }
+  if (document.fonts && document.fonts.ready) {
+    document.fonts.ready.then(reveal, reveal);
+    setTimeout(reveal, 1200);
+  } else { reveal(); }
+})();
+function collapseEmptyParagraphs() {
     var ps = document.querySelectorAll("article p");
     for (var i = 0; i < ps.length; i++) {
         var p = ps[i];
@@ -49,7 +73,15 @@ function setupImages() {
 }
 setupImages();
 window.addEventListener("scroll", setupImages);
-setInterval(setupImages, 800);`;
+// The reader HTML is injected as a whole, so every <img> already exists when
+// this script runs; the old setInterval(setupImages, 800) just re-scanned all
+// images forever after onload was already attached, keeping the WebView busy.
+// Watch for genuine DOM changes instead (e.g. dynamically inserted images) and
+// drop the permanent 800ms wake-up.
+if (window.MutationObserver) {
+  var imgObserver = new MutationObserver(function() { setupImages(); });
+  imgObserver.observe(document.body, { childList: true, subtree: true });
+}`;
 
   static fill(style: string, baseHref: string, body: string): string {
     let result: string = WebViewHtml.HTML;

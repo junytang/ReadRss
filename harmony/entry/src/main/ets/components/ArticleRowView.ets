@@ -22,7 +22,8 @@ export struct ArticleRowView {
   // Optional; when set, the row reacts to long press (real list only).
   onLongPress: () => void = () => {};
 
-  @StorageLink('darkMode') darkMode: boolean = false;
+  // Read-only in the row; @StorageProp avoids a write-back notification.
+  @StorageProp('darkMode') darkMode: boolean = false;
   @StorageProp('fontScale') fontScale: number = 1;
   @StorageProp('fontDataTick') fontDataTick: number = 0;
   @StorageProp('systemFontFamily') systemFontFamily: string = 'sans-serif';
