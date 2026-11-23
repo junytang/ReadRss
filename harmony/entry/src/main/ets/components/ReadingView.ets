@@ -15,7 +15,7 @@ import { FontManager } from '../common/FontManager';
 import { FeedIcon } from '../common/FeedIcon';
 import { ArticleImageConverter } from '../common/ArticleImageConverter';
 import { ReaderFont } from '../common/ReaderFont';
-import { readStatusBatcher } from '../rss/ReadStatusBatcher';
+import { readStatusStore } from '../rss/ReadStatusStore';
 
 /** Minimum vertical pull (vp) at a scroll edge that switches articles. Applies
  *  to both pull-down (previous) and pull-up (next). Large enough that ordinary
@@ -171,23 +171,14 @@ export struct ReadingView {
       });
     }
 
-    // Mark read optimistically, but only when the "打开文章即标已读" setting is on.
-    // The list turns gray before the server replies; failure rolls it back.
+    // Mark read locally; the store commits + pushes in the background with
+    // bounded retry, so no rollback bookkeeping is needed here.
     const currentArticle: Article = article;
     if (settingsStore.get().markReadOnOpen && !currentArticle.isRead) {
       currentArticle.isRead = true;
-      AppStorage.set<string>('lastChangedArticle', `${currentArticle.id}|read|true`);
-      AppStorage.set<number>('readStatusTick', Date.now());
-      rssRepository.markRead(currentArticle.id, true).then((succeeded: string[]) => {
-        if (succeeded.length === 0) {
-          readStatusBatcher.add(currentArticle.id);
-        }
-      }).catch((error: Error) => {
-        currentArticle.isRead = false;
-        AppStorage.set<string>('lastChangedArticle', `${currentArticle.id}|read|false`);
-        AppStorage.set<number>('readStatusTick', Date.now());
-        Logger.error(`Mark read on open failed: ${error.message}`);
-      });
+      readStatusStore.markRead(
+        currentArticle.id, false, true, currentArticle.feedId, this.scope.groupId
+      );
     }
     const neighbors: ArticleNeighbors = await rssRepository.neighborIds(
       currentArticle, this.scope.feedId, this.scope.filter,
@@ -500,12 +491,8 @@ export struct ReadingView {
     const next: boolean = !this.isStarred;
     const id: string = this.currentArticleId;
     this.isStarred = next;
-    AppStorage.set<string>('lastChangedArticle', `${id}|starred|${next}`);
-    AppStorage.set<number>('readStatusTick', Date.now());
     this.getUIContext().getPromptAction().showToast({ message: next ? '已收藏' : '已取消收藏' });
-    // Queue for background push with bounded retry. The list's flushed tick
-    // updates authoritative counts; the optimistic UI already reflects it.
-    readStatusBatcher.addStar(id, next);
+    readStatusStore.markStarred(id, next, !next);
   }
 
   private openOriginal(): void {
@@ -636,8 +623,9 @@ export struct ReadingView {
             .margin({ left: 8 })
             .bindMenu([
               {
+                // Action icon: filled star = collect, outline = uncollect.
                 value: this.isStarred ? '取消收藏' : '标记为收藏',
-                icon: $r('app.media.ic_filter_star'),
+                icon: this.isStarred ? $r('app.media.ic_star_outline') : $r('app.media.ic_filter_star'),
                 action: () => this.toggleStar(),
               },
               {

@@ -119,7 +119,15 @@ export class LocalSyncService implements FeedSyncService {
   }
 
   async markStarred(account: Account, article: Article, starred: boolean): Promise<void> {
-    await database.setArticleStarred(article.id, starred);
+    await this.markStarredBatch(account, [article.id], starred);
+  }
+
+  async markStarredBatch(account: Account, articleIds: string[], starred: boolean): Promise<string[]> {
+    if (articleIds.length === 0) {
+      return [];
+    }
+    await database.setStates(articleIds, undefined, starred);
+    return articleIds;
   }
 
   async deleteFeed(account: Account, feedId: string): Promise<void> {

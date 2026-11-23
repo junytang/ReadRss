@@ -314,9 +314,29 @@ export class FeverSyncService implements FeedSyncService {
   }
 
   async markStarred(account: Account, article: Article, starred: boolean): Promise<void> {
-    await database.setArticleStarred(article.id, starred);
+    await this.markStarredBatch(account, [article.id], starred);
+  }
+
+  async markStarredBatch(account: Account, articleIds: string[], starred: boolean): Promise<string[]> {
+    if (articleIds.length === 0) {
+      return [];
+    }
+    // One batched DB UPDATE. Fever's API only accepts a single item id per call,
+    // so the network requests stay per-item (unavoidable), but return only the
+    // ids whose POST succeeded so the store can retry the rest.
+    await database.setStates(articleIds, undefined, starred);
     const api: FeverApi = this.api(account);
-    await api.markItem(starred ? FeverStatus.SAVED : FeverStatus.UNSAVED, remoteId(article.id));
+    const status: FeverStatus = starred ? FeverStatus.SAVED : FeverStatus.UNSAVED;
+    const done: string[] = [];
+    for (const id of articleIds) {
+      try {
+        await api.markItem(status, remoteId(id));
+        done.push(id);
+      } catch (error) {
+        Logger.error(`Fever star failed: ${(error as Error).message} id=${id}`);
+      }
+    }
+    return done;
   }
 
   async fetchContent(account: Account, article: Article): Promise<string> {

@@ -4,6 +4,7 @@ import { database } from '../data/Database';
 import { settingsStore } from '../data/SettingsStore';
 import { accountRepository } from '../account/AccountRepository';
 import { rssRepository } from '../rss/RssRepository';
+import { readStatusStore } from '../rss/ReadStatusStore';
 import { gReaderTokenStore } from '../rss/GReaderTokenStore';
 import { FILTER_UNREAD } from '../common/Constants';
 import { Logger } from '../common/Logger';
@@ -82,6 +83,7 @@ export default class EntryAbility extends UIAbility {
     const dataReady: Promise<void> = database.init(context)
       .then(() => settingsStore.init(context))
       .then(() => gReaderTokenStore.init(context))
+      .then(() => readStatusStore.init(context))
       .then(async () => {
         // Apply the persisted color mode BEFORE loadContent. Calling setColorMode
         // after the UI starts building triggers a global config change that
@@ -121,10 +123,7 @@ export default class EntryAbility extends UIAbility {
         AppStorage.setOrCreate<number>('listSettingsTick', 0);
         AppStorage.setOrCreate<number>('readStatusTick', 0);
         AppStorage.setOrCreate<number>('bannerTick', 0);
-        AppStorage.setOrCreate<number>('optimisticUnreadDelta', 0);
-        AppStorage.setOrCreate<number>('readStatusFlushedTick', 0);
         AppStorage.setOrCreate<number>('feedIconTick', 0);
-        AppStorage.setOrCreate<string>('lastChangedArticle', '');
         AppStorage.set<string>('currentFilter', FILTER_UNREAD);
       });
 

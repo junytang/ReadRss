@@ -6,7 +6,7 @@ import { FeedSyncService, SyncResult } from './SyncService';
 import { syncServiceFor } from './SyncServiceFactory';
 import { Logger } from '../common/Logger';
 import { FullContentFetcher, FULL_CONTENT_VERSION_MARKER } from './FullContentFetcher';
-import { readStatusBatcher } from './ReadStatusBatcher';
+import { readStatusStore } from './ReadStatusStore';
 
 /** Facade used by the UI; always operates on the active account. */
 class FeedRepository {
@@ -249,7 +249,7 @@ class FeedRepository {
       // batcher debounce leaves a window where the server still has the old
       // state and sync's toUnread/toUnstar/toRead overwrite what the user just
       // changed (README known issue). flush() never throws (it retries).
-      await readStatusBatcher.flush();
+      await readStatusStore.flush();
       const result: SyncResult = await syncServiceFor(account).sync(account);
       // Each service emits feedDataTick per batch and notifySyncFinal at the end;
       // no extra tick here to avoid a redundant full UI reload.
@@ -306,6 +306,14 @@ class FeedRepository {
       return;
     }
     await syncServiceFor(account).markStarred(account, article, starred);
+  }
+
+  async markStarredBatch(ids: string[], starred: boolean): Promise<string[]> {
+    if (ids.length === 0) {
+      return [];
+    }
+    const account: Account = await this.activeAccount();
+    return syncServiceFor(account).markStarredBatch(account, ids, starred);
   }
 
   /** Mark all unread articles in the current scope (feed / group / all) as read.

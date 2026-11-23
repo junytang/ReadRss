@@ -7,7 +7,7 @@ import { ArticleCounts } from '../data/Database';
 import { fullContentPrefetcher } from '../rss/FullContentPrefetcher';
 import { Logger } from '../common/Logger';
 import { settingsStore } from '../data/SettingsStore';
-import { readStatusBatcher } from '../rss/ReadStatusBatcher';
+import { readStatusStore } from '../rss/ReadStatusStore';
 import { goBack, openArticle, openSettings } from '../common/NavigationService';
 import {
   DESC_LONG, DESC_NONE, DESC_SHORT, FILTER_ALL, FILTER_STARRED, FILTER_UNREAD,
@@ -70,7 +70,6 @@ export struct ArticleListView {
   @StorageProp('articleDescLength') articleDescLength: number = DESC_SHORT;
   @StorageProp('listSettingsTick') @Watch('onListSettingsChanged') listSettingsTick: number = 0;
   @StorageProp('readStatusTick') @Watch('onReadStatusChanged') readStatusTick: number = 0;
-  @StorageProp('readStatusFlushedTick') @Watch('onReadStatusFlushed') readStatusFlushedTick: number = 0;
   @StorageProp('feedIconTick') @Watch('onFeedIconChanged') feedIconTick: number = 0;
   @StorageProp('accountSwitchTick') @Watch('onAccountSwitched') accountSwitchTick: number = 0;
   @StorageProp('feedDataTick') @Watch('onSyncBatch') syncBatchTick: number = 0;
@@ -115,9 +114,6 @@ export struct ArticleListView {
   private orderKey: string = '';
   // True while more rows may exist beyond the currently loaded prefix.
   private hasMore: boolean = true;
-  // Unread rows optimistically marked read in the CURRENT scope but not yet
-  // written to the DB by the batcher. Used to correct DB-based count re-reads.
-  private scopeUnreadDelta: number = 0;
   // AppStorage-backed so toggling it in Settings updates this always-mounted
   // list immediately, without relying on load()/onShown refresh timing.
   @StorageProp('markReadOnScroll') markReadOnScroll: boolean = false;
@@ -186,57 +182,26 @@ export struct ArticleListView {
   }
 
   onReadStatusChanged(): void {
-    // Keep the row in the list (gray) instead of reloading, which would remove
-    // it from the unread filter immediately after returning from the reader.
-    const change: string = AppStorage.get<string>('lastChangedArticle') ?? '';
-    const parts: string[] = change.split('|');
-    if (parts.length === 3) {
-      const articleId: string = parts[0];
-      const field: string = parts[1];
-      const value: boolean = parts[2] === 'true';
-      for (let i = 0; i < this.articles.length; i++) {
-        if (this.articles[i].id === articleId) {
-          const current: Article = this.articles[i];
-          this.articles[i] = {
-            id: current.id,
-            feedId: current.feedId,
-            feedTitle: current.feedTitle,
-            title: current.title,
-            author: current.author,
-            link: current.link,
-            summary: current.summary,
-            content: current.content,
-            fullContent: current.fullContent,
-            imageUrl: current.imageUrl,
-            publishedAt: current.publishedAt,
-            isRead: field === 'read' ? value : current.isRead,
-            isStarred: field === 'starred' ? value : current.isStarred,
-          };
-          this.articles = this.articles.slice();
-          break;
-        }
-      }
-    }
-    // Counts and the drawer's unread badges still come from the database.
-    this.refreshFeeds();
-    // Reading a article marks it read in the DB; refresh the subscription banner
-    // so its unread total reflects the change too.
+    // The store is the single source of truth. Re-project its diffs onto the
+    // loaded rows (keeping read rows gray in the list) and re-derive counts.
+    readStatusStore.applyTo(this.articles);
+    this.articles = this.articles.slice();
+    this.refreshCounts();
     this.notifyBannerTick();
   }
 
   private async refreshCounts(): Promise<void> {
-    // Subtract the not-yet-persisted optimistic marks so a DB re-read never
-    // jumps back to the stale (higher) unread value while the batcher is pending.
-    const globalDelta: number = AppStorage.get<number>('optimisticUnreadDelta') ?? 0;
-    // Scoped + global counts each need one aggregate query instead of three.
+    // Counts = DB aggregate + local diff delta. No dual counters to keep in sync.
     const scoped: ArticleCounts = await rssRepository.articleCounts(this.currentFeedId, this.currentGroupId);
-    this.unreadCount = Math.max(0, scoped.unread - this.scopeUnreadDelta);
-    this.starredCount = scoped.starred;
+    const scopedUnreadDelta: number =
+      readStatusStore.unreadDelta(this.currentFeedId, this.currentGroupId, false);
+    this.unreadCount = Math.max(0, scoped.unread + scopedUnreadDelta);
+    this.starredCount = scoped.starred + readStatusStore.starredDelta();
     this.allCount = scoped.total;
     // Global totals for the drawer top row, never scoped by feed/group.
     const global: ArticleCounts = await rssRepository.articleCounts();
-    this.globalUnread = Math.max(0, global.unread - globalDelta);
-    this.globalStarred = global.starred;
+    this.globalUnread = Math.max(0, global.unread + readStatusStore.unreadDelta('', '', true));
+    this.globalStarred = global.starred + readStatusStore.starredDelta();
     this.globalAll = global.total;
   }
 
@@ -446,12 +411,13 @@ export struct ArticleListView {
       this.expandTimer = 0;
     }
     this.flushScrollMarks();
-    readStatusBatcher.flush();
+    readStatusStore.flush();
   }
 
-  /** Mark rows above the visible range as read; commit is batched by ReadStatusBatcher.
-   *  Called only when scrolling stops (ScrollState.Idle), so a continuous scroll
-   *  does not fire it on every frame. Mirrors Android: unread tab only. */
+  /** Mark rows above the visible range as read; committed in the background by
+   *  ReadStatusStore. Called only when scrolling stops (ScrollState.Idle), so a
+   *  continuous scroll does not fire it on every frame. Mirrors Android: unread
+   *  tab only. */
   private markScrolledArticles(start: number): void {
     if (!this.markReadOnScroll || this.currentFilter !== FILTER_UNREAD
       || start <= this.lastMarkedIndex) {
@@ -469,81 +435,27 @@ export struct ArticleListView {
     for (let i = this.lastMarkedIndex; i < start && i < this.articles.length; i++) {
       const article: Article = this.articles[i];
       if (!article.isRead) {
-        // Mutate in place during scrolling. Do NOT slice here: replacing the
-        // whole @State array on every index change forces ForEach to rebuild
-        // all 500 rows and causes visible stutter. We defer the single slice
-        // until scrolling settles (flushScrollMarks).
+        // Local diff is the source of truth; the store publishes a tick that
+        // re-projects rows and re-derives counts. Mutate in place now and slice
+        // once on Idle (flushScrollMarks) to avoid per-frame ForEach rebuilds.
         this.articles[i] = ArticleListView.withReadState(article, true);
-        readStatusBatcher.add(article.id);
+        readStatusStore.markRead(article.id, false, true, article.feedId, this.currentGroupId);
         markedCount++;
       }
     }
     this.lastMarkedIndex = start;
     if (markedCount > 0) {
       this.scrollMarksPending = true;
-      // Optimistic local updates only. The batcher writes to the DB 10s later;
-      // re-reading from the DB now would return the stale (unread) counts and
-      // make the number jump back. Keep the local value until the flush tick.
-      this.scopeUnreadDelta += markedCount;
-      this.optimisticUnreadChange(-markedCount);
       Logger.info(`Marked ${markedCount} articles read on scroll`);
     }
   }
 
-  /** Apply an optimistic unread-count change across every view that shows it:
-   *  this page's scoped+global counts, and the subscription page's banner via a
-   *  shared delta. `delta` is the change in unread count (negative = marked read).
-   *  The DB write that follows will re-read authoritative values via refreshFeeds. */
-  private optimisticUnreadChange(delta: number): void {
-    this.unreadCount = Math.max(0, this.unreadCount + delta);
-    this.globalUnread = Math.max(0, this.globalUnread + delta);
-    // optimisticUnreadDelta counts rows marked read but not yet in the DB. A
-    // negative unread delta (marked read) increases it.
-    const prev: number = AppStorage.get<number>('optimisticUnreadDelta') ?? 0;
-    AppStorage.setOrCreate<number>('optimisticUnreadDelta', prev - delta);
-    AppStorage.setOrCreate<number>('bannerTick', Date.now());
-  }
-
-  /** Undo the optimistic delta contribution of a completed/failed mark, without
-   *  clearing deltas belonging to other pending marks (e.g. scroll batching). */
-  private decrementOptimisticDelta(unreadDelta: number): void {
-    const prev: number = AppStorage.get<number>('optimisticUnreadDelta') ?? 0;
-    AppStorage.setOrCreate<number>('optimisticUnreadDelta', Math.max(0, prev + unreadDelta));
-  }
-
-  /** A row optimistically marked read by scrolling (pending in the batcher, DB
-   *  still unread) is being manually flipped back to unread. Cancel the queued
-   *  push and undo BOTH delta contributions so the next refreshCounts/jump does
-   *  not subtract a stale +1, and the batcher cannot re-mark it read later. */
-  private cancelScrollMarkIfPending(articleId: string): void {
-    if (!readStatusBatcher.hasPendingRead(articleId)) {
-      return;
-    }
-    readStatusBatcher.remove(articleId);
-    this.scopeUnreadDelta = Math.max(0, this.scopeUnreadDelta - 1);
-    this.decrementOptimisticDelta(-1);
-  }
-
-  /** Apply deferred visual updates once, after scrolling stops. Do not re-read
-   *  counts from the DB here — the batcher has not flushed yet. */
+  /** Apply deferred visual updates once, after scrolling stops. */
   private flushScrollMarks(): void {
     if (this.scrollMarksPending) {
       this.scrollMarksPending = false;
       this.articles = this.articles.slice();
     }
-  }
-
-  /** The batcher has written to the DB: now counting is safe and authoritative. */
-  private onReadStatusFlushed(): void {
-    // Clear the pending deltas BEFORE re-reading so refreshCounts sees the real
-    // DB values (no double subtraction).
-    this.scopeUnreadDelta = 0;
-    AppStorage.setOrCreate<number>('optimisticUnreadDelta', 0);
-    if (this.articles.length > 0) {
-      this.refreshCounts();
-      this.refreshFeeds();
-    }
-    AppStorage.setOrCreate<number>('bannerTick', Date.now());
   }
 
   /** Create a fresh instance so ForEach detects the change (ArkTS has no object spread). */
@@ -635,8 +547,6 @@ export struct ArticleListView {
     // A sync-completed refresh passes false to preserve how deep the user scrolled.
     if (resetPaging) {
       this.displayLimit = this.firstPageSize();
-      // A scope switch invalidates the old scope's pending scroll marks.
-      this.scopeUnreadDelta = 0;
       this.beginContextSwitch();
     }
     const allFeeds: Feed[] = await rssRepository.listFeeds();
@@ -653,6 +563,9 @@ export struct ArticleListView {
       this.currentGroupId, this.sortAscending(), this.searchText, true
     );
     if (seq !== this.loadSeq) return;
+    // Re-project local diffs onto DB rows so locally-changed read/star state
+    // survives a reload (the DB commit is still pending in the store).
+    readStatusStore.applyTo(articles);
     this.articles = articles;
     this.hasMore = articles.length >= this.displayLimit;
     this.finishSlide();
@@ -663,19 +576,10 @@ export struct ArticleListView {
     this.lastMarkedIndex = 0;
     this.lastPrefetchIndex = 0;
     this.scrollMarksPending = false;
-    const scopedCounts: ArticleCounts = await rssRepository.articleCounts(
-      this.currentFeedId, this.currentGroupId
-    );
     if (seq !== this.loadSeq) return;
-    this.unreadCount = scopedCounts.unread;
-    this.starredCount = scopedCounts.starred;
-    this.allCount = scopedCounts.total;
-    // Drawer global totals, never scoped by the selected feed/group.
-    const globalCounts: ArticleCounts = await rssRepository.articleCounts();
+    // Derive counts from DB + local diff (refreshCounts does both queries).
+    await this.refreshCounts();
     if (seq !== this.loadSeq) return;
-    this.globalUnread = globalCounts.unread;
-    this.globalStarred = globalCounts.starred;
-    this.globalAll = globalCounts.total;
     fullContentPrefetcher.ensureWindow(
       this.articles, this.firstVisibleIndex, this.visibleCount
     );
@@ -688,7 +592,6 @@ export struct ArticleListView {
     this.pageLoadSeq++;
     this.orderKey = this.computeOrderKey();
     this.displayLimit = this.firstPageSize();
-    this.scopeUnreadDelta = 0;
     this.beginContextSwitch();
     // Re-derive BOTH feeds and groups from the cached unfiltered lists. Leaving
     // groups stale here is what shows empty groups when switching to starred.
@@ -698,6 +601,7 @@ export struct ArticleListView {
       this.currentGroupId, this.sortAscending(), this.searchText, true
     );
     if (seq !== this.loadSeq) return;
+    readStatusStore.applyTo(articles);
     this.articles = articles;
     this.hasMore = articles.length >= this.displayLimit;
     this.lastMarkedIndex = 0;
@@ -889,24 +793,32 @@ export struct ArticleListView {
       this.getUIContext().getPromptAction().showToast({ message: '没有符合条件的文章' });
       return;
     }
-    const count: number = ids.length;
-    const previousUnread: number = this.unreadCount;
+    // Local diff drives rows and counts; the bulk service call persists to DB
+    // and server in the background. On failure, drop the local diff and re-read.
     this.setLocalRead(ids, true);
-    this.scopeUnreadDelta += count;
-    this.optimisticUnreadChange(-count);
+    for (const article of this.articles) {
+      if (ids.indexOf(article.id) >= 0) {
+        // Display-only diff; markAllRead persists via its own service call, so
+        // do not schedule a duplicate flush (avoids double-push race).
+        readStatusStore.markReadLocal(article.id, false, true, article.feedId, this.currentGroupId);
+      }
+    }
     const task: Promise<void> = days <= 0
       ? rssRepository.markAllRead(this.currentFeedId, this.currentGroupId)
       : rssRepository.markAllReadBefore(this.currentFeedId, this.currentGroupId, before);
     task.then(() => {
-      if (this.scopeUnreadDelta >= count) { this.scopeUnreadDelta -= count; }
-      this.decrementOptimisticDelta(-count);
-      this.refreshFeeds();
+      // Commit succeeded: clear the local diffs that are now persisted, then
+      // re-derive counts. The store's publish tick drives the rest.
+      for (const id of ids) {
+        readStatusStore.clearConfirmed(id);
+      }
+      this.refreshCounts();
       this.notifyBannerTick();
     }).catch((error: Error) => {
+      for (const id of ids) {
+        readStatusStore.clearConfirmed(id);
+      }
       this.setLocalRead(ids, false);
-      if (this.scopeUnreadDelta >= count) { this.scopeUnreadDelta -= count; }
-      this.decrementOptimisticDelta(-count);
-      this.unreadCount = previousUnread;
       this.refreshCounts();
       this.notifyBannerTick();
       Logger.error(`Mark read failed: ${error.message}`);
@@ -916,45 +828,17 @@ export struct ArticleListView {
   /** Optimistically toggle read state for one row (shared by swipe + menu). */
   private toggleRead(article: Article): void {
     const read: boolean = !article.isRead;
-    // Flipping a scroll-optimistically-read row back to unread: cancel its
-    // pending push and undo its delta contribution, or counts jump on the next
-    // refresh and the batcher re-marks it read on flush.
-    if (!read) {
-      this.cancelScrollMarkIfPending(article.id);
-    }
+    // Immediate local row update for instant UI; markRead publishes a tick that
+    // re-derives counts and re-projects all rows (no explicit refreshCounts).
     this.setLocalRead([article.id], read);
-    const delta: number = read ? -1 : 1;
-    if (read) { this.scopeUnreadDelta += 1; }
-    this.optimisticUnreadChange(delta);
-    rssRepository.markRead(article.id, read).then((succeeded: string[]) => {
-      // The DB was already updated locally; if the server rejected the push,
-      // queue it for bounded retry rather than trusting the optimistic state.
-      if (succeeded.length === 0) {
-        readStatusBatcher.add(article.id);
-      }
-      if (read && this.scopeUnreadDelta > 0) { this.scopeUnreadDelta -= 1; }
-      this.decrementOptimisticDelta(delta);
-      this.refreshFeeds();
-      this.notifyBannerTick();
-    }).catch((error: Error) => {
-      this.setLocalRead([article.id], !read);
-      if (read && this.scopeUnreadDelta > 0) { this.scopeUnreadDelta -= 1; }
-      this.decrementOptimisticDelta(delta);
-      this.unreadCount = Math.max(0, this.unreadCount - delta);
-      this.refreshCounts();
-      this.notifyBannerTick();
-      Logger.error(`Mark read failed: ${error.message}`);
-    });
+    readStatusStore.markRead(article.id, !read, !article.isRead, article.feedId, this.currentGroupId);
   }
 
   /** Optimistically toggle starred state for one row (shared by swipe + menu). */
   private toggleStar(article: Article): void {
     const starred: boolean = !article.isStarred;
     this.setLocalStarred(article.id, starred);
-    this.starredCount = Math.max(0, this.starredCount + (starred ? 1 : -1));
-    // Queue for background push + bounded retry. The batcher's flushed tick
-    // refreshes authoritative counts once the DB write completes.
-    readStatusBatcher.addStar(article.id, starred);
+    readStatusStore.markStarred(article.id, starred, article.isStarred);
   }
 
   /** Mark-as-read options as a standard Array<MenuElement> menu. Using the
@@ -977,9 +861,13 @@ export struct ArticleListView {
   swipeActionButton(article: Article, action: number): void {
     if (action === SWIPE_TOGGLE_READ || action === SWIPE_TOGGLE_STARRED) {
       Row() {
+        // Icons show the ACTION (what a tap will do), consistent with the
+        // long-press menu and the reader menu: a filled star means "collect",
+        // an outline star means "uncollect"; a check means "mark read", a ring
+        // means "mark unread".
         Image(action === SWIPE_TOGGLE_READ
-          ? $r('app.media.ic_mark_read')
-          : (article.isStarred ? $r('app.media.ic_filter_star') : $r('app.media.ic_star_outline')))
+          ? (article.isRead ? $r('app.media.ic_filter_unread') : $r('app.media.ic_mark_read'))
+          : (article.isStarred ? $r('app.media.ic_star_outline') : $r('app.media.ic_filter_star')))
           .width(22)
           .height(22)
           .fillColor(Color.White)
@@ -989,7 +877,7 @@ export struct ArticleListView {
       .justifyContent(FlexAlign.Center)
       .alignItems(VerticalAlign.Center)
       .margin({ left: 8, right: 8 })
-      .backgroundColor(action === SWIPE_TOGGLE_STARRED && article.isStarred ? '#F9A825' : '#5E636A')
+      .backgroundColor(action === SWIPE_TOGGLE_STARRED && !article.isStarred ? '#F9A825' : '#5E636A')
       .borderRadius(26)
       .onClick(() => {
         if (action === SWIPE_TOGGLE_READ) {
@@ -1038,64 +926,30 @@ export struct ArticleListView {
     if (ids.length === 0) {
       return;
     }
-    // Turn the rows gray immediately; the server is updated in the background.
-    // Any id the service does not confirm is queued for bounded background
-    // retry instead of rolling the optimistic UI back (matches Android's
-    // pendingSyncDiffs behaviour).
+    // Local diff drives the immediate gray-out and count; the service persists
+    // in the background via the store's own batch path (no double push here).
     this.setLocalRead(ids, true);
-    this.scopeUnreadDelta += ids.length;
-    this.optimisticUnreadChange(-ids.length);
-    rssRepository.markReadBatch(ids, true).then((succeeded: string[]) => {
-      const ok: Set<string> = new Set<string>(succeeded);
-      for (const id of ids) {
-        if (!ok.has(id)) {
-          readStatusBatcher.add(id);
-        }
+    for (const article of this.articles) {
+      if (ids.indexOf(article.id) >= 0) {
+        readStatusStore.markRead(article.id, false, true, article.feedId, this.currentGroupId);
       }
-      if (this.scopeUnreadDelta >= ids.length) { this.scopeUnreadDelta -= ids.length; }
-      this.decrementOptimisticDelta(-ids.length);
-      this.refreshFeeds();
-      this.notifyBannerTick();
-    }).catch((error: Error) => {
-      for (const id of ids) {
-        readStatusBatcher.add(id);
-      }
-      if (this.scopeUnreadDelta >= ids.length) { this.scopeUnreadDelta -= ids.length; }
-      this.decrementOptimisticDelta(-ids.length);
-      this.refreshFeeds();
-      this.notifyBannerTick();
-      Logger.error(`Mark by date failed, queued for retry: ${error.message}`);
-    });
+    }
+    // This path uses the store's background flush (markRead diffs), not the
+    // direct service call, so failures are retried by the store automatically.
+    this.refreshCounts();
+    this.notifyBannerTick();
   }
 
   private menuToggleRead(): void {
     const id: string = this.menuArticleId;
     const read: boolean = !this.menuArticleRead;
-    if (!read) {
-      this.cancelScrollMarkIfPending(id);
-    }
+    const article: Article | undefined = this.articles.find((a: Article): boolean => a.id === id);
+    const dbUnread: boolean = article !== undefined ? !article.isRead : !read;
     this.setLocalRead([id], read);
     this.menuArticleRead = read;
-    const delta: number = read ? -1 : 1;
-    if (read) { this.scopeUnreadDelta += 1; }
-    this.optimisticUnreadChange(delta);
-    rssRepository.markRead(id, read).then((succeeded: string[]) => {
-      if (succeeded.length === 0) {
-        readStatusBatcher.add(id);
-      }
-      if (read && this.scopeUnreadDelta > 0) { this.scopeUnreadDelta -= 1; }
-      this.decrementOptimisticDelta(delta);
-      this.refreshFeeds();
-      this.notifyBannerTick();
-    }).catch((error: Error) => {
-      this.setLocalRead([id], !read);
-      if (read && this.scopeUnreadDelta > 0) { this.scopeUnreadDelta -= 1; }
-      this.decrementOptimisticDelta(delta);
-      this.unreadCount = Math.max(0, this.unreadCount - delta);
-      this.refreshCounts();
-      this.notifyBannerTick();
-      Logger.error(`Toggle read failed: ${error.message}`);
-    });
+    readStatusStore.markRead(id, !read, dbUnread, article?.feedId ?? '', this.currentGroupId);
+    this.refreshCounts();
+    this.notifyBannerTick();
   }
 
   private menuToggleStarred(): void {
@@ -1103,8 +957,9 @@ export struct ArticleListView {
     const starred: boolean = !this.menuArticleStarred;
     this.setLocalStarred(id, starred);
     this.menuArticleStarred = starred;
-    this.starredCount = Math.max(0, this.starredCount + (starred ? 1 : -1));
-    readStatusBatcher.addStar(id, starred);
+    readStatusStore.markStarred(id, starred, !starred);
+    this.refreshCounts();
+    this.notifyBannerTick();
   }
 
   /** Share the long-pressed article via the system share sheet (Android menu item). */

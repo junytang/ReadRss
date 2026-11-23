@@ -461,15 +461,27 @@ export class GoogleReaderSyncService implements FeedSyncService {
   }
 
   async markStarred(account: Account, article: Article, starred: boolean): Promise<void> {
-    // Write locally first (authoritative); let a remote failure propagate so
-    // ReadStatusBatcher can detect it and retry. Swallowing it here made the
-    // caller believe the star was pushed when it never reached the server.
-    await database.setArticleStarred(article.id, starred);
+    await this.markStarredBatch(account, [article.id], starred);
+  }
+
+  async markStarredBatch(account: Account, articleIds: string[], starred: boolean): Promise<string[]> {
+    if (articleIds.length === 0) {
+      return [];
+    }
+    // One batched DB UPDATE and one batched tag edit (GReader accepts many ids).
+    await database.setStates(articleIds, undefined, starred);
     const api: GoogleReaderApi = this.api(account);
-    if (starred) {
-      await api.editTag([remoteId(article.id)], STARRED_TAG, undefined);
-    } else {
-      await api.editTag([remoteId(article.id)], undefined, STARRED_TAG);
+    const remote: string[] = articleIds.map((id: string): string => remoteId(id));
+    try {
+      if (starred) {
+        await api.editTag(remote, STARRED_TAG, undefined);
+      } else {
+        await api.editTag(remote, undefined, STARRED_TAG);
+      }
+      return articleIds;
+    } catch (error) {
+      Logger.error(`GReader batch star failed: ${(error as Error).message}`);
+      return [];
     }
   }
 

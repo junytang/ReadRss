@@ -28,6 +28,9 @@ export interface FeedSyncService {
   markReadGroup(account: Account, groupId: string, read: boolean, before?: number): Promise<void>;
   markReadFeed(account: Account, feedId: string, read: boolean, before?: number): Promise<void>;
   markStarred(account: Account, article: Article, starred: boolean): Promise<void>;
+  /** Batch star toggle: one DB update + one network call where the protocol
+   *  allows (GReader). Returns ids the server confirmed for retry purposes. */
+  markStarredBatch(account: Account, articleIds: string[], starred: boolean): Promise<string[]>;
   deleteFeed(account: Account, feedId: string): Promise<void>;
   /** Fetch full content on demand when a stored article has no body (read-only ids). */
   fetchContent?(account: Account, article: Article): Promise<string>;
