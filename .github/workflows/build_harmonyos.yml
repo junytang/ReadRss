@@ -69,9 +69,9 @@ jobs:
         with:
           # Use the pushed tag itself (e.g. harmonyos-1.0.0) as the release tag.
           tag_name: ${{ github.ref_name }}
-          name: HarmonyOS ${{ github.ref_name }}
+          name: ReadRss ${{ github.ref_name }}
           body: |
-            自动构建的 HarmonyOS unsigned HAP（未签名，需自行配置调试签名后安装）。
+            自动构建的 ReadRss HarmonyOS unsigned HAP（未签名，需自行配置调试签名后安装）。
             标签：${{ github.ref_name }} · 提交：${{ github.sha }}
           files: harmony/entry/build/default/outputs/default/ReadRss-unsigned.hap
           fail_on_unmatched_files: true

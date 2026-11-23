@@ -1,4 +1,4 @@
-# ReadYou HarmonyOS 7 移植版（MVP）
+# ReadRss HarmonyOS 7 移植版
 
 本仓库是用 **ArkTS + ArkUI** 对 ReadYou Android 版进行原生重写的鸿蒙 7（API 26）工程（Android 原工程保持原样）。
 鸿蒙工程位于 [`harmony/`](harmony/) 目录，是一个可单独用 DevEco Studio 打开的独立项目；本首页 README 即该目录下的 `README.md`。
@@ -25,7 +25,7 @@
 3. 配置调试签名并连接设备。
 4. 选择 `entry` 模块 → `default` target → 运行。
 
-## 已实现的核心功能（MVP）
+## 已实现的核心功能
 
 | 功能 | 说明 | Android 对应实现 |
 |---|---|---|
@@ -92,6 +92,7 @@ harmony/
 > **P1** = 与 Android 行为不一致的重要交互与设置；
 > **P2** = 体验增强与样式设置；
 > **P3** = 平台外围能力（需平台适配或成本较高）。
+> **删除线** = 计划不实现  
 
 ### P0 — 必须先补齐
 
@@ -108,15 +109,15 @@ harmony/
 - [x] `markReadOnOpen` 生效：阅读页按该设置决定是否标已读（当前无条件标已读）。（已实现：`load()` 中按设置值决定是否乐观标已读。）
 
 **同步**
-- [ ] ~~后台定时同步：WorkManager 等价能力（`@ohos.resourceschedule.backgroundTaskManager`）+ 按账号同步间隔 + 仅 WiFi / 仅充电约束 + 指数退避。~~
+- [x] ~~后台定时同步：WorkManager 等价能力（`@ohos.resourceschedule.backgroundTaskManager`）+ 按账号同步间隔 + 仅 WiFi / 仅充电约束 + 指数退避。~~
 - [ ] 通知：声明并申请通知权限、建立通知渠道、点击直达文章；补齐 Local 同步通知（当前仅 Fever/GReader 发通知且未申请权限）。
 - [ ] 通知去重状态持久化（当前「每源一条」依赖内存 Map，进程重启后丢失）。
 
 ### P1 — 重要行为对齐
 
 **导航与入口**
-- [ ] ~~返回键特殊行为：根列表页返回退到后台；搜索/批量/抽屉展开时返回先收起面板。~~
-- [ ] ~~深链 / 外部入口：`ACTION_VIEW`、`ACTION_SEND`（分享订阅 URL）、`article.id`/`feed.id`/`group.id` extras、通知点击跳转。~~
+- [x] ~~返回键特殊行为：根列表页返回退到后台；搜索/批量/抽屉展开时返回先收起面板。~~
+- [x] ~~深链 / 外部入口：`ACTION_VIEW`、`ACTION_SEND`（分享订阅 URL）、`article.id`/`feed.id`/`group.id` extras、通知点击跳转。~~
 - [ ] 「起始页」（Feeds / Flow）与「默认筛选」（星标/未读/全部）设置。
 - [ ] 独立单源列表路由 `FlowPage` 接线（`openFlow` 当前无任何调用方）。
 
@@ -128,19 +129,19 @@ harmony/
 - [x] 列表显示项开关：源图标、源名、缩略图、摘要长度（无/短/2 行/3 行）。首屏预估条目数已按这些开关调整行高估算。已读灰显策略按需求未实现（保留现有固定灰显）。
 
 **阅读页**
-- [ ] ~~全文 / 摘要即时切换按钮（当前 `showFullContent` 已移除，始终抓全文）。~~
-- [ ] ~~底部操作栏：标已读/未读、星标、下一篇、TTS、全文切换。~~
-- [ ] ~~打开链接方式 6 选 1（CustomTabs / 默认浏览器 / 指定包 / 总是询问等）+ 指定浏览器。~~
-- [ ] ~~分享内容设置（仅链接 / 标题+链接）。~~
-- [ ] ~~顶栏点击回顶、阅读样式快捷入口。~~
+- [x] ~~全文 / 摘要即时切换按钮（当前 `showFullContent` 已移除，始终抓全文）。~~
+- [x] ~~底部操作栏：标已读/未读、星标、下一篇、TTS、全文切换。~~
+- [x] ~~打开链接方式 6 选 1（CustomTabs / 默认浏览器 / 指定包 / 总是询问等）+ 指定浏览器。~~
+- [x] ~~分享内容设置（仅链接 / 标题+链接）。~~
+- [x] ~~顶栏点击回顶、阅读样式快捷入口。~~
 
 **账号与同步**
 - [ ] 账号详情页：连接信息四项可改（服务器/用户名/密码/证书）、清空文章、删除。
-- [ ] ~~客户端证书使用系统 KeyChain 选择（当前仅保存别名字符串，未真正用于 TLS）。~~
-- [ ] ~~账号级同步策略设置：同步间隔、仅 WiFi、仅充电、同步屏蔽列表（字段已持久化但无 UI、无逻辑读取）。~~
-- [ ] `ReaderWorker`（并发全文抓取）与 `WidgetUpdateWorker`（同步后刷新小组件）。
-- [ ] ~~同步日志 + 故障排查页：Worker 状态、错误日志查看/复制/清空。~~
-- [ ] DiffMapHolder 等价的离线已读状态批处理（当前为 `ReadStatusBatcher`，能力不完全等价）。
+- [x] ~~客户端证书使用系统 KeyChain 选择（当前仅保存别名字符串，未真正用于 TLS）。~~
+- [x] ~~账号级同步策略设置：同步间隔、仅 WiFi、仅充电、同步屏蔽列表（字段已持久化但无 UI、无逻辑读取）。~~
+- [x] ~~`ReaderWorker`（并发全文抓取）与 `WidgetUpdateWorker`（同步后刷新小组件）。~~
+- [x] ~~同步日志 + 故障排查页：Worker 状态、错误日志查看/复制/清空。~~
+- [x] DiffMapHolder 等价的离线已读状态批处理（当前为 `ReadStatusStore` ）。
 
 ### P2 — 体验增强与样式
 
@@ -149,33 +150,33 @@ harmony/
 - [ ] 自适应双栏（列表 + 详情）+ 分栏拖拽手柄 + 三态导航按钮（关闭/隐藏列表/展开列表）。
 
 **文章列表**
-- [ ] ~~底部下拉换源（不操作 / 加载下一源 / 标已读并加载下一源）。~~
+- [x] ~~底部下拉换源（不操作 / 加载下一源 / 标已读并加载下一源）。~~
 - [ ] 粘性日期头、Today/Yesterday 日期文案、显示时间开关。
 - [ ] 筛选栏样式（图标 / 图标+文字 / 仅选中带文字）、padding、色调层级。
 
 **阅读页**
-- [ ] ~~TTS 朗读：按行分段播报、进度环、长按进入系统 TTS 设置。~~
+- [x] ~~TTS 朗读：按行分段播报、进度环、长按进入系统 TTS 设置。~~
 - [ ] 图片全屏查看器：4x 缩放、点击关闭、长按保存、403 图片 Referer 重试。
-- [ ] ~~阅读主题预设（MaterialYou / Reeder / Paper / Custom）。~~
-- [ ] 自动隐藏工具栏（滚动时收起顶/底栏）。
+- [x] ~~阅读主题预设（MaterialYou / Reeder / Paper / Custom）。~~
+- [x] ~~自动隐藏工具栏（滚动时收起顶/底栏）。~~
 - [ ] 排版设置：字间距、文字对齐、正文/标题/子标题粗体与大写、图片内边距/圆角/最大化、阅读页色调层级。
 
 **订阅页 / 设置**
-- [ ] ~~隐藏空分组、分组总是展开、全部展开/收起按钮。~~
-- [ ] ~~BestIconFinder 站点 favicon 探测（当前只用服务端返回的图标 URL）。~~
-- [ ] 设置项补齐：阅读器样式、文章列表样式、订阅页样式、交互、深色三态（跟随系统/开/关）、AMOLED 黑、基础字体方案、外部字体导入。
+- [x] ~~隐藏空分组、分组总是展开、全部展开/收起按钮。~~
+- [x] ~~BestIconFinder 站点 favicon 探测（当前只用服务端返回的图标 URL）。~~
+- [x] 设置项补齐：阅读器样式、文章列表样式、订阅页样式、交互、深色三态（跟随系统/开/关）、AMOLED 黑、基础字体方案、外部字体导入。
 
 ### P3 — 平台外围能力
 
-- [ ] ~~桌面小组件：列表视图 + 卡片视图（Article of the Day），主题 SansSerif/Serif，数据源 Account/Group/Feed，配置页与点击跳文章。~~
-- [ ] ~~应用内更新检查（GitHub releases、设置页 banner、跳过此版本）。~~
-- [ ] ~~崩溃上报（未异常捕获 + 报告页 + 复制 Markdown 报告）。~~
-- [ ] ~~Tips & Support 页、Sponsor、GitHub/Telegram/Help 链接、开源许可列表。~~
-- [ ] ~~40+ 种语言本地化（Android 有 51 个翻译资源目录；当前鸿蒙版全中文硬编码）。~~
-- [ ] ~~Material You 动态取色（壁纸/基础色板 + 自定义主色 HEX）。~~
-- [ ] ~~原生 Compose 阅读渲染器 + 渲染器切换（平台差异，需基于 ArkUI 重新设计）。~~
-- [ ] ~~启动欢迎页 / 服务条款同意流程。~~
-- [ ] ~~粗体字符（Jiffy Reader 风格）、RTL/Bidi、触觉反馈、筛选切换点击音效、自绘滚动指示条。~~
+- [x] ~~桌面小组件：列表视图 + 卡片视图（Article of the Day），主题 SansSerif/Serif，数据源 Account/Group/Feed，配置页与点击跳文章。~~
+- [x] ~~应用内更新检查（GitHub releases、设置页 banner、跳过此版本）。~~
+- [x] ~~崩溃上报（未异常捕获 + 报告页 + 复制 Markdown 报告）。~~
+- [x] ~~Tips & Support 页、Sponsor、GitHub/Telegram/Help 链接、开源许可列表。~~
+- [x] ~~40+ 种语言本地化（Android 有 51 个翻译资源目录；当前鸿蒙版全中文硬编码）。~~
+- [x] ~~Material You 动态取色（壁纸/基础色板 + 自定义主色 HEX）。~~
+- [x] ~~原生 Compose 阅读渲染器 + 渲染器切换（平台差异，需基于 ArkUI 重新设计）。~~
+- [x] ~~启动欢迎页 / 服务条款同意流程。~~
+- [x] ~~粗体字符（Jiffy Reader 风格）、RTL/Bidi、触觉反馈、筛选切换点击音效、自绘滚动指示条。~~
 
 ### 有意裁剪（不建议直接照搬）
 
@@ -189,11 +190,8 @@ harmony/
   `targetSdkVersion = "6.1.0(23)"`；`oh-package.json5` 中 `modelVersion = "5.1.0"`。
   配置里**没有** `compileSdkVersion` 或 `arkTSVersion` 字段。本机 SDK 为 API 26，按上述配置可正常编译。
 - 无第三方 ohpm 依赖，只用系统 Kit。
-- `showFullContent` 设置项已移除——全文抓取始终开启。
 - 阅读器「更多」菜单用 ArkUI 系统 `bindMenu`：浏览器打开 / 复制链接 / 系统分享。
 - AVIF 图片：设备 ArkWeb 不能解码，走公共代理 `https://images.weserv.nl/?url=...&output=jpeg...`，通过虚假 HTTPS URL + WebView `onInterceptRequest` 暴露（见 `common/ArticleImageConverter.ets` / `components/ReadingView.ets`）。
-- Feed / 分组按最新文章时间降序排序。
-- 订阅抽屉宽度 66%（从 82% 调小）。
 - 分页加载：`onReachEnd` 触发，递增 limit 重查；首批约 20–80 行，延迟补齐至 `FULL_PAGE_SIZE=100`，之后每次 `LOAD_MORE_STEP=100`。
 - 分批大小设置值：50 / 100 / 200 / 300 / 500，默认 **100**（`SettingsStore` + `AppSettings.fetchBatchSize`）。
 - GReader ID 分页大小固定 **1000**；`fetchBatchSize` 只控制正文抓取/入库批次。
@@ -283,13 +281,6 @@ toast 同步完成（仅一次）
 toFetch=0 → contentReady signaled → onSyncFinished → load done → toast 同步完成（仅一次）
 ```
 有新文章时，转圈一停就应有 `home load done`（首批），而不是等 toast 才更新。
-
-## 已知待办 / 注意事项
-
-- `SYNCDBG` 诊断日志已于 2026-11-21 **全部清理**（40 处 / 7 个文件），`Logger.error` 等错误日志全部保留。不要在 sync/load 热路径重新引入高频 `Logger.info`。
-- 跨页面并发 sync：`ArticleListView` 与 `FeedListView` 各有独立 `isSyncing`，理论上可同时发起 sync 并发写库（用户未要求处理）。
-- 标记已读/星标的一致性（已处理）：`ReadStatusBatcher` 现在对失败做有上限的后台重试（最多 5 次，指数退避），星标也走同一队列；`doSync()` 在同步前先 flush 待推送标记，且 GReader/Fever 的对账通过 `PendingStatusRegistry` 排除仍在本地 pending 的 id，避免用服务端的旧状态回退用户刚刚的标记。单条标记若服务端确认失败也会入队重试。待推送队列是内存态，进程退出后会丢失（Android 另有缓存文件持久化）。
-- 用户偏好系统组件；不要引入自定义绘制替代系统组件。
 
 ## 下一步建议
 
