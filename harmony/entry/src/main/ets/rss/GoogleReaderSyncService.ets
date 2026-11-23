@@ -27,6 +27,7 @@ import { XmlParser } from './XmlParser';
 import { FeedSyncService, FeedNotify, SyncResult } from './SyncService';
 import { Logger } from '../common/Logger';
 import { NotificationHelper } from '../common/NotificationHelper';
+import { pendingStatusRegistry } from './PendingStatusRegistry';
 
 const READING_LIST_STREAM: string = 'user/-/state/com.google/reading-list';
 const READ_TAG: string = 'user/-/state/com.google/read';
@@ -212,10 +213,12 @@ export class GoogleReaderSyncService implements FeedSyncService {
       // Only unread + starred IDs are needed to fetch and render content. Fetch
       // these first so the first article batch can be shown quickly. The slow
       // read-ID reconciliation is deferred until after content is committed.
-      const unreadIds: string[] = await this.allItemIds(api, unreadParams);
-      const starredIds: string[] = await this.allItemIds(api, starredParams);
-      const unreadSet: Set<string> = new Set<string>(unreadIds);
-      const starredSet: Set<string> = new Set<string>(starredIds);
+      // Build the sets directly: keeping both the id arrays and the sets held
+      // two full copies of every id for the whole sync (tens of MB on a large
+      // account). Set iteration order equals the original array order, so the
+      // downstream toFetch order and dedupe behaviour are unchanged.
+      const unreadSet: Set<string> = new Set<string>(await this.allItemIds(api, unreadParams));
+      const starredSet: Set<string> = new Set<string>(await this.allItemIds(api, starredParams));
 
       const subscriptions: GReaderSubscription[] = await api.getSubscriptionList();
       const keepGroupIds: string[] = [];
@@ -268,34 +271,45 @@ export class GoogleReaderSyncService implements FeedSyncService {
 
       // One state scan replaces three full-table id queries (all / read /
       // starred) plus the per-id indexOf scans used to dedupe fetches.
-      const localStates: ArticleState[] = await database.listArticleStates(account.id);
       const localRemoteIds: Set<string> = new Set<string>();
       const toUnread: string[] = [];
       const toStar: string[] = [];
       const toUnstar: string[] = [];
-      for (const state of localStates) {
-        const id: string = remoteId(state.id);
-        localRemoteIds.add(id);
-        if (state.isRead && unreadSet.has(id)) toUnread.push(state.id);
-        if (!state.isStarred && starredSet.has(id)) toStar.push(state.id);
-        if (state.isStarred && !starredSet.has(id)) toUnstar.push(state.id);
+      {
+        // Scope the full ArticleState[] so it becomes collectible before the
+        // long content-fetch loop (previously it stayed alive to end of sync).
+        const localStates: ArticleState[] = await database.listArticleStates(account.id);
+        for (const state of localStates) {
+          const id: string = remoteId(state.id);
+          localRemoteIds.add(id);
+          // Do not reconcile an id whose mark is still pending locally: the
+          // server view is stale and would revert the user's just-changed state.
+          if (pendingStatusRegistry.has(state.id)) {
+            continue;
+          }
+          if (state.isRead && unreadSet.has(id)) toUnread.push(state.id);
+          if (!state.isStarred && starredSet.has(id)) toStar.push(state.id);
+          if (state.isStarred && !starredSet.has(id)) toUnstar.push(state.id);
+        }
       }
       await database.setStates(toUnread, false, undefined);
       await database.setStates(toStar, undefined, true);
       await database.setStates(toUnstar, undefined, false);
 
       const toFetch: string[] = [];
-      const queued: Set<string> = new Set<string>();
-      // Only unread + starred need content. Read ids are used purely for state reconciliation.
-      for (const id of unreadIds) {
-        if (!localRemoteIds.has(id) && !queued.has(id)) {
-          queued.add(id);
+      // Only unread + starred need content. Read ids are used purely for state
+      // reconciliation. localRemoteIds is no longer read after this block, so
+      // reuse it as the "already queued" marker and drop the duplicate `queued`
+      // set. Iterating the sets preserves the original order and dedupe.
+      for (const id of unreadSet) {
+        if (!localRemoteIds.has(id)) {
+          localRemoteIds.add(id);
           toFetch.push(id);
         }
       }
-      for (const id of starredIds) {
-        if (!localRemoteIds.has(id) && !queued.has(id)) {
-          queued.add(id);
+      for (const id of starredSet) {
+        if (!localRemoteIds.has(id)) {
+          localRemoteIds.add(id);
           toFetch.push(id);
         }
       }
@@ -361,12 +375,18 @@ export class GoogleReaderSyncService implements FeedSyncService {
       // Deferred, slow part: read-ID pages are only used to mark locally-unread
       // articles that the server considers read. By now content is committed and
       // the user can already read, so this runs silently in the background.
-      const readIds: string[] = await this.allItemIds(api, readParams, READ_ID_PAGES);
-      const readSet: Set<string> = new Set<string>(readIds);
+      // Convert the (at most 3000) remote read ids to dbId form once, instead
+      // of allocating a short-id substring for every local unread row (100k
+      // allocations on a large account). dbId/remoteId are inverse operations,
+      // so membership results are identical.
+      const readSet: Set<string> = new Set<string>(
+        (await this.allItemIds(api, readParams, READ_ID_PAGES))
+          .map((id: string): string => dbId(account.id, id))
+      );
       const localUnread: string[] = await database.listRemoteIds(account.id, false);
       const toRead: string[] = [];
       for (const dbIdValue of localUnread) {
-        if (readSet.has(remoteId(dbIdValue))) {
+        if (!pendingStatusRegistry.has(dbIdValue) && readSet.has(dbIdValue)) {
           toRead.push(dbIdValue);
         }
       }
@@ -401,15 +421,18 @@ export class GoogleReaderSyncService implements FeedSyncService {
     for (const batch of await this.chunks(articleIds, 500)) {
       // One batched UPDATE for the whole chunk instead of one write per id.
       await database.setStates(batch, read, undefined);
-      for (const id of batch) {
-        done.push(id);
-      }
       try {
         const remote: string[] = batch.map((id: string) => remoteId(id));
         if (read) {
           await api.editTag(remote, READ_TAG, undefined);
         } else {
           await api.editTag(remote, undefined, READ_TAG);
+        }
+        // Only report ids whose remote tag edit actually succeeded. Failed
+        // batches are kept by ReadStatusBatcher for a bounded background retry
+        // (mirrors Android's pendingSyncDiffs -= synced).
+        for (const id of batch) {
+          done.push(id);
         }
       } catch (error) {
         Logger.error(`GReader editTag read failed: ${(error as Error).message}`);
@@ -438,16 +461,15 @@ export class GoogleReaderSyncService implements FeedSyncService {
   }
 
   async markStarred(account: Account, article: Article, starred: boolean): Promise<void> {
+    // Write locally first (authoritative); let a remote failure propagate so
+    // ReadStatusBatcher can detect it and retry. Swallowing it here made the
+    // caller believe the star was pushed when it never reached the server.
     await database.setArticleStarred(article.id, starred);
     const api: GoogleReaderApi = this.api(account);
-    try {
-      if (starred) {
-        await api.editTag([remoteId(article.id)], STARRED_TAG, undefined);
-      } else {
-        await api.editTag([remoteId(article.id)], undefined, STARRED_TAG);
-      }
-    } catch (error) {
-      Logger.error(`GReader star sync failed: ${(error as Error).message}`);
+    if (starred) {
+      await api.editTag([remoteId(article.id)], STARRED_TAG, undefined);
+    } else {
+      await api.editTag([remoteId(article.id)], undefined, STARRED_TAG);
     }
   }
 

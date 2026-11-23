@@ -8,6 +8,7 @@ import { FeverApi, FeverFeed, FeverGroupMapping, FeverItem, FeverStatus } from '
 import { FeedSyncService, FeedNotify, SyncResult } from './SyncService';
 import { Logger } from '../common/Logger';
 import { NotificationHelper } from '../common/NotificationHelper';
+import { pendingStatusRegistry } from './PendingStatusRegistry';
 
 const MAX_TIMESTAMP: number = 9223372036854775; // Date(Long.MAX_VALUE).time / 1000
 
@@ -18,6 +19,12 @@ export class FeverSyncService implements FeedSyncService {
   readonly canMoveSubscription: boolean = false;
   readonly canDeleteSubscription: boolean = false;
   readonly canUpdateSubscription: boolean = false;
+
+  // Last unread/saved CSV signatures per account. The server sets remain
+  // authoritative and are still requested every sync; this only skips the
+  // local Set-building and full-table rewrite when nothing changed. Process
+  // local on purpose: a restart causes one extra harmless rewrite.
+  private stateSignatures: Map<string, string> = new Map<string, string>();
 
   private api(account: Account): FeverApi {
     const credentials = accountRepository.credentials(account);
@@ -92,6 +99,14 @@ export class FeverSyncService implements FeedSyncService {
         }
       }
       const feedTitles: Map<string, string> = new Map<string, string>();
+      // Read current rows once so an unchanged feed (including its favicon) is
+      // not rewritten. INSERT OR REPLACE is destructive and would overwrite
+      // locally-held feed flags; Android's FeedDao.insertOrUpdate also skips
+      // writes when the row is unchanged.
+      const existingFeeds: Map<string, Feed> = new Map<string, Feed>();
+      for (const feed of await database.listFeeds(account.id)) {
+        existingFeeds.set(feed.id, feed);
+      }
 
       const remoteFeeds: FeverFeed[] = feedsBody.feeds ?? [];
       for (let i = 0; i < remoteFeeds.length; i++) {
@@ -118,7 +133,12 @@ export class FeverSyncService implements FeedSyncService {
           unreadCount: 0,
           starredCount: 0,
         };
-        await database.upsertFeed(local, account.id);
+        const old: Feed | undefined = existingFeeds.get(local.id);
+        if (!old || old.title !== local.title || old.url !== local.url
+          || old.groupId !== local.groupId || old.iconUrl !== local.iconUrl
+          || old.sortOrder !== local.sortOrder) {
+          await database.upsertFeed(local, account.id);
+        }
         feedTitles.set(local.id, local.title);
       }
 
@@ -189,24 +209,39 @@ export class FeverSyncService implements FeedSyncService {
       // Content is committed; stop the spinner before the slower state reconciliation.
       notifyContentReady();
 
+      // Requests stay unconditional (the server CSV is authoritative and other
+      // clients may change it). Only the local Set-building and full-table
+      // rewrite are skipped when the signature is unchanged. Newly inserted
+      // articles force one reconciliation even with an unchanged signature.
       const unread: string[] | undefined = await api.getUnreadIds();
-      const unreadSet: Set<string> | undefined = unread === undefined ? undefined : new Set<string>(unread);
-      const saved: Set<string> = new Set<string>(await api.getSavedIds());
-      const localIds: string[] = await database.listRemoteIds(account.id);
-      const toRead: string[] = [];
-      const toUnread: string[] = [];
-      const toStar: string[] = [];
-      const toUnstar: string[] = [];
-      for (const rawId of localIds) {
-        const id: string = remoteId(rawId);
-        const shouldBeUnread: boolean = unreadSet === undefined ? true : unreadSet.has(id);
-        if (shouldBeUnread) toUnread.push(rawId); else toRead.push(rawId);
-        if (saved.has(id)) toStar.push(rawId); else toUnstar.push(rawId);
+      const savedRaw: string[] = await api.getSavedIds();
+      const unreadSig: string = unread === undefined ? '__undef__' : unread.join(',');
+      const signature: string = unreadSig + '||' + savedRaw.join(',');
+      if (this.stateSignatures.get(account.id) !== signature || result.newArticles > 0) {
+        const unreadSet: Set<string> | undefined = unread === undefined ? undefined : new Set<string>(unread);
+        const saved: Set<string> = new Set<string>(savedRaw);
+        const localIds: string[] = await database.listRemoteIds(account.id);
+        const toRead: string[] = [];
+        const toUnread: string[] = [];
+        const toStar: string[] = [];
+        const toUnstar: string[] = [];
+        for (const rawId of localIds) {
+          // Skip ids with a locally-pending mark: the server CSV is stale and
+          // would revert what the user just changed (pendingSyncDiffs semantics).
+          if (pendingStatusRegistry.has(rawId)) {
+            continue;
+          }
+          const id: string = remoteId(rawId);
+          const shouldBeUnread: boolean = unreadSet === undefined ? true : unreadSet.has(id);
+          if (shouldBeUnread) toUnread.push(rawId); else toRead.push(rawId);
+          if (saved.has(id)) toStar.push(rawId); else toUnstar.push(rawId);
+        }
+        await database.setStates(toRead, true, undefined);
+        await database.setStates(toUnread, false, undefined);
+        await database.setStates(toStar, undefined, true);
+        await database.setStates(toUnstar, undefined, false);
+        this.stateSignatures.set(account.id, signature);
       }
-      await database.setStates(toRead, true, undefined);
-      await database.setStates(toUnread, false, undefined);
-      await database.setStates(toStar, undefined, true);
-      await database.setStates(toUnstar, undefined, false);
 
       // Android keeps feeds that have a group mapping, not merely feeds present in /feeds.
       const mappedIds: Set<number> = new Set<number>();
@@ -254,8 +289,15 @@ export class FeverSyncService implements FeedSyncService {
     await database.setStates(articleIds, read, undefined);
     const done: string[] = [];
     for (const id of articleIds) {
-      await api.markItem(status, remoteId(id));
-      done.push(id);
+      // Report only ids whose per-item POST succeeded. A failed item must stay
+      // in the batcher's pending set for a bounded retry; one failure must not
+      // abort the remaining items or be mistaken for overall success.
+      try {
+        await api.markItem(status, remoteId(id));
+        done.push(id);
+      } catch (error) {
+        Logger.error(`Fever markItem failed: ${(error as Error).message} id=${id}`);
+      }
     }
     return done;
   }

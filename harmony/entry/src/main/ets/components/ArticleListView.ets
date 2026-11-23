@@ -34,8 +34,8 @@ const FULL_PAGE_SIZE: number = 100;
 const EXPAND_CHUNK: number = 100;
 /** Rows added per loadMore page when scrolling past the expanded batch. */
 const LOAD_MORE_STEP: number = 100;
-/** Largest single onScrollIndex jump treated as genuine scrolling. Bigger jumps
- *  are stale offsets from a context switch and must not mass-mark articles read. */
+/** Largest single scroll jump treated as genuine scrolling. Bigger jumps are
+ *  stale offsets from a context switch and must not mass-mark articles read. */
 const MAX_SCROLL_MARK_STEP: number = 30;
 
 /** Article list for one feed (or all feeds when feedId is empty). */
@@ -157,6 +157,9 @@ export struct ArticleListView {
   private slideAnimating: boolean = false;
   // Deferred second batch: fill the rest of the list after the first paint.
   private expandTimer: number = 0;
+  // Set on disappear so multi-step async work (expandToFullPage) stops issuing
+  // DB queries and touching state after the component is gone.
+  private disposed: boolean = false;
   @State showSearch: boolean = false;
   // Android FlowPage scrolls to the top before revealing the search bar. This
   // flag defers showing it until onScrollIndex reports index 0, so the list
@@ -424,19 +427,34 @@ export struct ArticleListView {
   }
 
   aboutToAppear(): void {
+    this.disposed = false;
     this.currentFeedId = this.feedId;
     this.loadAccount();
     this.load();
   }
 
   aboutToDisappear(): void {
+    this.disposed = true;
+    // Cancel pending deferred work so it does not keep querying the DB or hold
+    // this component alive after the list has been popped.
+    if (this.slideTimer !== 0) {
+      clearTimeout(this.slideTimer);
+      this.slideTimer = 0;
+    }
+    if (this.expandTimer !== 0) {
+      clearTimeout(this.expandTimer);
+      this.expandTimer = 0;
+    }
     this.flushScrollMarks();
     readStatusBatcher.flush();
   }
 
-  /** Mark rows above the visible range as read; commit is batched by ReadStatusBatcher. */
+  /** Mark rows above the visible range as read; commit is batched by ReadStatusBatcher.
+   *  Called only when scrolling stops (ScrollState.Idle), so a continuous scroll
+   *  does not fire it on every frame. Mirrors Android: unread tab only. */
   private markScrolledArticles(start: number): void {
-    if (!this.markReadOnScroll || start <= this.lastMarkedIndex) {
+    if (!this.markReadOnScroll || this.currentFilter !== FILTER_UNREAD
+      || start <= this.lastMarkedIndex) {
       return;
     }
     // Normal scrolling advances `start` by only a few rows per frame. A large
@@ -491,6 +509,19 @@ export struct ArticleListView {
   private decrementOptimisticDelta(unreadDelta: number): void {
     const prev: number = AppStorage.get<number>('optimisticUnreadDelta') ?? 0;
     AppStorage.setOrCreate<number>('optimisticUnreadDelta', Math.max(0, prev + unreadDelta));
+  }
+
+  /** A row optimistically marked read by scrolling (pending in the batcher, DB
+   *  still unread) is being manually flipped back to unread. Cancel the queued
+   *  push and undo BOTH delta contributions so the next refreshCounts/jump does
+   *  not subtract a stale +1, and the batcher cannot re-mark it read later. */
+  private cancelScrollMarkIfPending(articleId: string): void {
+    if (!readStatusBatcher.hasPendingRead(articleId)) {
+      return;
+    }
+    readStatusBatcher.remove(articleId);
+    this.scopeUnreadDelta = Math.max(0, this.scopeUnreadDelta - 1);
+    this.decrementOptimisticDelta(-1);
   }
 
   /** Apply deferred visual updates once, after scrolling stops. Do not re-read
@@ -737,7 +768,7 @@ export struct ArticleListView {
     }
     const pageSeq: number = this.pageLoadSeq;
     while (this.displayLimit < FULL_PAGE_SIZE && this.hasMore) {
-      if (seq !== this.loadSeq || pageSeq !== this.pageLoadSeq || this.isLoadingMore) {
+      if (this.disposed || seq !== this.loadSeq || pageSeq !== this.pageLoadSeq || this.isLoadingMore) {
         return;
       }
       const target: number = Math.min(this.displayLimit + EXPAND_CHUNK, FULL_PAGE_SIZE);
@@ -885,11 +916,22 @@ export struct ArticleListView {
   /** Optimistically toggle read state for one row (shared by swipe + menu). */
   private toggleRead(article: Article): void {
     const read: boolean = !article.isRead;
+    // Flipping a scroll-optimistically-read row back to unread: cancel its
+    // pending push and undo its delta contribution, or counts jump on the next
+    // refresh and the batcher re-marks it read on flush.
+    if (!read) {
+      this.cancelScrollMarkIfPending(article.id);
+    }
     this.setLocalRead([article.id], read);
     const delta: number = read ? -1 : 1;
     if (read) { this.scopeUnreadDelta += 1; }
     this.optimisticUnreadChange(delta);
-    rssRepository.markRead(article.id, read).then(() => {
+    rssRepository.markRead(article.id, read).then((succeeded: string[]) => {
+      // The DB was already updated locally; if the server rejected the push,
+      // queue it for bounded retry rather than trusting the optimistic state.
+      if (succeeded.length === 0) {
+        readStatusBatcher.add(article.id);
+      }
       if (read && this.scopeUnreadDelta > 0) { this.scopeUnreadDelta -= 1; }
       this.decrementOptimisticDelta(delta);
       this.refreshFeeds();
@@ -910,16 +952,9 @@ export struct ArticleListView {
     const starred: boolean = !article.isStarred;
     this.setLocalStarred(article.id, starred);
     this.starredCount = Math.max(0, this.starredCount + (starred ? 1 : -1));
-    rssRepository.markStarred(article.id, starred).then(() => {
-      this.refreshFeeds();
-      this.notifyBannerTick();
-    }).catch((error: Error) => {
-      this.setLocalStarred(article.id, !starred);
-      this.starredCount = Math.max(0, this.starredCount + (starred ? -1 : 1));
-      this.refreshCounts();
-      this.notifyBannerTick();
-      Logger.error(`Toggle starred failed: ${error.message}`);
-    });
+    // Queue for background push + bounded retry. The batcher's flushed tick
+    // refreshes authoritative counts once the DB write completes.
+    readStatusBatcher.addStar(article.id, starred);
   }
 
   /** Mark-as-read options as a standard Array<MenuElement> menu. Using the
@@ -1003,36 +1038,51 @@ export struct ArticleListView {
     if (ids.length === 0) {
       return;
     }
-    // Turn the rows gray immediately; the server only corrects state on failure.
-    const previousUnread: number = this.unreadCount;
+    // Turn the rows gray immediately; the server is updated in the background.
+    // Any id the service does not confirm is queued for bounded background
+    // retry instead of rolling the optimistic UI back (matches Android's
+    // pendingSyncDiffs behaviour).
     this.setLocalRead(ids, true);
     this.scopeUnreadDelta += ids.length;
     this.optimisticUnreadChange(-ids.length);
-    rssRepository.markReadBatch(ids, true).then(() => {
+    rssRepository.markReadBatch(ids, true).then((succeeded: string[]) => {
+      const ok: Set<string> = new Set<string>(succeeded);
+      for (const id of ids) {
+        if (!ok.has(id)) {
+          readStatusBatcher.add(id);
+        }
+      }
       if (this.scopeUnreadDelta >= ids.length) { this.scopeUnreadDelta -= ids.length; }
       this.decrementOptimisticDelta(-ids.length);
       this.refreshFeeds();
       this.notifyBannerTick();
     }).catch((error: Error) => {
-      this.setLocalRead(ids, false);
+      for (const id of ids) {
+        readStatusBatcher.add(id);
+      }
       if (this.scopeUnreadDelta >= ids.length) { this.scopeUnreadDelta -= ids.length; }
       this.decrementOptimisticDelta(-ids.length);
-      this.unreadCount = previousUnread;
-      this.refreshCounts();
+      this.refreshFeeds();
       this.notifyBannerTick();
-      Logger.error(`Mark by date failed: ${error.message}`);
+      Logger.error(`Mark by date failed, queued for retry: ${error.message}`);
     });
   }
 
   private menuToggleRead(): void {
     const id: string = this.menuArticleId;
     const read: boolean = !this.menuArticleRead;
+    if (!read) {
+      this.cancelScrollMarkIfPending(id);
+    }
     this.setLocalRead([id], read);
     this.menuArticleRead = read;
     const delta: number = read ? -1 : 1;
     if (read) { this.scopeUnreadDelta += 1; }
     this.optimisticUnreadChange(delta);
-    rssRepository.markRead(id, read).then(() => {
+    rssRepository.markRead(id, read).then((succeeded: string[]) => {
+      if (succeeded.length === 0) {
+        readStatusBatcher.add(id);
+      }
       if (read && this.scopeUnreadDelta > 0) { this.scopeUnreadDelta -= 1; }
       this.decrementOptimisticDelta(delta);
       this.refreshFeeds();
@@ -1054,17 +1104,7 @@ export struct ArticleListView {
     this.setLocalStarred(id, starred);
     this.menuArticleStarred = starred;
     this.starredCount = Math.max(0, this.starredCount + (starred ? 1 : -1));
-    rssRepository.markStarred(id, starred).then(() => {
-      // DB now has the new star state; re-read authoritative counts.
-      this.refreshFeeds();
-      this.notifyBannerTick();
-    }).catch((error: Error) => {
-      this.setLocalStarred(id, !starred);
-      this.starredCount = Math.max(0, this.starredCount + (starred ? -1 : 1));
-      this.refreshCounts();
-      this.notifyBannerTick();
-      Logger.error(`Toggle starred failed: ${error.message}`);
-    });
+    readStatusBatcher.addStar(id, starred);
   }
 
   /** Share the long-pressed article via the system share sheet (Android menu item). */
@@ -1472,6 +1512,10 @@ export struct ArticleListView {
                     builder: () => { this.swipeActionButton(article, this.swipeEndAction); },
                   },
                 })
+              // Keep isRead/isStarred in the key: ArkUI ForEach reuses a node
+              // when its key is unchanged and will NOT re-run the item builder,
+              // so a pure-id key leaves the row's gray/star visuals stale after
+              // an optimistic mark. The state fields force a fresh row.
               }, (article: Article) => `${article.id}-${article.isRead}-${article.isStarred}`)
 
               if (this.isRoot) {
@@ -1532,13 +1576,17 @@ export struct ArticleListView {
                 this.lastPrefetchIndex = start;
                 fullContentPrefetcher.ensureWindow(this.articles, start, this.visibleCount);
               }
-              this.markScrolledArticles(start);
+              // Scroll marking runs only on Idle (see onScroll below), not every frame.
             })
             // Flush the deferred row rebuilds when scrolling settles, so the
             // ForEach is rebuilt once instead of on every scroll frame.
             .onScroll((offset: number, scrollState: ScrollState) => {
               this.scrollOffset = offset;
               if (scrollState === ScrollState.Idle) {
+                // Mark everything scrolled past in one pass when scrolling
+                // stops, then rebuild rows once. lastMarkedIndex guards against
+                // a stale large jump being mistaken for genuine scrolling.
+                this.markScrolledArticles(this.firstVisibleIndex);
                 this.flushScrollMarks();
               }
             })

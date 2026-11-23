@@ -15,6 +15,7 @@ import { FontManager } from '../common/FontManager';
 import { FeedIcon } from '../common/FeedIcon';
 import { ArticleImageConverter } from '../common/ArticleImageConverter';
 import { ReaderFont } from '../common/ReaderFont';
+import { readStatusBatcher } from '../rss/ReadStatusBatcher';
 
 /** Minimum vertical pull (vp) at a scroll edge that switches articles. Applies
  *  to both pull-down (previous) and pull-up (next). Large enough that ordinary
@@ -31,13 +32,20 @@ const PULL_HINT_LIFT: number = 24;
  *  literal) is required so ArkTS accepts it as a JS bridge target. */
 class ScrollBoundaryHandler {
   private readonly onBoundary: (atTop: boolean, atBottom: boolean) => void;
+  private readonly onReady: () => void;
 
-  constructor(callback: (atTop: boolean, atBottom: boolean) => void) {
+  constructor(callback: (atTop: boolean, atBottom: boolean) => void, onReady: () => void) {
     this.onBoundary = callback;
+    this.onReady = onReady;
   }
 
   onScrollBoundary(atTop: boolean, atBottom: boolean): void {
     this.onBoundary(atTop, atBottom);
+  }
+
+  /** Called by the page script once its document is rendered and visible. */
+  onPageReady(): void {
+    this.onReady();
   }
 }
 
@@ -84,7 +92,8 @@ export struct ReadingView {
       this.boundaryReported = true;
       this.atTopNow = atTop;
       this.atBottomNow = atBottom;
-    }
+    },
+    (): void => this.onPageRendered()
   );
   private pullStartY: number = 0;
   private lastPullY: number = 0;
@@ -95,6 +104,26 @@ export struct ReadingView {
   // (like Android) instead of pushing a new destination. @Prop is one-way
   // synced from the parent, so keep a local mutable copy for in-place switches.
   @State currentArticleId: string = '';
+
+  // Prev/next page-switch animation. The WebView container slides out one way
+  // while the new content is swapped in at the peak, then slides in from the
+  // opposite edge. `switching` freezes touch handling during the transition.
+  @State switchOffset: number = 0;
+  private switching: boolean = false;
+  // Resolved when the WebView finishes rendering a page. Used by the page-turn
+  // animation to wait for the new article's content before sliding it in;
+  // loadData() itself is async, so awaiting load() is not enough.
+  private pageRenderedResolve?: () => void;
+  // Coalesce style-setting changes: a slider's onChange fires on every frame,
+  // but each change rebuilds the whole HTML and reloads the WebView. Debounce to
+  // a single re-render after the user stops dragging.
+  private styleTimer: number = -1;
+  // pushHtml has three callers (renderHtml / onAppear / onControllerAttached).
+  // Before the controller is attached loadData is lost; after attach all three
+  // would push the same HTML. Guard on attach state + last-pushed HTML so the
+  // same document is loaded exactly once (a new article/style changes `html`).
+  private controllerAttached: boolean = false;
+  private lastPushedHtml: string = '';
 
   private controller: webview.WebviewController = new webview.WebviewController();
   // buildHtml is async (AVIF conversion). Guard so a stale render (e.g. an
@@ -149,7 +178,11 @@ export struct ReadingView {
       currentArticle.isRead = true;
       AppStorage.set<string>('lastChangedArticle', `${currentArticle.id}|read|true`);
       AppStorage.set<number>('readStatusTick', Date.now());
-      rssRepository.markRead(currentArticle.id, true).catch((error: Error) => {
+      rssRepository.markRead(currentArticle.id, true).then((succeeded: string[]) => {
+        if (succeeded.length === 0) {
+          readStatusBatcher.add(currentArticle.id);
+        }
+      }).catch((error: Error) => {
         currentArticle.isRead = false;
         AppStorage.set<string>('lastChangedArticle', `${currentArticle.id}|read|false`);
         AppStorage.set<number>('readStatusTick', Date.now());
@@ -168,12 +201,32 @@ export struct ReadingView {
   }
 
   /** Switch to an adjacent article in place, matching Android's onLoadArticle:
-   *  keep the same NavDestination so Back always returns to the article list
-   *  instead of stepping back through every article the user opened. */
-  private async openNeighbor(id: string): Promise<void> {
-    if (id.length === 0 || id === this.currentArticleId) {
+   *  keep the same NavDestination so Back always returns to the article list.
+   *  Page-turn animation: `toPrevious` slides the old page DOWN and out, then
+   *  the new page enters from the TOP; `toNext` is the reverse. */
+  private async openNeighbor(id: string, toPrevious: boolean): Promise<void> {
+    if (this.switching || id.length === 0 || id === this.currentArticleId) {
       return;
     }
+    this.switching = true;
+    const outSign: number = toPrevious ? 1 : -1;
+    const screenH: number = AppStorage.get<number>('windowHeightVp') ?? 800;
+    const dist: number = screenH > 0 ? screenH : 800;
+
+    // Phase 1: slide the current content out.
+    this.pullHint = '';
+    this.pullOffset = 0;
+    this.getUIContext().animateTo({ duration: 150, curve: Curve.EaseIn }, () => {
+      this.switchOffset = outSign * dist;
+    });
+    await new Promise<void>((resolve: () => void) => { setTimeout(resolve, 190); });
+
+    // Phase 2: off-screen, swap content and jump to the opposite edge (no anim).
+    // Start waiting for the WebView paint BEFORE load() triggers loadData();
+    // awaiting load() alone is not enough because loadData renders asynchronously.
+    // Otherwise the slide-in would carry the OLD article and only swap after it.
+    const rendered: Promise<void> = this.waitForPageRender();
+    this.switchOffset = -outSign * dist;
     this.currentArticleId = id;
     this.previousId = '';
     this.nextId = '';
@@ -182,9 +235,15 @@ export struct ReadingView {
     this.atTopNow = true;
     this.atBottomNow = false;
     this.boundaryReported = false;
-    this.pullHint = '';
-    this.pullOffset = 0;
     await this.load();
+    await rendered;
+
+    // Phase 3: slide the new content in to rest.
+    this.getUIContext().animateTo({ duration: 150, curve: Curve.EaseOut }, () => {
+      this.switchOffset = 0;
+    });
+    await new Promise<void>((resolve: () => void) => { setTimeout(resolve, 230); });
+    this.switching = false;
   }
 
   /** Fallback only: used until the page's own JS bridge reports a boundary.
@@ -234,10 +293,48 @@ export struct ReadingView {
     });
   }
 
+  /** Called from the page script (via readYouBridge.onPageReady) when the newly
+   *  loaded document is rendered and visible. This is the deterministic signal
+   *  for the page-turn animation: unlike native onPageEnd it cannot be a stale
+   *  event from a previous load. */
+  private onPageRendered(): void {
+    const done: (() => void) | undefined = this.pageRenderedResolve;
+    if (done) {
+      this.pageRenderedResolve = undefined;
+      done();
+    }
+  }
+
+  /** Wait until the WebView's own script reports the new page is rendered.
+   *  Timeout fallback in case the script/bridge fails to fire on this build. */
+  private waitForPageRender(): Promise<void> {
+    return new Promise<void>((resolve: () => void) => {
+      let settled: boolean = false;
+      let timer: number = -1;
+      const finish = (): void => {
+        if (settled) return;
+        settled = true;
+        if (timer >= 0) {
+          clearTimeout(timer);
+          timer = -1;
+        }
+        this.pageRenderedResolve = undefined;
+        resolve();
+      };
+      this.pageRenderedResolve = finish;
+      // Align with the page script's 1200ms visibility fallback (plus margin).
+      timer = setTimeout(finish, 1300);
+    });
+  }
+
   /** Pull down at the top -> previous (newer) article; pull up at the bottom ->
    *  next (older) article. The page follows the finger with damping, and only
    *  a release beyond PULL_TRIGGER_VP switches articles. */
   private onWebTouch(event: TouchEvent): void {
+    // Ignore all touch input while a page-turn animation is running.
+    if (this.switching) {
+      return;
+    }
     const touches: TouchObject[] = event.changedTouches;
     // On Up some WebViews report an empty changedTouches; use the last known
     // position so the release is still evaluated instead of being dropped.
@@ -266,11 +363,20 @@ export struct ReadingView {
       if (this.pullFromTop && delta > 0) {
         this.pullAtBottom = false;
         this.pullOffset = Math.min(delta * 0.5, 160);
-        hint = delta >= PULL_TRIGGER_VP ? '释放查看上一篇' : '下拉查看上一篇';
+        // Only promise a switch when a neighbor actually exists.
+        if (this.previousId.length === 0) {
+          hint = '已经是第一篇';
+        } else {
+          hint = delta >= PULL_TRIGGER_VP ? '释放查看上一篇' : '下拉查看上一篇';
+        }
       } else if (this.pullFromBottom && delta < 0) {
         this.pullAtBottom = true;
         this.pullOffset = Math.max(delta * 0.5, -160);
-        hint = -delta >= PULL_TRIGGER_VP ? '释放查看下一篇' : '上拉查看下一篇';
+        if (this.nextId.length === 0) {
+          hint = '已经是最后一篇';
+        } else {
+          hint = -delta >= PULL_TRIGGER_VP ? '释放查看下一篇' : '上拉查看下一篇';
+        }
       } else {
         // Direction reversed: the user resumed normal reading, so stop the pull.
         this.pullOffset = 0;
@@ -297,7 +403,7 @@ export struct ReadingView {
         // Reset immediately. Animating here would keep mutating pullOffset for
         // 220ms and wipe the hint of a quickly-following consecutive pull.
         this.pullOffset = 0;
-        this.openNeighbor(switchPrev ? this.previousId : this.nextId);
+        this.openNeighbor(switchPrev ? this.previousId : this.nextId, switchPrev);
       } else {
         // Not far enough: spring the page back with an animation.
         this.getUIContext().animateTo({ duration: 220, curve: Curve.EaseOut }, () => {
@@ -307,12 +413,21 @@ export struct ReadingView {
     }
   }
 
-  /** Re-render the reader when its appearance settings change. */
+  /** Re-render the reader when its appearance settings change. Debounced so
+   *  dragging a settings slider rebuilds/reloads the WebView only once. */
   private async onStyleChanged(): Promise<void> {
     if (!this.article) {
       return;
     }
-    await this.renderHtml(this.article);
+    if (this.styleTimer >= 0) {
+      clearTimeout(this.styleTimer);
+    }
+    this.styleTimer = setTimeout(() => {
+      this.styleTimer = -1;
+      if (this.article) {
+        this.renderHtml(this.article);
+      }
+    }, 150);
   }
 
   /** Build HTML async and apply it only if no newer render superseded it. */
@@ -356,14 +471,15 @@ export struct ReadingView {
   }
 
   private pushHtml(): void {
-    if (this.html.length === 0) {
+    // Skip before the controller is attached (loadData would be discarded) and
+    // skip when the HTML is unchanged (onAppear / onControllerAttached both call
+    // this for the same document). A new article or style change alters `html`.
+    if (!this.controllerAttached || this.html.length === 0 || this.html === this.lastPushedHtml) {
       return;
     }
+    this.lastPushedHtml = this.html;
     try {
-      this.controller.setCustomUserAgent(
-        'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36'
-      );
-      Logger.info(`Reader html length=${this.html.length} images=${(this.html.match(/<img/gi) ?? []).length}`);
+      Logger.info(`Reader html length=${this.html.length}`);
       const baseUrl: string = this.article?.link ?? '';
       if (baseUrl.length > 0) {
         // With a website baseUrl the engine treats data as a plain string and
@@ -387,12 +503,9 @@ export struct ReadingView {
     AppStorage.set<string>('lastChangedArticle', `${id}|starred|${next}`);
     AppStorage.set<number>('readStatusTick', Date.now());
     this.getUIContext().getPromptAction().showToast({ message: next ? '已收藏' : '已取消收藏' });
-    rssRepository.markStarred(id, next).catch((error: Error) => {
-      this.isStarred = !next;
-      AppStorage.set<string>('lastChangedArticle', `${id}|starred|${!next}`);
-      AppStorage.set<number>('readStatusTick', Date.now());
-      Logger.error(`Toggle starred failed: ${error.message}`);
-    });
+    // Queue for background push with bounded retry. The list's flushed tick
+    // updates authoritative counts; the optimistic UI already reflects it.
+    readStatusBatcher.addStar(id, next);
   }
 
   private openOriginal(): void {
@@ -565,9 +678,15 @@ export struct ReadingView {
               .backgroundColor(this.darkMode ? '#15171A' : '#FFFFFF')
               .onAppear(() => this.pushHtml())
               .onControllerAttached(() => {
-                this.controller.registerJavaScriptProxy(
-                  this.boundaryBridge, 'readYouBridge', ['onScrollBoundary']
+                this.controller.setCustomUserAgent(
+                  'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36'
                 );
+                this.controller.registerJavaScriptProxy(
+                  this.boundaryBridge, 'readYouBridge', ['onScrollBoundary', 'onPageReady']
+                );
+                // Mark attached BEFORE pushHtml so the pending HTML (possibly
+                // rendered while the controller was not ready) finally loads.
+                this.controllerAttached = true;
                 this.pushHtml();
               })
               .onAreaChange((oldValue: Area, newValue: Area) => {
@@ -617,7 +736,7 @@ export struct ReadingView {
             }
             .width('100%')
             .height('100%')
-            .translate({ y: this.pullOffset })
+            .translate({ y: this.pullOffset + this.switchOffset })
 
             // Pull hint, like pull-to-refresh. Non-interactive so the touch
             // still reaches the WebView underneath. It lives in the fixed

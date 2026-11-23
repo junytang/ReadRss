@@ -6,9 +6,15 @@ import { FeedSyncService, SyncResult } from './SyncService';
 import { syncServiceFor } from './SyncServiceFactory';
 import { Logger } from '../common/Logger';
 import { FullContentFetcher, FULL_CONTENT_VERSION_MARKER } from './FullContentFetcher';
+import { readStatusBatcher } from './ReadStatusBatcher';
 
 /** Facade used by the UI; always operates on the active account. */
 class FeedRepository {
+  // The prefetcher and the reader can both request full text for the same
+  // article at once. Share one in-flight fetch per id so the origin is hit once
+  // and the DB is written once; each caller still updates its own Article copy.
+  private fullContentInFlight: Map<string, Promise<string>> = new Map();
+
   async activeAccount(): Promise<Account> {
     const account: Account | undefined = await accountRepository.active();
     if (!account) {
@@ -165,6 +171,30 @@ class FeedRepository {
     return this.ensureFullContentFor(article);
   }
 
+  /** Fetch + persist full text once per article id, shared across concurrent
+   *  callers (prefetch window and the opened reader). */
+  private fetchAndStoreFullContent(article: Article): Promise<string> {
+    let task: Promise<string> | undefined = this.fullContentInFlight.get(article.id);
+    if (task === undefined) {
+      const id: string = article.id;
+      task = (async (): Promise<string> => {
+        const content: string = await FullContentFetcher.fetch(article.link, article.title);
+        if (content.length > 0) {
+          await database.updateArticleFullContent(id, content);
+        }
+        return content;
+      })();
+      this.fullContentInFlight.set(id, task);
+      // Drop from the in-flight table on both success and failure; a later
+      // explicit re-fetch (e.g. version bump) can start a fresh task.
+      task.then(
+        (): void => { this.fullContentInFlight.delete(id); },
+        (): void => { this.fullContentInFlight.delete(id); }
+      );
+    }
+    return task;
+  }
+
   /** Ensure full text for an already-loaded article, avoiding a second DB read.
    *  Used by the prefetcher, whose list rows carry only summary fields. */
   async ensureFullContentFor(article?: Article): Promise<Article | undefined> {
@@ -172,9 +202,8 @@ class FeedRepository {
     if (!article || article.link.length === 0 || this.hasCurrentFullContent(article)) {
       return article;
     }
-    const content: string = await FullContentFetcher.fetch(article.link, article.title);
+    const content: string = await this.fetchAndStoreFullContent(article);
     if (content.length > 0) {
-      await database.updateArticleFullContent(article.id, content);
       article.fullContent = content;
     }
     return article;
@@ -216,6 +245,11 @@ class FeedRepository {
   private async doSync(): Promise<SyncResult> {
     const account: Account = await this.activeAccount();
     try {
+      // Push optimistic marks BEFORE reconciliation. Without this, the 10s
+      // batcher debounce leaves a window where the server still has the old
+      // state and sync's toUnread/toUnstar/toRead overwrite what the user just
+      // changed (README known issue). flush() never throws (it retries).
+      await readStatusBatcher.flush();
       const result: SyncResult = await syncServiceFor(account).sync(account);
       // Each service emits feedDataTick per batch and notifySyncFinal at the end;
       // no extra tick here to avoid a redundant full UI reload.
@@ -244,9 +278,11 @@ class FeedRepository {
     await service.deleteFeed(account, id);
   }
 
-  async markRead(id: string, read: boolean, before?: number): Promise<void> {
+  async markRead(id: string, read: boolean, before?: number): Promise<string[]> {
     const account: Account = await this.activeAccount();
-    await syncServiceFor(account).markRead(account, [id], read, before);
+    // Return the ids the server actually confirmed so the caller can queue a
+    // retry for failures instead of silently trusting the optimistic UI.
+    return syncServiceFor(account).markRead(account, [id], read, before);
   }
 
   async markReadBatch(ids: string[], read: boolean, before?: number): Promise<string[]> {

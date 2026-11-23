@@ -286,7 +286,7 @@ toFetch=0 → contentReady signaled → onSyncFinished → load done → toast �
 
 - `SYNCDBG` 诊断日志已于 2026-11-21 **全部清理**（40 处 / 7 个文件），`Logger.error` 等错误日志全部保留。不要在 sync/load 热路径重新引入高频 `Logger.info`。
 - 跨页面并发 sync：`ArticleListView` 与 `FeedListView` 各有独立 `isSyncing`，理论上可同时发起 sync 并发写库（用户未要求处理）。
-- 服务端层面：sync 期间用户的标记操作可能被 GReader 的 toRead/toUnread 对账覆盖（数据一致性问题，未处理）。
+- 标记已读/星标的一致性（已处理）：`ReadStatusBatcher` 现在对失败做有上限的后台重试（最多 5 次，指数退避），星标也走同一队列；`doSync()` 在同步前先 flush 待推送标记，且 GReader/Fever 的对账通过 `PendingStatusRegistry` 排除仍在本地 pending 的 id，避免用服务端的旧状态回退用户刚刚的标记。单条标记若服务端确认失败也会入队重试。待推送队列是内存态，进程退出后会丢失（Android 另有缓存文件持久化）。
 - 用户偏好系统组件；不要引入自定义绘制替代系统组件。
 
 ## 下一步建议
