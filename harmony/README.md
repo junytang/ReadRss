@@ -1,7 +1,7 @@
 # ReadYou HarmonyOS 7 移植版（MVP）
 
-本目录是使用 **ArkTS + ArkUI** 对 ReadYou Android 版进行原生重写的鸿蒙 7（API 26）工程。
-Android 原工程保持原样，鸿蒙工程作为独立 DevEco 项目放在 `harmony/` 下，可单独用 DevEco Studio 打开。
+本仓库是用 **ArkTS + ArkUI** 对 ReadYou Android 版进行原生重写的鸿蒙 7（API 26）工程（Android 原工程保持原样）。
+鸿蒙工程位于 [`harmony/`](harmony/) 目录，是一个可单独用 DevEco Studio 打开的独立项目；本首页 README 即该目录下的 `README.md`。
 
 ## 环境要求
 
@@ -20,7 +20,7 @@ Android 原工程保持原样，鸿蒙工程作为独立 DevEco 项目放在 `ha
 
 ## 打开与运行
 
-1. 用 DevEco Studio 打开本目录（`ReadYou-harmonyos7/harmony`）。
+1. 用 DevEco Studio 打开本仓库的 `harmony/` 目录（即鸿蒙工程根目录）。
 2. 等待依赖同步完成（无第三方 ohpm 依赖，仅使用系统 Kit）。
 3. 配置调试签名并连接设备。
 4. 选择 `entry` 模块 → `default` target → 运行。
