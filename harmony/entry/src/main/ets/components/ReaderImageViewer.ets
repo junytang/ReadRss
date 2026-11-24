@@ -34,6 +34,9 @@ export struct ReaderImageViewer {
   private gestureScale: number = 1;
   private gestureOffsetX: number = 0;
   private gestureOffsetY: number = 0;
+  // In a Parallel gesture group a long press can also produce a Tap on release.
+  // Suppress that tap so the viewer does not close while the save dialog opens.
+  private longPressHandled: boolean = false;
 
   private fs(size: number): number { return size * this.uiFontScale; }
 
@@ -184,7 +187,55 @@ export struct ReaderImageViewer {
   }
 
   build() {
-    Column() {
+    Stack() {
+      // Full-screen definite-size layer: the image is centred in the viewport,
+      // not in the area left over below the header (layoutWeight used to make
+      // percentage heights resolve unpredictably and push the image upward).
+      Column() {
+        this.imageContent()
+      }
+      .width('100%')
+      .height('100%')
+      .justifyContent(FlexAlign.Center)
+      .alignItems(HorizontalAlign.Center)
+      // ONE parallel group. With separate .gesture() calls the 1-pixel Pan
+      // consumed the touch before LongPress could fire, and the trailing
+      // onClick then dismissed the viewer. Parallel recognition lets each
+      // gesture work independently; longPressHandled filters the follow-up tap.
+      .gesture(
+        GestureGroup(GestureMode.Parallel,
+          LongPressGesture().onAction(() => {
+            this.longPressHandled = true;
+            this.saveToGallery();
+          }),
+          PinchGesture({ fingers: 2, distance: 1 })
+            .onActionStart(() => { this.gestureScale = this.zoomScale; })
+            .onActionUpdate((event: PinchGestureEvent) => {
+              this.zoomBy(this.gestureScale * event.scale);
+            }),
+          PanGesture({ fingers: 1, distance: 8 })
+            .onActionStart(() => {
+              this.gestureOffsetX = this.offsetX;
+              this.gestureOffsetY = this.offsetY;
+            })
+            .onActionUpdate((event: PanGestureEvent) => {
+              if (this.zoomScale <= 1) {
+                return;
+              }
+              this.offsetX = this.gestureOffsetX + event.offsetX;
+              this.offsetY = this.gestureOffsetY + event.offsetY;
+            }),
+          TapGesture().onAction(() => {
+            if (this.longPressHandled) {
+              this.longPressHandled = false;
+              return;
+            }
+            this.handleTap();
+          })
+        )
+      )
+
+      // Header floats above the image; its own close button still receives taps.
       Row() {
         Text('点击关闭 · 双指缩放 · 长按保存').fontFamily(this.appFont())
           .fontSize(this.fs(13))
@@ -197,41 +248,9 @@ export struct ReaderImageViewer {
           .onClick(() => this.onClose())
       }
       .width('100%')
+      .alignItems(VerticalAlign.Center)
       .padding({ left: 16, right: 16, top: 12 + this.topInset, bottom: 8 })
       .onClick(() => this.onClose())
-
-      Column() {
-        this.imageContent()
-      }
-      .width('100%')
-      .layoutWeight(1)
-      .justifyContent(FlexAlign.Center)
-      .alignItems(HorizontalAlign.Center)
-      .onClick(() => this.handleTap())
-      .gesture(
-        PinchGesture({ fingers: 2, distance: 1 })
-          .onActionStart(() => { this.gestureScale = this.zoomScale; })
-          .onActionUpdate((event: PinchGestureEvent) => {
-            this.zoomBy(this.gestureScale * event.scale);
-          })
-      )
-      .gesture(
-        PanGesture({ fingers: 1, distance: 1 })
-          .onActionStart(() => {
-            this.gestureOffsetX = this.offsetX;
-            this.gestureOffsetY = this.offsetY;
-          })
-          .onActionUpdate((event: PanGestureEvent) => {
-            if (this.zoomScale <= 1) {
-              return;
-            }
-            this.offsetX = this.gestureOffsetX + event.offsetX;
-            this.offsetY = this.gestureOffsetY + event.offsetY;
-          })
-      )
-      .gesture(
-        LongPressGesture().onAction(() => { this.saveToGallery(); })
-      )
     }
     .width('100%')
     .height('100%')
