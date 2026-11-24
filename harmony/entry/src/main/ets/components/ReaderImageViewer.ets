@@ -34,8 +34,13 @@ export struct ReaderImageViewer {
   private gestureScale: number = 1;
   private gestureOffsetX: number = 0;
   private gestureOffsetY: number = 0;
-  // In a Parallel gesture group a long press can also produce a Tap on release.
-  // Suppress that tap so the viewer does not close while the save dialog opens.
+  // Long press is driven by a touch timer, not GestureGroup: on this device a
+  // GestureGroup swallowed both LongPress and Pinch while leaving only Tap.
+  private longPressTimer: number = -1;
+  private touchStartX: number = 0;
+  private touchStartY: number = 0;
+  // A tap follows a long press on release; ignore it so the viewer stays open
+  // while the gallery dialog is shown.
   private longPressHandled: boolean = false;
 
   private fs(size: number): number { return size * this.uiFontScale; }
@@ -68,9 +73,50 @@ export struct ReaderImageViewer {
   }
 
   aboutToDisappear(): void {
+    this.cancelLongPress();
     if (this.pixelMap) {
       this.pixelMap.release();
       this.pixelMap = undefined;
+    }
+  }
+
+  private cancelLongPress(): void {
+    if (this.longPressTimer >= 0) {
+      clearTimeout(this.longPressTimer);
+      this.longPressTimer = -1;
+    }
+  }
+
+  /** Timer-based long press: independent of ArkUI's gesture arbitration, which
+   *  on some builds lets Tap win over LongPress/Pinch in the same group. */
+  private handleImageTouch(event: TouchEvent): void {
+    if (event.touches.length === 0) {
+      return;
+    }
+    if (event.touches.length > 1) {
+      // A second finger means pinch zoom, never a long press.
+      this.cancelLongPress();
+      return;
+    }
+    const touch: TouchObject = event.touches[0];
+    if (event.type === TouchType.Down) {
+      this.touchStartX = touch.x;
+      this.touchStartY = touch.y;
+      this.longPressHandled = false;
+      this.cancelLongPress();
+      this.longPressTimer = setTimeout((): void => {
+        this.longPressTimer = -1;
+        this.longPressHandled = true;
+        this.saveToGallery();
+      }, 500);
+    } else if (event.type === TouchType.Move) {
+      // A deliberate pan/pinch is not a long press.
+      if (Math.abs(touch.x - this.touchStartX) > 10
+        || Math.abs(touch.y - this.touchStartY) > 10) {
+        this.cancelLongPress();
+      }
+    } else {
+      this.cancelLongPress();
     }
   }
 
@@ -187,55 +233,10 @@ export struct ReaderImageViewer {
   }
 
   build() {
-    Stack() {
-      // Full-screen definite-size layer: the image is centred in the viewport,
-      // not in the area left over below the header (layoutWeight used to make
-      // percentage heights resolve unpredictably and push the image upward).
-      Column() {
-        this.imageContent()
-      }
-      .width('100%')
-      .height('100%')
-      .justifyContent(FlexAlign.Center)
-      .alignItems(HorizontalAlign.Center)
-      // ONE parallel group. With separate .gesture() calls the 1-pixel Pan
-      // consumed the touch before LongPress could fire, and the trailing
-      // onClick then dismissed the viewer. Parallel recognition lets each
-      // gesture work independently; longPressHandled filters the follow-up tap.
-      .gesture(
-        GestureGroup(GestureMode.Parallel,
-          LongPressGesture().onAction(() => {
-            this.longPressHandled = true;
-            this.saveToGallery();
-          }),
-          PinchGesture({ fingers: 2, distance: 1 })
-            .onActionStart(() => { this.gestureScale = this.zoomScale; })
-            .onActionUpdate((event: PinchGestureEvent) => {
-              this.zoomBy(this.gestureScale * event.scale);
-            }),
-          PanGesture({ fingers: 1, distance: 8 })
-            .onActionStart(() => {
-              this.gestureOffsetX = this.offsetX;
-              this.gestureOffsetY = this.offsetY;
-            })
-            .onActionUpdate((event: PanGestureEvent) => {
-              if (this.zoomScale <= 1) {
-                return;
-              }
-              this.offsetX = this.gestureOffsetX + event.offsetX;
-              this.offsetY = this.gestureOffsetY + event.offsetY;
-            }),
-          TapGesture().onAction(() => {
-            if (this.longPressHandled) {
-              this.longPressHandled = false;
-              return;
-            }
-            this.handleTap();
-          })
-        )
-      )
-
-      // Header floats above the image; its own close button still receives taps.
+    Column() {
+      // Header is a normal first child, so it stays pinned to the top. Putting
+      // it in the Stack before made Stack's default centre alignment push it
+      // to the middle of the screen.
       Row() {
         Text('点击关闭 · 双指缩放 · 长按保存').fontFamily(this.appFont())
           .fontSize(this.fs(13))
@@ -250,7 +251,44 @@ export struct ReaderImageViewer {
       .width('100%')
       .alignItems(VerticalAlign.Center)
       .padding({ left: 16, right: 16, top: 12 + this.topInset, bottom: 8 })
-      .onClick(() => this.onClose())
+
+      // The image area fills the rest; Stack's explicit centre alignment
+      // centres the image both vertically and horizontally.
+      Stack() {
+        this.imageContent()
+      }
+      .width('100%')
+      .layoutWeight(1)
+      .alignContent(Alignment.Center)
+      .onTouch((event: TouchEvent) => this.handleImageTouch(event))
+      .onClick(() => {
+        if (this.longPressHandled) {
+          this.longPressHandled = false;
+          return;
+        }
+        this.handleTap();
+      })
+      .gesture(
+        PinchGesture({ fingers: 2, distance: 1 })
+          .onActionStart(() => { this.gestureScale = this.zoomScale; })
+          .onActionUpdate((event: PinchGestureEvent) => {
+            this.zoomBy(this.gestureScale * event.scale);
+          })
+      )
+      .gesture(
+        PanGesture({ fingers: 1, distance: 8 })
+          .onActionStart(() => {
+            this.gestureOffsetX = this.offsetX;
+            this.gestureOffsetY = this.offsetY;
+          })
+          .onActionUpdate((event: PanGestureEvent) => {
+            if (this.zoomScale <= 1) {
+              return;
+            }
+            this.offsetX = this.gestureOffsetX + event.offsetX;
+            this.offsetY = this.gestureOffsetY + event.offsetY;
+          })
+      )
     }
     .width('100%')
     .height('100%')
