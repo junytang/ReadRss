@@ -798,6 +798,7 @@ export struct ReadingView {
       if (this.zoomImageUrl.length > 0) {
         ReaderImageViewer({
           url: this.zoomImageUrl,
+          referer: this.article?.link ?? '',
           onClose: (): void => { this.zoomImageUrl = ''; },
         })
       }

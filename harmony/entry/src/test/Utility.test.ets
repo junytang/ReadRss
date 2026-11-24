@@ -8,6 +8,7 @@ import { RemoteCredentials, emptyCredentials } from '../main/ets/account/Account
 import { FULL_CONTENT_VERSION_MARKER } from '../main/ets/rss/FullContentFetcher';
 import { WebViewHtml } from '../main/ets/rss/WebViewHtml';
 import { WebViewStyle } from '../main/ets/rss/WebViewStyle';
+import { fitImageSize } from '../main/ets/common/ImageFit';
 import {
   FILTER_UNREAD, FILTER_STARRED, FILTER_ALL,
   READ_ALIGN_START, READ_ALIGN_END, READ_ALIGN_CENTER, READ_ALIGN_JUSTIFY,
@@ -144,6 +145,28 @@ export default function utilityTest(): void {
       expect(html.indexOf('keep') >= 0).assertTrue();
       // Empty <p></p> and <p><br/></p> should be removed.
       expect(html.indexOf('<p></p>') >= 0).assertFalse();
+    });
+  });
+
+  describe('ImageFit', () => {
+    it('fits a wide image to the area width and keeps aspect ratio', 0, () => {
+      const fitted = fitImageSize(400, 200, 300, 500);
+      expect(fitted.width).assertEqual(300);
+      expect(fitted.height).assertEqual(150);
+    });
+
+    it('fits a tall image to the area height and never upscales', 0, () => {
+      const fitted = fitImageSize(200, 400, 500, 300);
+      expect(fitted.width).assertEqual(150);
+      expect(fitted.height).assertEqual(300);
+      const small = fitImageSize(100, 50, 500, 500);
+      expect(small.width).assertEqual(100);
+      expect(small.height).assertEqual(50);
+    });
+
+    it('returns zero size for invalid inputs', 0, () => {
+      expect(fitImageSize(0, 100, 300, 300).width).assertEqual(0);
+      expect(fitImageSize(100, 100, 0, 300).height).assertEqual(0);
     });
   });
 

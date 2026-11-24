@@ -2,14 +2,22 @@ import { image } from '@kit.ImageKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { http } from '@kit.NetworkKit';
 import { common } from '@kit.AbilityKit';
+import { display } from '@kit.ArkUI';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
 import { ArticleImageConverter } from '../common/ArticleImageConverter';
 import { Logger } from '../common/Logger';
 import { FontManager } from '../common/FontManager';
 import { ToastUtil } from '../common/ToastUtil';
+import { fitImageSize, FittedSize } from '../common/ImageFit';
 
 /** Maximum pinch magnification, matching Android's telephoto ZoomSpec(4f). */
 const MAX_ZOOM: number = 4;
+
+/** ArkTS needs an explicit type for object literals used as HTTP headers. */
+interface ImageRequestHeaders {
+  'User-Agent': string;
+  'Referer'?: string;
+}
 
 /**
  * Full-screen image viewer for the reader. Shown when the article's WebView
@@ -22,12 +30,25 @@ const MAX_ZOOM: number = 4;
 @Component
 export struct ReaderImageViewer {
   @Prop url: string = '';
+  // Article URL sent as Referer so hotlink-protected images can be downloaded
+  // for saving (and decoded here instead of relying on ArkUI's URL loader).
+  @Prop referer: string = '';
   onClose: () => void = () => {};
   @StorageProp('fontScale') uiFontScale: number = 1;
   @StorageProp('systemFontFamily') systemFontFamily: string = 'sans-serif';
   @StorageProp('fontDataTick') fontDataTick: number = 0;
   @StorageProp('topInset') topInset: number = 0;
   @State pixelMap: image.PixelMap | undefined = undefined;
+  // The Image component is sized to the fitted image, so Stack centres the
+  // component itself. objectFit(Contain) inside a 100% box is not reliably
+  // centred on all ArkWeb builds and was leaving the image high on screen.
+  private imageWidth: number = 0;
+  private imageHeight: number = 0;
+  private imageBytes: ArrayBuffer | undefined = undefined;
+  @State displayWidth: number = 0;
+  @State displayHeight: number = 0;
+  private areaWidth: number = 0;
+  private areaHeight: number = 0;
   @State zoomScale: number = 1;
   @State offsetX: number = 0;
   @State offsetY: number = 0;
@@ -51,25 +72,80 @@ export struct ReaderImageViewer {
   }
 
   aboutToAppear(): void {
-    this.loadConvertedImage();
+    this.loadImage();
   }
 
-  private async loadConvertedImage(): Promise<void> {
-    if (!ArticleImageConverter.isVirtualUrl(this.url)) {
-      return; // normal http(s) image: ArkUI Image loads the URL directly
+  /** Decode every image (AVIF virtual URL or remote URL) to a PixelMap so we
+   *  know its intrinsic size and can size the component to fit the viewport. */
+  private async loadImage(): Promise<void> {
+    let bytes: ArrayBuffer | undefined = undefined;
+    if (ArticleImageConverter.isVirtualUrl(this.url)) {
+      bytes = ArticleImageConverter.getBytes(ArticleImageConverter.keyFromUrl(this.url));
+      if (!bytes) {
+        Logger.warn('Zoom image bytes already evicted');
+        return;
+      }
+    } else {
+      const request: http.HttpRequest = http.createHttp();
+      try {
+        let header: ImageRequestHeaders = { 'User-Agent': 'ReadYou-Harmony' };
+        if (this.referer.length > 0) {
+          header = { 'Referer': this.referer, 'User-Agent': 'ReadYou-Harmony' };
+        }
+        const options: http.HttpRequestOptions = {
+          method: http.RequestMethod.GET,
+          expectDataType: http.HttpDataType.ARRAY_BUFFER,
+          connectTimeout: 15000,
+          readTimeout: 15000,
+          header: header,
+        };
+        const response: http.HttpResponse = await request.request(this.url, options);
+        if (response.responseCode === 200) {
+          bytes = response.result as ArrayBuffer;
+        }
+      } catch (error) {
+        Logger.warn(`Fetch zoom image failed: ${(error as Error).message}`);
+      } finally {
+        request.destroy();
+      }
     }
-    const bytes: ArrayBuffer | undefined = ArticleImageConverter.getBytes(
-      ArticleImageConverter.keyFromUrl(this.url)
-    );
     if (!bytes) {
-      Logger.warn('Zoom image bytes already evicted');
       return;
     }
+    this.imageBytes = bytes;
     try {
-      this.pixelMap = await image.createImageSource(bytes).createPixelMap();
+      const source: image.ImageSource = image.createImageSource(bytes);
+      const info: image.ImageInfo = source.getImageInfoSync();
+      this.imageWidth = info.size.width;
+      this.imageHeight = info.size.height;
+      this.pixelMap = await source.createPixelMap();
+      this.recomputeDisplaySize();
     } catch (error) {
       Logger.warn(`Decode zoom image failed: ${(error as Error).message}`);
     }
+  }
+
+  /** Fit the image inside the available area using vp as the unit. */
+  private recomputeDisplaySize(): void {
+    if (this.imageWidth <= 0 || this.imageHeight <= 0
+      || this.areaWidth <= 0 || this.areaHeight <= 0) {
+      return;
+    }
+    let density: number = 1;
+    try {
+      density = display.getDefaultDisplaySync().densityPixels;
+    } catch (error) {
+      density = 1;
+    }
+    if (density <= 0) {
+      density = 1;
+    }
+    const fitted: FittedSize = fitImageSize(
+      this.imageWidth / density, this.imageHeight / density,
+      this.areaWidth, this.areaHeight
+    );
+    this.displayWidth = fitted.width;
+    this.displayHeight = fitted.height;
   }
 
   aboutToDisappear(): void {
@@ -142,27 +218,9 @@ export struct ReaderImageViewer {
   private async saveToGallery(): Promise<void> {
     const context: common.UIAbilityContext =
       this.getUIContext().getHostContext() as common.UIAbilityContext;
-    let bytes: ArrayBuffer | undefined = undefined;
-    if (ArticleImageConverter.isVirtualUrl(this.url)) {
-      bytes = ArticleImageConverter.getBytes(ArticleImageConverter.keyFromUrl(this.url));
-    } else {
-      const request: http.HttpRequest = http.createHttp();
-      try {
-        const response: http.HttpResponse = await request.request(this.url, {
-          method: http.RequestMethod.GET,
-          expectDataType: http.HttpDataType.ARRAY_BUFFER,
-          connectTimeout: 15000,
-          readTimeout: 15000,
-        });
-        if (response.responseCode === 200) {
-          bytes = response.result as ArrayBuffer;
-        }
-      } catch (error) {
-        Logger.warn(`Fetch zoom image failed: ${(error as Error).message}`);
-      } finally {
-        request.destroy();
-      }
-    }
+    // Reuse the bytes decoded on open (already carries the article Referer),
+    // so saving never depends on a second network round trip.
+    const bytes: ArrayBuffer | undefined = this.imageBytes;
     if (!bytes) {
       ToastUtil.show(this.getUIContext(), '图片尚未加载完成');
       return;
@@ -216,19 +274,24 @@ export struct ReaderImageViewer {
   @Builder
   imageContent(): void {
     if (this.pixelMap) {
-      Image(this.pixelMap)
-        .width('100%')
-        .height('100%')
-        .objectFit(ImageFit.Contain)
-        .scale({ x: this.zoomScale, y: this.zoomScale })
-        .translate({ x: this.offsetX, y: this.offsetY })
+      if (this.displayWidth > 0 && this.displayHeight > 0) {
+        Image(this.pixelMap)
+          .width(this.displayWidth)
+          .height(this.displayHeight)
+          .objectFit(ImageFit.Contain)
+          .scale({ x: this.zoomScale, y: this.zoomScale })
+          .translate({ x: this.offsetX, y: this.offsetY })
+      } else {
+        Image(this.pixelMap)
+          .width('100%')
+          .height('100%')
+          .objectFit(ImageFit.Contain)
+      }
     } else {
+      // Brief placeholder while bytes are being fetched/decoded.
       Image(this.url)
-        .width('100%')
-        .height('100%')
+        .width('80%')
         .objectFit(ImageFit.Contain)
-        .scale({ x: this.zoomScale, y: this.zoomScale })
-        .translate({ x: this.offsetX, y: this.offsetY })
     }
   }
 
@@ -260,6 +323,11 @@ export struct ReaderImageViewer {
       .width('100%')
       .layoutWeight(1)
       .alignContent(Alignment.Center)
+      .onAreaChange((oldValue: Area, newValue: Area) => {
+        this.areaWidth = newValue.width as number;
+        this.areaHeight = newValue.height as number;
+        this.recomputeDisplaySize();
+      })
       .onTouch((event: TouchEvent) => this.handleImageTouch(event))
       .onClick(() => {
         if (this.longPressHandled) {
