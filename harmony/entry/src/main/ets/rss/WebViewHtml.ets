@@ -102,6 +102,22 @@ if (window.MutationObserver) {
   imgObserver.observe(document.body, { childList: true, subtree: true });
 }`;
 
+  /**
+   * Build the script that updates reader CSS variables in an already-loaded
+   * document. Using this instead of loadData() keeps the WebView's rendering
+   * context alive, so the live preview does not flash white on every change.
+   * The values come from WebViewStyle.variables() — the same map that produced
+   * the document's original :root block.
+   */
+  static applyVariables(vars: Map<string, string>): string {
+    let script: string = '(function(){var s=document.documentElement.style;';
+    vars.forEach((value: string, key: string): void => {
+      script += `s.setProperty(${JSON.stringify(key)},${JSON.stringify(value)});`;
+    });
+    script += '})()';
+    return script;
+  }
+
   static fill(style: string, baseHref: string, body: string): string {
     let result: string = WebViewHtml.HTML;
     result = result.replace('%s', style);

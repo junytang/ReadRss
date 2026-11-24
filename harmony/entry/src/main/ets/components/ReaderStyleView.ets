@@ -4,7 +4,10 @@ import { FontManager } from '../common/FontManager';
 import { goBack, openFontPicker } from '../common/NavigationService';
 import { settingsStore } from '../data/SettingsStore';
 import { HtmlBuilder } from '../rss/HtmlBuilder';
+import { WebViewStyle } from '../rss/WebViewStyle';
+import { WebViewHtml } from '../rss/WebViewHtml';
 import { ReaderWebSupport } from '../common/ReaderWebSupport';
+import { Logger } from '../common/Logger';
 import {
   READ_ALIGN_VALUES, readerAlignLabel, READER_LETTER_SPACING_DEFAULT,
 } from '../common/Constants';
@@ -21,7 +24,7 @@ export struct ReaderStyleView {
   @StorageLink('darkMode') @Watch('onPreviewChanged') darkMode: boolean = false;
   @StorageProp('topInset') topInset: number = 0;
   @StorageProp('bottomInset') bottomInset: number = 0;
-  @StorageProp('fontDataTick') @Watch('onPreviewChanged') fontDataTick: number = 0;
+  @StorageProp('fontDataTick') @Watch('onFontFileChanged') fontDataTick: number = 0;
   @StorageProp('systemFontFamily') systemFontFamily: string = 'sans-serif';
   @StorageProp('readerFontFamily') @Watch('onFontChanged') fontKeyProp: string = 'sans-serif';
   // Same AppStorage keys the reader HTML uses, so preview/real share one source.
@@ -35,6 +38,7 @@ export struct ReaderStyleView {
   @State previewHtml: string = '';
   private previewController: webview.WebviewController = new webview.WebviewController();
   private previewAttached: boolean = false;
+  private previewReady: boolean = false;
   private lastPreviewHtml: string = '';
 
   aboutToAppear(): void {
@@ -42,12 +46,24 @@ export struct ReaderStyleView {
     this.previewHtml = this.buildPreviewHtml();
   }
 
-  /** Rebuild AND push. The original preview only pushed on controller attach,
-   *  so later setting changes regenerated the string but never reloaded the
-   *  WebView — which is why the preview appeared frozen. */
+  /** Apply settings to the already-loaded document by rewriting its CSS
+   *  variables. Reloading the whole HTML on every slider frame cleared the
+   *  document and produced a visible white flash; runJavaScript keeps the
+   *  rendered page alive and only recomputes styles. */
   private refreshPreview(): void {
-    this.previewHtml = this.buildPreviewHtml();
-    this.pushPreviewHtml();
+    if (!this.previewReady) {
+      // Not loaded yet — the initial document will be built from live values.
+      this.previewHtml = this.buildPreviewHtml();
+      return;
+    }
+    const vars: Map<string, string> = WebViewStyle.variables(
+      this.darkMode, this.bodySize, FontManager.familyFor(this.fontKey),
+      this.pageMargin, this.lineSpacing, this.letterSpacing, this.textAlign
+    );
+    this.previewController.runJavaScript(WebViewHtml.applyVariables(vars))
+      .catch((error: Error) => {
+        Logger.warn(`Preview style update skipped: ${error.message}`);
+      });
   }
 
   onFontChanged(): void {
@@ -57,6 +73,13 @@ export struct ReaderStyleView {
 
   onPreviewChanged(): void {
     this.refreshPreview();
+  }
+
+  /** Installing/removing a custom font changes the @font-face URL, which a
+   *  variable update cannot express. Reload once for this rare case. */
+  onFontFileChanged(): void {
+    this.previewHtml = this.buildPreviewHtml();
+    this.pushPreviewHtml(true);
   }
 
   /** UI chrome follows the system-wide font selection. */
@@ -103,13 +126,15 @@ export struct ReaderStyleView {
     return HtmlBuilder.buildPreview(
       this.darkMode, this.bodySize, this.pageMargin, this.lineSpacing,
       FontManager.familyFor(this.fontKey), this.letterSpacing, this.textAlign,
-      ReaderWebSupport.fontCss(this.fontKey, settingsStore.get().customFontPath)
+      // Always include @font-face when a custom font is installed, so switching
+      // to/from it later is just a --font-family variable update (no reload).
+      ReaderWebSupport.fontCss('custom', settingsStore.get().customFontPath)
     );
   }
 
-  private pushPreviewHtml(): void {
+  private pushPreviewHtml(force: boolean = false): void {
     if (!this.previewAttached || this.previewHtml.length === 0
-      || this.previewHtml === this.lastPreviewHtml) {
+      || (!force && this.previewHtml === this.lastPreviewHtml)) {
       return;
     }
     this.lastPreviewHtml = this.previewHtml;
@@ -168,6 +193,15 @@ export struct ReaderStyleView {
             .onControllerAttached(() => {
               this.previewAttached = true;
               this.pushPreviewHtml();
+            })
+            .onPageEnd(() => {
+              this.previewReady = true;
+              // A setting may have changed while the first document was still
+              // loading; those changes only touched previewHtml, so apply them
+              // once now instead of leaving stale styles on screen.
+              if (this.previewHtml !== this.lastPreviewHtml) {
+                this.pushPreviewHtml();
+              }
             })
             .onInterceptRequest((event) => {
               const url: string = event ? event.request.getRequestUrl() : '';

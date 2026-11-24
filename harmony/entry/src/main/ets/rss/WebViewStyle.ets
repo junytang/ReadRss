@@ -1,18 +1,16 @@
 import { readerAlignCss } from '../common/Constants';
 
-/** ArkTS port of Android's WebViewStyle.get() CSS variable system. */
+/** ArkTS port of Android's WebViewStyle.get() CSS variable system.
+ *  The variable map is the single source of truth: get() renders it into CSS,
+ *  and the settings preview applies the very same map via runJavaScript, so a
+ *  style change never needs to reload (and flash) the WebView document. */
 export class WebViewStyle {
-  static get(
+  static variables(
     dark: boolean, fontSize: number, fontFamily: string,
     pageMargin: number, lineSpacing: number,
     letterSpacing: number = 0.5, textAlign: number = 0
-  ): string {
+  ): Map<string, string> {
     const textColor: string = dark ? '#E8EAED' : '#191C1E';
-    const boldColor: string = dark ? '#FFFFFF' : '#111417';
-    const linkColor: string = dark ? '#8AB4F8' : '#2663D6';
-    const codeColor: string = dark ? '#E8EAED' : '#202124';
-    const codeBg: string = dark ? '#2A2E33' : '#F1F3F4';
-    const selectionBg: string = dark ? '#5E636A' : '#C8E6C9';
     // CSS generic keywords must stay unquoted; only custom named fonts need
     // quoting. Quoting "sans-serif" turns it into a literal (missing) family.
     const generic: boolean = fontFamily === 'sans-serif' || fontFamily === 'serif'
@@ -20,37 +18,52 @@ export class WebViewStyle {
     const familyCss: string = generic
       ? `${fontFamily}, "HarmonyOS Sans SC", sans-serif`
       : `"${fontFamily}", "HarmonyOS Sans SC", sans-serif`;
+    const vars: Map<string, string> = new Map<string, string>();
+    vars.set('--font-family', familyCss);
+    vars.set('--font-size', `${fontSize}px`);
+    vars.set('--line-height', `${lineSpacing}`);
+    vars.set('--letter-spacing', `${letterSpacing}px`);
+    vars.set('--paragraph-gap', '1em');
+    vars.set('--text-margin', `${pageMargin}px`);
+    vars.set('--text-color', textColor);
+    vars.set('--text-bold', 'normal');
+    vars.set('--text-align', readerAlignCss(textAlign));
+    vars.set('--bold-text-color', dark ? '#FFFFFF' : '#111417');
+    vars.set('--link-text-color', dark ? '#8AB4F8' : '#2663D6');
+    vars.set('--selection-text-color', textColor);
+    vars.set('--selection-bg-color', dark ? '#5E636A' : '#C8E6C9');
+    vars.set('--subhead-bold', '600');
+    vars.set('--subhead-upper-case', 'none');
+    vars.set('--img-margin', '0px');
+    vars.set('--img-border-radius', '8px');
+    vars.set('--blockquote-margin', '20px');
+    vars.set('--blockquote-bg-color', 'transparent');
+    vars.set('--blockquote-border-width', '3px');
+    vars.set('--blockquote-border-color', `${textColor}55`);
+    vars.set('--table-margin', '0px');
+    vars.set('--table-cell-padding', '0.2em');
+    vars.set('--code-text-color', dark ? '#E8EAED' : '#202124');
+    vars.set('--code-bg-color', dark ? '#2A2E33' : '#F1F3F4');
+    vars.set('--code-font-family', "Menlo, Monospace, 'Courier New'");
+    vars.set('--code-font-size', '0.9em');
+    vars.set('--table-row-even-bg', dark ? '#2A2E33' : '#F8F9FA');
+    return vars;
+  }
 
-    return `
-:root {
-    --font-family: ${familyCss};
-    --font-size: ${fontSize}px;
-    --line-height: ${lineSpacing};
-    --letter-spacing: ${letterSpacing}px;
-    --paragraph-gap: 1em;
-    --text-margin: ${pageMargin}px;
-    --text-color: ${textColor};
-    --text-bold: normal;
-    --text-align: ${readerAlignCss(textAlign)};
-    --bold-text-color: ${boldColor};
-    --link-text-color: ${linkColor};
-    --selection-text-color: ${textColor};
-    --selection-bg-color: ${selectionBg};
-    --subhead-bold: 600;
-    --subhead-upper-case: none;
-    --img-margin: 0px;
-    --img-border-radius: 8px;
-    --blockquote-margin: 20px;
-    --blockquote-bg-color: transparent;
-    --blockquote-border-width: 3px;
-    --blockquote-border-color: ${textColor}55;
-    --table-margin: 0px;
-    --table-cell-padding: 0.2em;
-    --code-text-color: ${codeColor};
-    --code-bg-color: ${codeBg};
-    --code-font-family: Menlo, Monospace, 'Courier New';
-    --code-font-size: 0.9em;
-}
+  static get(
+    dark: boolean, fontSize: number, fontFamily: string,
+    pageMargin: number, lineSpacing: number,
+    letterSpacing: number = 0.5, textAlign: number = 0
+  ): string {
+    const vars: Map<string, string> = WebViewStyle.variables(
+      dark, fontSize, fontFamily, pageMargin, lineSpacing, letterSpacing, textAlign
+    );
+    let root: string = ':root {\n';
+    vars.forEach((value: string, key: string): void => {
+      root += `    ${key}: ${value};\n`;
+    });
+    root += '}';
+    return root + `
 main { padding-bottom: 96px; }
 article {
     padding: 0;
@@ -197,7 +210,7 @@ table th, table td {
     text-align: var(--text-align) !important;
 }
 table tr { display: block; }
-table tr:nth-child(even) { background-color: ${dark ? '#2A2E33' : '#F8F9FA'} !important; }
+table tr:nth-child(even) { background-color: var(--table-row-even-bg) !important; }
 pre, code {
     color: var(--code-text-color) !important;
     background-color: var(--code-bg-color) !important;

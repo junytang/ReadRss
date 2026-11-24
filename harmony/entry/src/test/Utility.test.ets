@@ -189,6 +189,29 @@ export default function utilityTest(): void {
       expect(preview.indexOf('三级标题示例') >= 0).assertTrue();
     });
 
+    it('CSS variables are exposed for in-place preview updates', 0, () => {
+      const vars: Map<string, string> = WebViewStyle.variables(
+        false, 18, 'serif', 20, 2, 1.3, READ_ALIGN_END
+      );
+      expect(vars.get('--font-size') ?? '').assertEqual('18px');
+      expect(vars.get('--text-margin') ?? '').assertEqual('20px');
+      expect(vars.get('--letter-spacing') ?? '').assertEqual('1.3px');
+      expect(vars.get('--text-align') ?? '').assertEqual('end');
+      expect(vars.get('--line-height') ?? '').assertEqual('2');
+      expect(vars.get('--table-row-even-bg') ?? '').assertEqual('#F8F9FA');
+    });
+
+    it('applyVariables rewrites styles in place without reloading the document', 0, () => {
+      const vars: Map<string, string> = new Map<string, string>();
+      vars.set('--font-size', '20px');
+      vars.set('--font-family', '"serif", "HarmonyOS Sans SC", sans-serif');
+      const script: string = WebViewHtml.applyVariables(vars);
+      expect(script.indexOf('document.documentElement.style') >= 0).assertTrue();
+      expect(script.indexOf('setProperty') >= 0).assertTrue();
+      expect(script.indexOf('--font-size') >= 0).assertTrue();
+      expect(script.indexOf('loadData') >= 0).assertFalse();
+    });
+
     it('article title is larger than in-article headings and has top spacing', 0, () => {
       const css: string = WebViewStyle.get(false, 17, 'sans-serif', 16, 1.75);
       expect(css.indexOf('font-size: calc(var(--font-size) * 1.35) !important;') >= 0).assertTrue();
