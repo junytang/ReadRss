@@ -6,9 +6,11 @@ import { FULL_CONTENT_VERSION_MARKER } from './FullContentFetcher';
 /** Body used by the reader-style live preview. It is rendered through the very
  *  same build() pipeline as a real article, so the preview cannot drift. */
 const PREVIEW_BODY: string =
+  '<h1>一级标题示例</h1>' +
   '<p>第一段占位文字，用来实时预览正文字号、行距、字体、字符间距和对齐方式。调整下方设置，这里会按照实际全文阅读的样式立即变化。</p>' +
+  '<h2>二级标题示例</h2>' +
   '<p>第二段占位文字。全文阅读的正文会以设置的字号、页边距、行距和字符间距显示，段落之间保留一个字号的间距。</p>' +
-  '<h2>小标题示例</h2>' +
+  '<h3>三级标题示例</h3>' +
   '<p>第三段占位文字，用来观察两端对齐与字符间距在整段文字中的效果。</p>';
 
 /** Builds the reader HTML using the same template/CSS system as Android's WebViewHtml. */

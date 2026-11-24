@@ -42,13 +42,21 @@ export struct ReaderStyleView {
     this.previewHtml = this.buildPreviewHtml();
   }
 
+  /** Rebuild AND push. The original preview only pushed on controller attach,
+   *  so later setting changes regenerated the string but never reloaded the
+   *  WebView — which is why the preview appeared frozen. */
+  private refreshPreview(): void {
+    this.previewHtml = this.buildPreviewHtml();
+    this.pushPreviewHtml();
+  }
+
   onFontChanged(): void {
     this.fontKey = this.fontKeyProp;
-    this.previewHtml = this.buildPreviewHtml();
+    this.refreshPreview();
   }
 
   onPreviewChanged(): void {
-    this.previewHtml = this.buildPreviewHtml();
+    this.refreshPreview();
   }
 
   /** UI chrome follows the system-wide font selection. */
@@ -200,6 +208,7 @@ export struct ReaderStyleView {
                   .onChange((value: number) => {
                     this.bodySize = value;
                     settingsStore.setReaderBodyFontSize(value);
+                    this.refreshPreview();
                   })
                 Text(`${this.bodySize}`).fontSize(this.fs(13)).fontFamily(this.appFont()).fontColor(this.secondaryColor()).width(24)
               }
@@ -217,6 +226,7 @@ export struct ReaderStyleView {
                   .onChange((value: number) => {
                     this.pageMargin = value;
                     settingsStore.setReaderPageMargin(value);
+                    this.refreshPreview();
                   })
                 Text(`${this.pageMargin}`).fontSize(this.fs(13)).fontFamily(this.appFont()).fontColor(this.secondaryColor()).width(24)
               }
@@ -234,6 +244,7 @@ export struct ReaderStyleView {
                   .onChange((value: number) => {
                     this.lineSpacing = value;
                     settingsStore.setReaderLineSpacing(value);
+                    this.refreshPreview();
                   })
                 Text(this.lineSpacing.toFixed(2)).fontSize(this.fs(13)).fontFamily(this.appFont()).fontColor(this.secondaryColor()).width(32)
               }
@@ -251,6 +262,7 @@ export struct ReaderStyleView {
                   .onChange((value: number) => {
                     this.letterSpacing = value;
                     settingsStore.setReadingTextLetterSpacing(value);
+                    this.refreshPreview();
                   })
                 Text(`${this.letterSpacing.toFixed(1)}px`).fontSize(this.fs(13)).fontFamily(this.appFont()).fontColor(this.secondaryColor()).width(42)
               }
@@ -282,6 +294,7 @@ export struct ReaderStyleView {
                       .onClick(() => {
                         this.textAlign = value;
                         settingsStore.setReadingTextAlign(value);
+                        this.refreshPreview();
                       })
                   })
                 }

@@ -76,11 +76,18 @@ h1, h2, h3, h4, h5, h6 {
     color: var(--bold-text-color) !important;
     text-align: var(--text-align) !important;
 }
+/* Heading sizes must stay below the article title. The browser defaults
+   (h1=2em, h2=1.5em) made in-article subheadings larger than the title. */
+h1 { font-size: calc(var(--font-size) * 1.2) !important; }
+h2 { font-size: calc(var(--font-size) * 1.12) !important; }
+h3 { font-size: calc(var(--font-size) * 1.05) !important; }
+h4, h5, h6 { font-size: var(--font-size) !important; }
 /* Article title rendered above the body in the WebView. */
 h1.article-title {
-    font-size: calc(var(--font-size) * 1.2) !important;
+    font-size: calc(var(--font-size) * 1.35) !important;
     text-align: center !important;
-    margin-top: 0 !important;
+    /* Leave breathing room at the top instead of hugging the viewport edge. */
+    margin-top: 0.8em !important;
     margin-bottom: 1em !important;
 }
 p {

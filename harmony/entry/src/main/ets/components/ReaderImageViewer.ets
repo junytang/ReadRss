@@ -1,7 +1,12 @@
 import { image } from '@kit.ImageKit';
+import { fileIo as fs } from '@kit.CoreFileKit';
+import { http } from '@kit.NetworkKit';
+import { common } from '@kit.AbilityKit';
+import { photoAccessHelper } from '@kit.MediaLibraryKit';
 import { ArticleImageConverter } from '../common/ArticleImageConverter';
 import { Logger } from '../common/Logger';
 import { FontManager } from '../common/FontManager';
+import { ToastUtil } from '../common/ToastUtil';
 
 /** Maximum pinch magnification, matching Android's telephoto ZoomSpec(4f). */
 const MAX_ZOOM: number = 4;
@@ -82,6 +87,83 @@ export struct ReaderImageViewer {
     this.onClose();
   }
 
+  /** Long press downloads the image to the system gallery. The authorization
+   *  pop-up grants a temporary write URI, so no WRITE_IMAGEVIDEO permission is
+   *  needed (Android asks nothing either). */
+  private async saveToGallery(): Promise<void> {
+    const context: common.UIAbilityContext =
+      this.getUIContext().getHostContext() as common.UIAbilityContext;
+    let bytes: ArrayBuffer | undefined = undefined;
+    if (ArticleImageConverter.isVirtualUrl(this.url)) {
+      bytes = ArticleImageConverter.getBytes(ArticleImageConverter.keyFromUrl(this.url));
+    } else {
+      const request: http.HttpRequest = http.createHttp();
+      try {
+        const response: http.HttpResponse = await request.request(this.url, {
+          method: http.RequestMethod.GET,
+          expectDataType: http.HttpDataType.ARRAY_BUFFER,
+          connectTimeout: 15000,
+          readTimeout: 15000,
+        });
+        if (response.responseCode === 200) {
+          bytes = response.result as ArrayBuffer;
+        }
+      } catch (error) {
+        Logger.warn(`Fetch zoom image failed: ${(error as Error).message}`);
+      } finally {
+        request.destroy();
+      }
+    }
+    if (!bytes) {
+      ToastUtil.show(this.getUIContext(), '图片尚未加载完成');
+      return;
+    }
+
+    const sandboxPath: string = `${context.cacheDir}/readyou_zoom_${Date.now()}.jpg`;
+    try {
+      const file = fs.openSync(sandboxPath, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE);
+      try {
+        fs.truncateSync(file.fd, 0);
+        fs.writeSync(file.fd, bytes);
+      } finally {
+        fs.closeSync(file);
+      }
+      const helper: photoAccessHelper.PhotoAccessHelper = photoAccessHelper.getPhotoAccessHelper(context);
+      const configs: photoAccessHelper.PhotoCreationConfig[] = [{
+        title: 'ReadRss',
+        fileNameExtension: 'jpg',
+        photoType: photoAccessHelper.PhotoType.IMAGE,
+        subtype: photoAccessHelper.PhotoSubtype.DEFAULT,
+      }];
+      // User confirms in the system dialog; the returned URI is writable.
+      const targets: string[] = await helper.showAssetsCreationDialog([sandboxPath], configs);
+      if (targets.length === 0) {
+        return; // user cancelled
+      }
+      const source = await fs.open(sandboxPath, fs.OpenMode.READ_ONLY);
+      try {
+        const target = await fs.open(targets[0], fs.OpenMode.WRITE_ONLY);
+        try {
+          await fs.copyFile(source.fd, target.fd);
+        } finally {
+          await fs.close(target.fd);
+        }
+      } finally {
+        await fs.close(source.fd);
+      }
+      ToastUtil.show(this.getUIContext(), '已保存到图库');
+    } catch (error) {
+      Logger.error(`Save zoom image failed: ${(error as Error).message}`);
+      ToastUtil.show(this.getUIContext(), '保存失败');
+    } finally {
+      try {
+        fs.unlinkSync(sandboxPath);
+      } catch (error) {
+        // Best effort: temp file in cacheDir is harmless if removal fails.
+      }
+    }
+  }
+
   @Builder
   imageContent(): void {
     if (this.pixelMap) {
@@ -104,7 +186,7 @@ export struct ReaderImageViewer {
   build() {
     Column() {
       Row() {
-        Text('点击关闭 · 双指缩放').fontFamily(this.appFont())
+        Text('点击关闭 · 双指缩放 · 长按保存').fontFamily(this.appFont())
           .fontSize(this.fs(13))
           .fontColor('#E8EAED')
           .layoutWeight(1)
@@ -146,6 +228,9 @@ export struct ReaderImageViewer {
             this.offsetX = this.gestureOffsetX + event.offsetX;
             this.offsetY = this.gestureOffsetY + event.offsetY;
           })
+      )
+      .gesture(
+        LongPressGesture().onAction(() => { this.saveToGallery(); })
       )
     }
     .width('100%')

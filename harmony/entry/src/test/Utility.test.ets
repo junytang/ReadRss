@@ -184,7 +184,18 @@ export default function utilityTest(): void {
       expect(preview.indexOf('--letter-spacing: 1.2px;') >= 0).assertTrue();
       expect(preview.indexOf('--text-align: justify;') >= 0).assertTrue();
       expect(preview.indexOf('article-title') >= 0).assertTrue();
-      expect(preview.indexOf('小标题示例') >= 0).assertTrue();
+      expect(preview.indexOf('一级标题示例') >= 0).assertTrue();
+      expect(preview.indexOf('二级标题示例') >= 0).assertTrue();
+      expect(preview.indexOf('三级标题示例') >= 0).assertTrue();
+    });
+
+    it('article title is larger than in-article headings and has top spacing', 0, () => {
+      const css: string = WebViewStyle.get(false, 17, 'sans-serif', 16, 1.75);
+      expect(css.indexOf('font-size: calc(var(--font-size) * 1.35) !important;') >= 0).assertTrue();
+      expect(css.indexOf('h1 { font-size: calc(var(--font-size) * 1.2) !important; }') >= 0).assertTrue();
+      expect(css.indexOf('h2 { font-size: calc(var(--font-size) * 1.12) !important; }') >= 0).assertTrue();
+      expect(css.indexOf('h3 { font-size: calc(var(--font-size) * 1.05) !important; }') >= 0).assertTrue();
+      expect(css.indexOf('margin-top: 0.8em !important;') >= 0).assertTrue();
     });
   });
 
