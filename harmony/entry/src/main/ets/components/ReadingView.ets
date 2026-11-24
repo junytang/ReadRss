@@ -801,8 +801,15 @@ export struct ReadingView {
           referer: this.article?.link ?? '',
           onClose: (): void => { this.zoomImageUrl = ''; },
         })
+          // A custom component has no implicit size. Without an explicit
+          // 100%x100% on the component itself, its root Column's height('100%')
+          // resolves against a content-sized wrapper and the image area
+          // collapses / shifts instead of filling the screen.
+          .width('100%')
+          .height('100%')
       }
       }
+      .alignContent(Alignment.TopStart)
       .width('100%')
       .height('100%')
     }
