@@ -82,6 +82,9 @@ export interface AppSettings {
   readerPageMargin: number;
   readerLineSpacing: number;
   readerFontFamily: string;
+  // Android readingTextLetterSpacing / readingTextAlign.
+  readingTextLetterSpacing: number;
+  readingTextAlign: number;
   // System-wide text scale and font family.
   systemFontScale: number;
   systemFontFamily: string;
@@ -115,6 +118,8 @@ export function defaultSettings(): AppSettings {
     readerPageMargin: 16,
     readerLineSpacing: 1.75,
     readerFontFamily: 'sans-serif',
+    readingTextLetterSpacing: 0.5,
+    readingTextAlign: 0,
     systemFontScale: 1.0,
     systemFontFamily: 'sans-serif',
     customFontPath: '',

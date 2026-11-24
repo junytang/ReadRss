@@ -42,6 +42,35 @@ export const DESC_NONE: number = 0;
 export const DESC_SHORT: number = 1;
 export const DESC_LONG: number = 2;
 
+/** Reader body-text alignment (Android ReadingTextAlignPreference).
+ *  Values are persisted as integers, so keep them stable. */
+export const READ_ALIGN_START: number = 0;
+export const READ_ALIGN_END: number = 1;
+export const READ_ALIGN_CENTER: number = 2;
+export const READ_ALIGN_JUSTIFY: number = 3;
+export const READ_ALIGN_VALUES: number[] = [
+  READ_ALIGN_START, READ_ALIGN_END, READ_ALIGN_CENTER, READ_ALIGN_JUSTIFY,
+];
+
+/** Default letter spacing (Android ReadingTextLetterSpacingPreference: 0.5F). */
+export const READER_LETTER_SPACING_DEFAULT: number = 0.5;
+
+/** UI label for a reader alignment value. */
+export function readerAlignLabel(value: number): string {
+  if (value === READ_ALIGN_END) return '右对齐';
+  if (value === READ_ALIGN_CENTER) return '居中对齐';
+  if (value === READ_ALIGN_JUSTIFY) return '两端对齐';
+  return '左对齐';
+}
+
+/** CSS value injected into WebViewStyle's --text-align variable. */
+export function readerAlignCss(value: number): string {
+  if (value === READ_ALIGN_END) return 'end';
+  if (value === READ_ALIGN_CENTER) return 'center';
+  if (value === READ_ALIGN_JUSTIFY) return 'justify';
+  return 'start';
+}
+
 /** The list scope an article was opened from. Prev/next must follow the same
  *  feed/group/filter/search as the visible list, not just the article's feed. */
 export interface ArticleScope {

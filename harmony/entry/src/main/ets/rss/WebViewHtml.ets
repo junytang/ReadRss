@@ -72,6 +72,25 @@ function setupImages() {
     });
 }
 setupImages();
+// Tap an image (not part of a link) to open the native full-screen viewer.
+// The bridge method is optional so the settings preview, which uses the same
+// HTML/CSS pipeline but registers no bridge, is unaffected.
+function setupImageClicks() {
+    var images = document.querySelectorAll("article img");
+    images.forEach(function(img) {
+        if (img.getAttribute("data-ry-zoom")) return;
+        img.setAttribute("data-ry-zoom", "1");
+        img.style.cursor = "zoom-in";
+        img.addEventListener("click", function(ev) {
+            if (img.closest && img.closest("a")) return;
+            ev.preventDefault();
+            if (window.readYouBridge && window.readYouBridge.onImageClick) {
+                try { window.readYouBridge.onImageClick(img.currentSrc || img.src); } catch (e) {}
+            }
+        });
+    });
+}
+setupImageClicks();
 window.addEventListener("scroll", setupImages);
 // The reader HTML is injected as a whole, so every <img> already exists when
 // this script runs; the old setInterval(setupImages, 800) just re-scanned all
@@ -79,7 +98,7 @@ window.addEventListener("scroll", setupImages);
 // Watch for genuine DOM changes instead (e.g. dynamically inserted images) and
 // drop the permanent 800ms wake-up.
 if (window.MutationObserver) {
-  var imgObserver = new MutationObserver(function() { setupImages(); });
+  var imgObserver = new MutationObserver(function() { setupImages(); setupImageClicks(); });
   imgObserver.observe(document.body, { childList: true, subtree: true });
 }`;
 

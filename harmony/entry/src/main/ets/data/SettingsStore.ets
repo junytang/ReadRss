@@ -40,6 +40,9 @@ class ReadYouSettingsStore {
       readerPageMargin: await this.readInt('readerPageMargin', this.cache.readerPageMargin),
       readerLineSpacing: await this.readInt('readerLineSpacing', this.cache.readerLineSpacing),
       readerFontFamily: await this.readString('readerFontFamily', this.cache.readerFontFamily),
+      readingTextLetterSpacing: await this.readNumber(
+        'readingTextLetterSpacing', this.cache.readingTextLetterSpacing),
+      readingTextAlign: await this.readInt('readingTextAlign', this.cache.readingTextAlign),
       systemFontScale: await this.readInt('systemFontScale', this.cache.systemFontScale),
       systemFontFamily: await this.readString('systemFontFamily', this.cache.systemFontFamily),
       customFontPath: await this.readString('customFontPath', this.cache.customFontPath),
@@ -70,6 +73,12 @@ class ReadYouSettingsStore {
       Logger.warn(`Read setting ${key} failed: ${(error as Error).message}`);
       return fallback;
     }
+  }
+
+  /** Float-valued settings (letter spacing) share the Preferences number type
+   *  with ints; this alias keeps intent clear at the call site. */
+  private async readNumber(key: string, fallback: number): Promise<number> {
+    return await this.readInt(key, fallback);
   }
 
   private async readString(key: string, fallback: string): Promise<string> {
@@ -105,6 +114,8 @@ class ReadYouSettingsStore {
     AppStorage.setOrCreate<number>('readerPageMargin', this.cache.readerPageMargin);
     AppStorage.setOrCreate<number>('readerLineSpacing', this.cache.readerLineSpacing);
     AppStorage.setOrCreate<string>('readerFontFamily', this.cache.readerFontFamily);
+    AppStorage.setOrCreate<number>('readingTextLetterSpacing', this.cache.readingTextLetterSpacing);
+    AppStorage.setOrCreate<number>('readingTextAlign', this.cache.readingTextAlign);
     AppStorage.setOrCreate<number>('fontScale', this.cache.systemFontScale);
     AppStorage.setOrCreate<string>('systemFontFamily', this.cache.systemFontFamily);
     // Publish every setting that any page binds to, so AppStorage is always the
@@ -322,6 +333,19 @@ class ReadYouSettingsStore {
       this.cache.readerLineSpacing = v;
       AppStorage.setOrCreate<number>('readerLineSpacing', v);
     });
+  }
+
+  async setReadingTextLetterSpacing(value: number): Promise<void> {
+    await this.setNumber('readingTextLetterSpacing', value, (v: number) => {
+      this.cache.readingTextLetterSpacing = v;
+      AppStorage.setOrCreate<number>('readingTextLetterSpacing', v);
+    });
+  }
+
+  async setReadingTextAlign(value: number): Promise<void> {
+    this.cache.readingTextAlign = value;
+    AppStorage.setOrCreate<number>('readingTextAlign', value);
+    await this.write('readingTextAlign', value);
   }
 
   async setReaderFontFamily(value: string): Promise<void> {

@@ -7,7 +7,12 @@ import { Article, Feed, filterFeedsByDrawer, defaultSettings } from '../main/ets
 import { RemoteCredentials, emptyCredentials } from '../main/ets/account/AccountModels';
 import { FULL_CONTENT_VERSION_MARKER } from '../main/ets/rss/FullContentFetcher';
 import { WebViewHtml } from '../main/ets/rss/WebViewHtml';
-import { FILTER_UNREAD, FILTER_STARRED, FILTER_ALL } from '../main/ets/common/Constants';
+import { WebViewStyle } from '../main/ets/rss/WebViewStyle';
+import {
+  FILTER_UNREAD, FILTER_STARRED, FILTER_ALL,
+  READ_ALIGN_START, READ_ALIGN_END, READ_ALIGN_CENTER, READ_ALIGN_JUSTIFY,
+  readerAlignCss, readerAlignLabel,
+} from '../main/ets/common/Constants';
 
 function makeArticle(o: Partial<Article>): Article {
   const a: Article = {
@@ -142,6 +147,47 @@ export default function utilityTest(): void {
     });
   });
 
+  describe('Reader typography settings', () => {
+    it('alignment values map to CSS and UI labels', 0, () => {
+      expect(readerAlignCss(READ_ALIGN_START)).assertEqual('start');
+      expect(readerAlignCss(READ_ALIGN_END)).assertEqual('end');
+      expect(readerAlignCss(READ_ALIGN_CENTER)).assertEqual('center');
+      expect(readerAlignCss(READ_ALIGN_JUSTIFY)).assertEqual('justify');
+      expect(readerAlignLabel(READ_ALIGN_JUSTIFY)).assertEqual('两端对齐');
+      // Unknown values fall back to the default rather than emitting bad CSS.
+      expect(readerAlignCss(99)).assertEqual('start');
+    });
+
+    it('WebViewStyle uses letter spacing and alignment arguments', 0, () => {
+      const css: string = WebViewStyle.get(false, 17, 'sans-serif', 16, 1.75, 1.2, 3);
+      expect(css.indexOf('--letter-spacing: 1.2px;') >= 0).assertTrue();
+      expect(css.indexOf('--text-align: justify;') >= 0).assertTrue();
+      const defaults: string = WebViewStyle.get(false, 17, 'sans-serif', 16, 1.75);
+      expect(defaults.indexOf('--letter-spacing: 0.5px;') >= 0).assertTrue();
+      expect(defaults.indexOf('--text-align: start;') >= 0).assertTrue();
+      expect(defaults.indexOf('--letter-spacing: 0px;') >= 0).assertFalse();
+    });
+
+    it('HtmlBuilder passes typography through to the generated CSS', 0, () => {
+      const html: string = HtmlBuilder.build(
+        makeArticle({ content: 'BODY' }), false, 16, 16, 1.5,
+        'sans-serif', 2, READ_ALIGN_CENTER
+      );
+      expect(html.indexOf('--letter-spacing: 2px;') >= 0).assertTrue();
+      expect(html.indexOf('--text-align: center;') >= 0).assertTrue();
+    });
+
+    it('settings preview is rendered by the same HtmlBuilder pipeline', 0, () => {
+      const preview: string = HtmlBuilder.buildPreview(
+        false, 17, 16, 1.75, 'sans-serif', 1.2, READ_ALIGN_JUSTIFY
+      );
+      expect(preview.indexOf('--letter-spacing: 1.2px;') >= 0).assertTrue();
+      expect(preview.indexOf('--text-align: justify;') >= 0).assertTrue();
+      expect(preview.indexOf('article-title') >= 0).assertTrue();
+      expect(preview.indexOf('小标题示例') >= 0).assertTrue();
+    });
+  });
+
   describe('FeverApi.decodeHtml', () => {
     it('decodes entities in plain text', 0, () => {
       expect(FeverApi.decodeHtml('<p>A &amp; B</p>')).assertEqual('A & B');
@@ -165,6 +211,8 @@ export default function utilityTest(): void {
       const s = defaultSettings();
       expect(s.markReadOnScroll).assertFalse();
       expect(s.fetchBatchSize).assertEqual(100);
+      expect(s.readingTextLetterSpacing).assertEqual(0.5);
+      expect(s.readingTextAlign).assertEqual(READ_ALIGN_START);
     });
   });
 
@@ -193,6 +241,13 @@ export default function utilityTest(): void {
       expect(WebViewHtml.SCRIPT.indexOf('MutationObserver') >= 0).assertTrue();
       expect(WebViewHtml.SCRIPT.indexOf('document.fonts.ready') >= 0).assertTrue();
       expect(WebViewHtml.SCRIPT.indexOf('readYouBridge') >= 0).assertTrue();
+    });
+
+    it('body script wires image taps to the native zoom viewer', 0, () => {
+      expect(WebViewHtml.SCRIPT.indexOf('onImageClick') >= 0).assertTrue();
+      expect(WebViewHtml.SCRIPT.indexOf('data-ry-zoom') >= 0).assertTrue();
+      // Linked images must keep their link behaviour instead of zooming.
+      expect(WebViewHtml.SCRIPT.indexOf('closest("a")') >= 0).assertTrue();
     });
   });
 }

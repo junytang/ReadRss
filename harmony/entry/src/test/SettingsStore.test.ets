@@ -75,6 +75,20 @@ export default function settingsStoreTest(): void {
       expect(AppStorage.get<string>('readerFontFamily') ?? '').assertEqual('serif');
       await settingsStore.setReaderFontFamily('sans-serif');
     });
+
+    it('setReadingTextLetterSpacing updates cache and AppStorage', 0, async () => {
+      await settingsStore.setReadingTextLetterSpacing(1.3);
+      expect(settingsStore.get().readingTextLetterSpacing).assertEqual(1.3);
+      expect(AppStorage.get<number>('readingTextLetterSpacing') ?? 0).assertEqual(1.3);
+      await settingsStore.setReadingTextLetterSpacing(0.5);
+    });
+
+    it('setReadingTextAlign updates cache and AppStorage', 0, async () => {
+      await settingsStore.setReadingTextAlign(3);
+      expect(settingsStore.get().readingTextAlign).assertEqual(3);
+      expect(AppStorage.get<number>('readingTextAlign') ?? -1).assertEqual(3);
+      await settingsStore.setReadingTextAlign(0);
+    });
   });
 
   describe('SettingsStore persistence with injected prefs', () => {
@@ -94,6 +108,21 @@ export default function settingsStoreTest(): void {
       expect(fake.data.get('customFontPath') as string).assertEqual('/tmp/font.ttf');
       expect(fake.data.get('customFontName') as string).assertEqual('MyFont');
       (settingsStore as object as PrefField).pref = undefined;
+    });
+
+    it('letter spacing and align persist to preferences', 0, async () => {
+      const fake: FakePref = new FakePref();
+      (settingsStore as object as PrefField).pref = fake as object;
+      await settingsStore.setReadingTextLetterSpacing(2.2);
+      await settingsStore.setReadingTextAlign(2);
+      // Letter spacing is debounced; align writes immediately.
+      await new Promise<void>((resolve: () => void) => { setTimeout(resolve, 260); });
+      expect(fake.data.get('readingTextLetterSpacing') as number).assertEqual(2.2);
+      expect(fake.data.get('readingTextAlign') as number).assertEqual(2);
+      (settingsStore as object as PrefField).pref = undefined;
+      await settingsStore.setReadingTextLetterSpacing(0.5);
+      await settingsStore.setReadingTextAlign(0);
+      await new Promise<void>((resolve: () => void) => { setTimeout(resolve, 260); });
     });
   });
 }

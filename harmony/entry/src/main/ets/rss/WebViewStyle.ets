@@ -1,8 +1,11 @@
+import { readerAlignCss } from '../common/Constants';
+
 /** ArkTS port of Android's WebViewStyle.get() CSS variable system. */
 export class WebViewStyle {
   static get(
     dark: boolean, fontSize: number, fontFamily: string,
-    pageMargin: number, lineSpacing: number
+    pageMargin: number, lineSpacing: number,
+    letterSpacing: number = 0.5, textAlign: number = 0
   ): string {
     const textColor: string = dark ? '#E8EAED' : '#191C1E';
     const boldColor: string = dark ? '#FFFFFF' : '#111417';
@@ -23,12 +26,12 @@ export class WebViewStyle {
     --font-family: ${familyCss};
     --font-size: ${fontSize}px;
     --line-height: ${lineSpacing};
-    --letter-spacing: 0px;
+    --letter-spacing: ${letterSpacing}px;
     --paragraph-gap: 1em;
     --text-margin: ${pageMargin}px;
     --text-color: ${textColor};
     --text-bold: normal;
-    --text-align: left;
+    --text-align: ${readerAlignCss(textAlign)};
     --bold-text-color: ${boldColor};
     --link-text-color: ${linkColor};
     --selection-text-color: ${textColor};

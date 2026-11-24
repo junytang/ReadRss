@@ -14,9 +14,10 @@ import { Logger } from '../common/Logger';
 import { FontManager } from '../common/FontManager';
 import { FeedIcon } from '../common/FeedIcon';
 import { ArticleImageConverter } from '../common/ArticleImageConverter';
-import { ReaderFont } from '../common/ReaderFont';
+import { ReaderWebSupport } from '../common/ReaderWebSupport';
 import { readStatusStore } from '../rss/ReadStatusStore';
 import { ToastUtil } from '../common/ToastUtil';
+import { ReaderImageViewer } from './ReaderImageViewer';
 
 /** Minimum vertical pull (vp) at a scroll edge that switches articles. Applies
  *  to both pull-down (previous) and pull-up (next). Large enough that ordinary
@@ -31,13 +32,18 @@ const PULL_HINT_LIFT: number = 24;
  *  guessing from getPageHeight()/yOffset, which could mark mid-article as the
  *  bottom and make a normal scroll switch articles. A class (not an interface
  *  literal) is required so ArkTS accepts it as a JS bridge target. */
-class ScrollBoundaryHandler {
+class ReaderBridgeHandler {
   private readonly onBoundary: (atTop: boolean, atBottom: boolean) => void;
   private readonly onReady: () => void;
+  private readonly onImage: (url: string) => void;
 
-  constructor(callback: (atTop: boolean, atBottom: boolean) => void, onReady: () => void) {
+  constructor(
+    callback: (atTop: boolean, atBottom: boolean) => void, onReady: () => void,
+    onImage: (url: string) => void
+  ) {
     this.onBoundary = callback;
     this.onReady = onReady;
+    this.onImage = onImage;
   }
 
   onScrollBoundary(atTop: boolean, atBottom: boolean): void {
@@ -47,6 +53,10 @@ class ScrollBoundaryHandler {
   /** Called by the page script once its document is rendered and visible. */
   onPageReady(): void {
     this.onReady();
+  }
+
+  onImageClick(url: string): void {
+    this.onImage(url);
   }
 }
 
@@ -69,6 +79,8 @@ export struct ReadingView {
   @StorageProp('readerPageMargin') @Watch('onStyleChanged') readerPageMargin: number = 16;
   @StorageProp('readerLineSpacing') @Watch('onStyleChanged') readerLineSpacing: number = 1.75;
   @StorageProp('readerFontFamily') @Watch('onStyleChanged') readerFontFamily: string = 'sans-serif';
+  @StorageProp('readingTextLetterSpacing') @Watch('onStyleChanged') letterSpacing: number = 0.5;
+  @StorageProp('readingTextAlign') @Watch('onStyleChanged') textAlign: number = 0;
   @State article: Article | undefined = undefined;
   @State html: string = '';
   @State isStarred: boolean = false;
@@ -88,13 +100,19 @@ export struct ReadingView {
   private atTopNow: boolean = true;
   private atBottomNow: boolean = false;
   private boundaryReported: boolean = false;
-  private boundaryBridge: ScrollBoundaryHandler = new ScrollBoundaryHandler(
+  @State zoomImageUrl: string = '';
+  private bridge: ReaderBridgeHandler = new ReaderBridgeHandler(
     (atTop: boolean, atBottom: boolean): void => {
       this.boundaryReported = true;
       this.atTopNow = atTop;
       this.atBottomNow = atBottom;
     },
-    (): void => this.onPageRendered()
+    (): void => this.onPageRendered(),
+    (url: string): void => {
+      if (url.length > 0) {
+        this.zoomImageUrl = url;
+      }
+    }
   );
   private pullStartY: number = 0;
   private lastPullY: number = 0;
@@ -438,15 +456,8 @@ export struct ReadingView {
    *  a single fixed virtual URL intercepted by onInterceptRequest; the response
    *  carries CORS + long-lived cache headers so ArkWeb keeps only one copy. */
   private customFontCss(): string {
-    if (this.readerFontFamily !== 'custom') {
-      return '';
-    }
-    const path: string = settingsStore.get().customFontPath;
-    if (!ReaderFont.exists(path)) {
-      return '';
-    }
-    return `@font-face { font-family: 'ReadYouCustom'; ` +
-      `src: url('${ReaderFont.virtualUrl(path)}') format('truetype'); }`;
+    // Shared with the live preview so both surfaces load the same font CSS.
+    return ReaderWebSupport.fontCss(this.readerFontFamily, settingsStore.get().customFontPath);
   }
 
   private async buildHtml(article: Article): Promise<string> {
@@ -457,6 +468,8 @@ export struct ReadingView {
       this.readerPageMargin,
       this.readerLineSpacing,
       FontManager.familyFor(this.readerFontFamily),
+      this.letterSpacing,
+      this.textAlign,
       this.customFontCss()
     );
     return await ArticleImageConverter.convertAvif(built);
@@ -571,6 +584,7 @@ export struct ReadingView {
 
   build() {
     NavDestination() {
+      Stack() {
       Column() {
         Column() {
           Row() {
@@ -671,7 +685,7 @@ export struct ReadingView {
                   'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36'
                 );
                 this.controller.registerJavaScriptProxy(
-                  this.boundaryBridge, 'readYouBridge', ['onScrollBoundary', 'onPageReady']
+                  this.bridge, 'readYouBridge', ['onScrollBoundary', 'onPageReady', 'onImageClick']
                 );
                 // Mark attached BEFORE pushHtml so the pending HTML (possibly
                 // rendered while the controller was not ready) finally loads.
@@ -699,10 +713,10 @@ export struct ReadingView {
                   return response;
                 }
               }
-              if (ReaderFont.isVirtualUrl(url)) {
+              if (ReaderWebSupport.isFontUrl(url)) {
                 // Read on demand instead of keeping a 22MB buffer resident.
                 const bytes: ArrayBuffer | undefined =
-                  ReaderFont.load(settingsStore.get().customFontPath);
+                  ReaderWebSupport.fontBytes(url, settingsStore.get().customFontPath);
                 if (bytes) {
                   const response: WebResourceResponse = new WebResourceResponse();
                   response.setResponseData(bytes);
@@ -778,6 +792,18 @@ export struct ReadingView {
       .width('100%')
       .height('100%')
       .backgroundColor(this.darkMode ? '#15171A' : '#FFFFFF')
+
+      // Full-screen image viewer is above the article; taps and pinch gestures
+      // never reach the WebView while it is shown.
+      if (this.zoomImageUrl.length > 0) {
+        ReaderImageViewer({
+          url: this.zoomImageUrl,
+          onClose: (): void => { this.zoomImageUrl = ''; },
+        })
+      }
+      }
+      .width('100%')
+      .height('100%')
     }
     .hideTitleBar(true)
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])

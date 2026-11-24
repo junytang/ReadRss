@@ -3,11 +3,36 @@ import { WebViewStyle } from './WebViewStyle';
 import { WebViewHtml } from './WebViewHtml';
 import { FULL_CONTENT_VERSION_MARKER } from './FullContentFetcher';
 
+/** Body used by the reader-style live preview. It is rendered through the very
+ *  same build() pipeline as a real article, so the preview cannot drift. */
+const PREVIEW_BODY: string =
+  '<p>第一段占位文字，用来实时预览正文字号、行距、字体、字符间距和对齐方式。调整下方设置，这里会按照实际全文阅读的样式立即变化。</p>' +
+  '<p>第二段占位文字。全文阅读的正文会以设置的字号、页边距、行距和字符间距显示，段落之间保留一个字号的间距。</p>' +
+  '<h2>小标题示例</h2>' +
+  '<p>第三段占位文字，用来观察两端对齐与字符间距在整段文字中的效果。</p>';
+
 /** Builds the reader HTML using the same template/CSS system as Android's WebViewHtml. */
 export class HtmlBuilder {
+  /** Sample article for the settings preview — identical code path to build(). */
+  static buildPreview(
+    dark: boolean, fontSize: number, pageMargin: number, lineSpacing: number,
+    fontFamily: string, letterSpacing: number, textAlign: number, extraCss: string = ''
+  ): string {
+    const sample: Article = {
+      id: 'preview', feedId: '', feedTitle: '', title: '预览标题', author: '',
+      link: '', summary: '', content: PREVIEW_BODY, fullContent: '', imageUrl: '',
+      publishedAt: 0, isRead: true, isStarred: false,
+    };
+    return HtmlBuilder.build(
+      sample, dark, fontSize, pageMargin, lineSpacing, fontFamily,
+      letterSpacing, textAlign, extraCss
+    );
+  }
+
   static build(
     article: Article, dark: boolean, fontSize: number, pageMargin: number,
-    lineSpacing: number, fontFamily: string, extraCss: string = ''
+    lineSpacing: number, fontFamily: string,
+    letterSpacing: number = 0.5, textAlign: number = 0, extraCss: string = ''
   ): string {
     // Android only renders the article body; title/time are native UI.
     // A fullContent that is only the version marker means extraction failed
@@ -32,7 +57,7 @@ export class HtmlBuilder {
     body = body.replace(/(["'])(\/\/[^"']+)\1/g, '$1https:$2$1');
 
     const style: string = WebViewStyle.get(
-      dark, fontSize, fontFamily, pageMargin, lineSpacing
+      dark, fontSize, fontFamily, pageMargin, lineSpacing, letterSpacing, textAlign
     ) + extraCss;
     const baseHref: string = article.link.length > 0
       ? HtmlBuilder.escape(article.link)
