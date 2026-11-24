@@ -187,7 +187,7 @@ export struct ReaderStyleView {
             .domStorageAccess(true)
             .fileAccess(true)
             .width('100%')
-            .height(200)
+            .height(300)
             .backgroundColor(this.darkMode ? '#15171A' : '#FFFFFF')
             .borderRadius(10)
             .onControllerAttached(() => {

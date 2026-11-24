@@ -217,6 +217,25 @@ export class XmlParser {
     return out;
   }
 
+  /** Some sources (notably this FreshRSS instance) store fullwidth ASCII in
+   *  feed titles, e.g. "https:／／example.com／feed" (U+FF0F). Normalise the
+   *  fullwidth ASCII range U+FF01..U+FF5E (and ideographic space) so drawer
+   *  labels are readable URLs. */
+  static normalizeFullWidth(value: string): string {
+    let out: string = '';
+    for (let i = 0; i < value.length; i++) {
+      const code: number = value.charCodeAt(i);
+      if (code >= 0xFF01 && code <= 0xFF5E) {
+        out += String.fromCharCode(code - 0xFEE0);
+      } else if (code === 0x3000) {
+        out += ' ';
+      } else {
+        out += value.charAt(i);
+      }
+    }
+    return out;
+  }
+
   // --------------------------- traversal helpers ---------------------------
 
   static localName(name: string): string {

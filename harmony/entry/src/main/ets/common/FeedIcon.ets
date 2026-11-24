@@ -15,7 +15,14 @@ export class FeedIcon {
     if (iconUrl.startsWith('data:')) {
       return iconUrl;
     }
-    // Fever stores the raw base64 favicon payload.
+    // Fever returns a data-URI body WITHOUT the "data:" prefix, e.g.
+    // "image/png;base64,R0lGODlh..." (Android matches ^image/.*;base64,.*).
+    // Keep its real MIME type instead of forcing PNG on every icon.
+    const mimeMatch: Array<string> | null = iconUrl.match(/^image\/[^;,]+;base64,/i);
+    if (mimeMatch !== null) {
+      return `data:${iconUrl}`;
+    }
+    // Fallback for a raw base64 payload without a MIME header.
     return `data:image/png;base64,${iconUrl}`;
   }
 

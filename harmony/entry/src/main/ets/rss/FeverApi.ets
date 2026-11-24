@@ -17,7 +17,7 @@ interface FeverCommon {
 
 export interface FeverFeed {
   id: number;
-  favicon_id?: number;
+  favicon_id?: number | string;
   title?: string;
   url?: string;
   site_url?: string;
@@ -38,7 +38,7 @@ export interface FeverGroupMapping {
   group_id: number;
   feed_ids: string;
 }
-export interface FeverFavicon { id: number; data?: string }
+export interface FeverFavicon { id: number | string; data?: string }
 interface FaviconsBody extends FeverCommon {
   favicons?: FeverFavicon[];
 }

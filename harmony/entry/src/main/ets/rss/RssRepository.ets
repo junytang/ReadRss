@@ -76,8 +76,11 @@ class FeedRepository {
     lightweight: boolean = false
   ): Promise<Article[]> {
     const account: Account = await this.activeAccount();
+    // Include pending local read/star changes in the WHERE clause so a just
+    // starred article shows up in the starred tab before the delayed DB commit.
     return database.listArticles(
-      account.id, feedId, filter, limit, groupId, sortAscending, searchContent, lightweight
+      account.id, feedId, filter, limit, groupId, sortAscending, searchContent, lightweight,
+      readStatusStore.pendingFilterIds()
     );
   }
 

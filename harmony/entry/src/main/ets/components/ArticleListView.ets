@@ -198,7 +198,9 @@ export struct ArticleListView {
     const scopedUnreadDelta: number =
       readStatusStore.unreadDelta(this.currentFeedId, this.currentGroupId, false);
     this.unreadCount = Math.max(0, scoped.unread + scopedUnreadDelta);
-    this.starredCount = scoped.starred + readStatusStore.starredDelta('');
+    // Scope the delta to the current feed, like the DB aggregate above; using
+    // '' inflated every other feed's starred count after one local star.
+    this.starredCount = scoped.starred + readStatusStore.starredDelta(this.currentFeedId);
     this.allCount = scoped.total;
     // Global totals for the drawer top row, never scoped by feed/group.
     const global: ArticleCounts = await rssRepository.articleCounts();

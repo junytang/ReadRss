@@ -127,9 +127,15 @@ export class GoogleReaderApi {
       accountType: 'HOSTED_OR_GOOGLE',
       service: 'reader',
     };
-    const text: string = await this.rawRequest(
-      url, http.RequestMethod.POST, this.formBody(form, false), FORM_CONTENT_TYPE
-    );
+    let text: string = '';
+    try {
+      text = await this.rawRequest(
+        url, http.RequestMethod.POST, this.formBody(form, false), FORM_CONTENT_TYPE
+      );
+    } catch (error) {
+      Logger.error(`ClientLogin failed for ${this.serverUrl}: ${(error as Error).message}`);
+      throw error as Error;
+    }
     let token: string = '';
     try {
       const json: ApiParams = JSON.parse(text) as ApiParams;
@@ -146,13 +152,24 @@ export class GoogleReaderApi {
       throw new Error('Unable to obtain ClientLogin token');
     }
     this.loginToken = token;
-    // The token endpoint itself requires the ClientLogin auth header.
-    const tokenText: string = await this.rawRequest(
-      `${this.serverUrl}reader/api/0/token`, http.RequestMethod.GET, '', '',
-      `GoogleLogin auth=${this.loginToken}`
-    );
-    // Android accepts an empty action token and still sends T= (see GoogleReaderAPI.kt:144-150).
-    this.actionToken = tokenText.trim();
+    // The action token is optional. Android deliberately ignores failures from
+    // this endpoint (GoogleReaderAPI.kt:144-150) and still sends T= empty;
+    // FreshRSS greader.php can reject it. Treating it as fatal made otherwise
+    // valid credentials fail on refresh with "Invalid credentials".
+    let actionToken: string = '';
+    try {
+      const tokenText: string = await this.rawRequest(
+        `${this.serverUrl}reader/api/0/token`, http.RequestMethod.GET, '', '',
+        `GoogleLogin auth=${this.loginToken}`
+      );
+      actionToken = tokenText.trim();
+    } catch (error) {
+      Logger.warn(`Action token unavailable, continuing with empty T: ${(error as Error).message}`);
+      // rawRequest clears auth on 401; the ClientLogin token itself is still
+      // valid, so restore it for the real API requests.
+      this.loginToken = token;
+    }
+    this.actionToken = actionToken;
     await gReaderTokenStore.save(this.serverUrl, this.username, this.loginToken, this.actionToken);
   }
 
@@ -174,17 +191,24 @@ export class GoogleReaderApi {
     return this.loginToken.length > 0;
   }
 
+  /** Like Android's GoogleReaderAPI.validCredentials(): always perform a real
+   *  ClientLogin. Trusting a cached token here made adding an account appear to
+   *  succeed with a stale/wrong token, but the first real request (refresh)
+   *  then failed with "Invalid credentials". */
   async validCredentials(): Promise<boolean> {
-    await this.loadTokens();
-    if (this.hasAuth()) {
-      return true;
-    }
     try {
       await this.reAuthenticate();
       return true;
     } catch (error) {
+      Logger.error(`validCredentials failed for ${this.serverUrl}: ${(error as Error).message}`);
       return false;
     }
+  }
+
+  /** Sync uses the cached token when present and re-authenticates on 401 via
+   *  withRetry, matching Android's refreshCredentialsIfNeeded(). */
+  async ensureAuthIfNeeded(): Promise<void> {
+    await this.ensureAuth();
   }
 
   // ---------------------------- HTTP plumbing -----------------------------

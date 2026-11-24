@@ -92,10 +92,12 @@ export class FeverSyncService implements FeedSyncService {
         keepGroupIds.push(groupId);
       }
 
-      const iconMap: Map<number, string> = new Map<number, string>();
+      // Fever JSON may encode ids as numbers or strings; use string keys so
+      // favicon_id lookups never miss because of a type mismatch.
+      const iconMap: Map<string, string> = new Map<string, string>();
       for (const icon of faviconsBody.favicons ?? []) {
         if (icon.data !== undefined && icon.data !== null) {
-          iconMap.set(icon.id, icon.data);
+          iconMap.set(String(icon.id), icon.data);
         }
       }
       const feedTitles: Map<string, string> = new Map<string, string>();
@@ -121,7 +123,7 @@ export class FeverSyncService implements FeedSyncService {
         const groupId: string = dbId(account.id, remoteGroup.toString());
         const title: string = FeverApi.decodeHtml(feed.title) || 'Empty';
         const favicon: string = feed.favicon_id !== undefined && feed.favicon_id !== null
-          ? iconMap.get(feed.favicon_id) ?? ''
+          ? iconMap.get(String(feed.favicon_id)) ?? ''
           : '';
         const local: Feed = {
           id: dbId(account.id, feed.id.toString()),

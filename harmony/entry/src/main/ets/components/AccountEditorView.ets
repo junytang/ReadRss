@@ -120,7 +120,12 @@ export struct AccountEditorView {
         try {
           const valid: boolean = await syncServiceFor(added).validCredentials(added);
           if (!valid) {
-            throw new Error('Unauthorized');
+            // FreshRSS needs its dedicated API password (Settings > API
+            // management), not the normal login password. Surface that hint
+            // instead of a bare "Unauthorized".
+            throw new Error(this.type === AccountType.FRESH_RSS
+              ? '验证失败：请填写 FreshRSS 的 API 密码（设置 > API 管理中重置），不是登录密码'
+              : '验证失败：请检查服务器地址、用户名和密码');
           }
           // Android's doSyncOneTime() only enqueues background work and returns immediately.
           // Do not block the save flow on a potentially long first sync.

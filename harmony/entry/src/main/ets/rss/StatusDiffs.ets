@@ -27,6 +27,14 @@ export interface StarIdPartition {
   unstarredIds: string[];
 }
 
+/** Pending local changes grouped for the filtered article query. */
+export interface PendingFilterIds {
+  starredIds: string[];
+  unstarredIds: string[];
+  unreadIds: string[];
+  readIds: string[];
+}
+
 export class StatusDiffs {
   private readDiffs: Map<string, ReadDiff> = new Map<string, ReadDiff>();
   private starDiffs: Map<string, StarDiff> = new Map<string, StarDiff>();

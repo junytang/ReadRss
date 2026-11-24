@@ -3,7 +3,7 @@ import { fileIo as fs } from '@kit.CoreFileKit';
 import { buffer } from '@kit.ArkTS';
 import { rssRepository } from './RssRepository';
 import { pendingStatusRegistry } from './PendingStatusRegistry';
-import { StatusDiffs, ReadDiff, StarDiff, ReadIdPartition, StarIdPartition } from './StatusDiffs';
+import { StatusDiffs, ReadDiff, StarDiff, ReadIdPartition, StarIdPartition, PendingFilterIds } from './StatusDiffs';
 import { Article } from '../model/Models';
 import { Logger } from '../common/Logger';
 
@@ -150,6 +150,20 @@ class ReadStatusStore {
 
   hasPending(articleId: string): boolean {
     return this.diffs.hasRead(articleId) || this.diffs.hasStar(articleId);
+  }
+
+  /** Pending local changes for the filtered article query. The DB still holds
+   *  the old values until flush(), so the starred/unread WHERE clause must see
+   *  these ids or a just-starred article is invisible until a manual refresh. */
+  pendingFilterIds(): PendingFilterIds {
+    const star: StarIdPartition = this.diffs.starIdsByState();
+    const read: ReadIdPartition = this.diffs.readIdsByState();
+    return {
+      starredIds: star.starredIds,
+      unstarredIds: star.unstarredIds,
+      unreadIds: read.unreadIds,
+      readIds: read.readIds,
+    };
   }
 
   /** Number of ids waiting for a server-push retry (excluded from counts). */

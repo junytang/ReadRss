@@ -196,10 +196,10 @@ export class GoogleReaderSyncService implements FeedSyncService {
     const now: number = Date.now();
     beginSync();
     try {
-      const ok: boolean = await api.validCredentials();
-      if (!ok) {
-        throw new Error('Invalid credentials');
-      }
+      // Use cached tokens for sync and let 401 recovery re-authenticate; a
+      // fresh ClientLogin on every refresh is unnecessary and can be throttled
+      // by FreshRSS. Credential validity is checked when the account is added.
+      await api.ensureAuthIfNeeded();
 
       const isFreshRss: boolean = account.type === AccountType.FRESH_RSS;
       const since: number = Math.floor((now - 30 * 24 * 3600 * 1000) / 1000);
@@ -252,7 +252,7 @@ export class GoogleReaderSyncService implements FeedSyncService {
         }
         const feed: Feed = {
           id: dbId(account.id, feedIdFromStreamId(subscription.id)),
-          title: XmlParser.decode(subscription.title),
+          title: XmlParser.normalizeFullWidth(XmlParser.decode(subscription.title)),
           url: feedUrl,
           groupId: groupId,
           iconUrl: subscription.iconUrl ?? '',

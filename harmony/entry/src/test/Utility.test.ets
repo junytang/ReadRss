@@ -7,6 +7,8 @@ import { Article, Feed, filterFeedsByDrawer, defaultSettings } from '../main/ets
 import { RemoteCredentials, emptyCredentials } from '../main/ets/account/AccountModels';
 import { FULL_CONTENT_VERSION_MARKER } from '../main/ets/rss/FullContentFetcher';
 import { WebViewHtml } from '../main/ets/rss/WebViewHtml';
+import { XmlParser } from '../main/ets/rss/XmlParser';
+import { md5Hex } from '../main/ets/common/Md5';
 import { WebViewStyle } from '../main/ets/rss/WebViewStyle';
 import { fitImageSize } from '../main/ets/common/ImageFit';
 import {
@@ -63,6 +65,17 @@ export default function utilityTest(): void {
 
     it('base64 favicon gets data prefix', 0, () => {
       expect(FeedIcon.src('iVBORw0KGgo=')).assertEqual('data:image/png;base64,iVBORw0KGgo=');
+    });
+
+    it('Fever favicon keeps its real MIME type', 0, () => {
+      expect(FeedIcon.src('image/png;base64,iVBORw0KGgo='))
+        .assertEqual('data:image/png;base64,iVBORw0KGgo=');
+      expect(FeedIcon.src('image/gif;base64,R0lGODlh'))
+        .assertEqual('data:image/gif;base64,R0lGODlh');
+      expect(FeedIcon.src('image/svg+xml;base64,PHN2Zz4='))
+        .assertEqual('data:image/svg+xml;base64,PHN2Zz4=');
+      expect(FeedIcon.src('data:image/png;base64,AAA'))
+        .assertEqual('data:image/png;base64,AAA');
     });
   });
 
@@ -148,6 +161,18 @@ export default function utilityTest(): void {
     });
   });
 
+  describe('md5Hex (Fever api key)', () => {
+    it('matches RFC vectors', 0, () => {
+      expect(md5Hex('')).assertEqual('d41d8cd98f00b204e9800998ecf8427e');
+      expect(md5Hex('abc')).assertEqual('900150983cd24fb0d6963f7d28e17f72');
+    });
+
+    it('handles Fever credentials with UTF-8 characters', 0, () => {
+      expect(md5Hex('junytang:test')).assertEqual('82208dbfe59dea439002d662cae184c8');
+      expect(md5Hex('密码:123')).assertEqual('8bee4309e70e33252be9c5b73e56d15b');
+    });
+  });
+
   describe('ImageFit', () => {
     it('fits a wide image to the area width and keeps aspect ratio', 0, () => {
       const fitted = fitImageSize(400, 200, 300, 500);
@@ -167,6 +192,20 @@ export default function utilityTest(): void {
     it('returns zero size for invalid inputs', 0, () => {
       expect(fitImageSize(0, 100, 300, 300).width).assertEqual(0);
       expect(fitImageSize(100, 100, 0, 300).height).assertEqual(0);
+    });
+  });
+
+  describe('XmlParser.normalizeFullWidth', () => {
+    it('converts fullwidth slashes and colons in feed titles', 0, () => {
+      const title: string = 'https:／／www.buzzing.cc／lite／feed.xml';
+      expect(XmlParser.normalizeFullWidth(title))
+        .assertEqual('https://www.buzzing.cc/lite/feed.xml');
+    });
+
+    it('keeps normal titles and Chinese text unchanged', 0, () => {
+      expect(XmlParser.normalizeFullWidth('IT之家')).assertEqual('IT之家');
+      expect(XmlParser.normalizeFullWidth('https://sspai.com/feed'))
+        .assertEqual('https://sspai.com/feed');
     });
   });
 

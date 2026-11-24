@@ -4,6 +4,7 @@ import { DB_NAME } from '../common/Constants';
 import { Account, AccountType, EMPTY_SECURITY_KEY, isValidAccountType } from '../account/AccountModels';
 import { Article, ArticleNeighbors, Feed, FeedGroup } from '../model/Models';
 import { Logger } from '../common/Logger';
+import { PendingFilterIds } from '../rss/StatusDiffs';
 
 /** Unread / starred / total counts for one scope, read in a single query. */
 export interface ArticleCounts {
@@ -515,11 +516,30 @@ class ReadYouDatabase {
 
   // ------------------------------ articles --------------------------------
 
+  /** Extend a WHERE clause with pending local ids. negate=false appends an OR
+   *  (caller wraps it in parentheses); negate=true excludes locally-reverted
+   *  rows that the DB still reports as matching the filter. */
+  private appendPendingIds(
+    sql: string, args: Array<string | number>, ids: string[], negate: boolean
+  ): string {
+    if (ids.length === 0) {
+      return sql;
+    }
+    const marks: string[] = [];
+    for (const id of ids) {
+      marks.push('?');
+      args.push(id);
+    }
+    return sql + (negate
+      ? ` AND a.id NOT IN (${marks.join(',')})`
+      : ` OR a.id IN (${marks.join(',')})`);
+  }
+
   /** Android pullArticles: scope × filter, with optional ascending sort and search. */
   async listArticles(
     accountId: string, feedId: string, filter: string, limit: number,
     groupId?: string, sortAscending?: boolean, searchContent?: string,
-    lightweight: boolean = false
+    lightweight: boolean = false, pending?: PendingFilterIds
   ): Promise<Article[]> {
     // The article list only renders title/summary/metadata. Reading `content`
     // and `full_content` here would marshal every article's full HTML body into
@@ -538,9 +558,25 @@ class ReadYouDatabase {
       args.push(feedId);
     }
     if (filter === 'unread') {
-      sql += ' AND a.is_read = 0';
+      // Pending local changes must be visible before their delayed DB commit,
+      // otherwise the count (DB + delta) and the filtered list disagree.
+      sql += ' AND (a.is_read = 0';
+      if (pending) {
+        sql = this.appendPendingIds(sql, args, pending.unreadIds, false);
+      }
+      sql += ')';
+      if (pending) {
+        sql = this.appendPendingIds(sql, args, pending.readIds, true);
+      }
     } else if (filter === 'starred') {
-      sql += ' AND a.is_starred = 1';
+      sql += ' AND (a.is_starred = 1';
+      if (pending) {
+        sql = this.appendPendingIds(sql, args, pending.starredIds, false);
+      }
+      sql += ')';
+      if (pending) {
+        sql = this.appendPendingIds(sql, args, pending.unstarredIds, true);
+      }
     }
     if (groupId && groupId.length > 0) {
       sql += ' AND a.feed_id IN (SELECT id FROM feed WHERE group_id = ?)';

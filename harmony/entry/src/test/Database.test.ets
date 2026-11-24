@@ -2,6 +2,7 @@ import { describe, it, expect, MockKit, when } from '@ohos/hypium';
 import { database } from '../main/ets/data/Database';
 import { relationalStore } from '@kit.ArkData';
 import { Article } from '../main/ets/model/Models';
+import { PendingFilterIds } from '../main/ets/rss/StatusDiffs';
 
 interface DbAccess { db(): relationalStore.RdbStore; }
 interface FakeResultSet {
@@ -84,6 +85,36 @@ export default function databaseTest(): void {
       expect(capturedSql.indexOf('a.title LIKE ?') >= 0).assertTrue();
       expect(capturedSql.indexOf('ORDER BY a.published_at DESC, a.id DESC LIMIT ?') >= 0).assertTrue();
       expect(capturedArgs.length).assertEqual(7);
+      mock.clear(database);
+    });
+
+    it('listArticles includes pending local ids in starred/unread filters', 0, async () => {
+      const mock: MockKit = new MockKit();
+      let capturedSql: string = '';
+      let capturedArgs: Array<relationalStore.ValueType> = [];
+      const rs: relationalStore.ResultSet = new EmptyResultSet() as object as relationalStore.ResultSet;
+      const fakeStore: FakeStore = new FakeStore();
+      fakeStore.onQuery = (sql: string, args: Array<relationalStore.ValueType>): Promise<relationalStore.ResultSet> => {
+        capturedSql = sql;
+        capturedArgs = args;
+        return Promise.resolve(rs);
+      };
+      const dbMock = mock.mockPrivateFunc(database, 'db');
+      when(dbMock)().afterReturn(fakeStore as object as relationalStore.RdbStore);
+
+      const pending: PendingFilterIds = {
+        starredIds: ['acc1$newstar'], unstarredIds: ['acc1$oldstar'],
+        unreadIds: ['acc1$newunread'], readIds: ['acc1$oldread'],
+      };
+      await database.listArticles('acc1', '', 'starred', 30, '', false, '', true, pending);
+      expect(capturedSql.indexOf('a.is_starred = 1 OR a.id IN (?)') >= 0).assertTrue();
+      expect(capturedSql.indexOf('a.id NOT IN (?)') >= 0).assertTrue();
+      expect(capturedArgs.indexOf('acc1$newstar') >= 0).assertTrue();
+      expect(capturedArgs.indexOf('acc1$oldstar') >= 0).assertTrue();
+
+      await database.listArticles('acc1', '', 'unread', 30, '', false, '', true, pending);
+      expect(capturedSql.indexOf('a.is_read = 0 OR a.id IN (?)') >= 0).assertTrue();
+      expect(capturedArgs.indexOf('acc1$newunread') >= 0).assertTrue();
       mock.clear(database);
     });
 

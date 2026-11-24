@@ -2,6 +2,7 @@ import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import { buffer } from '@kit.ArkTS';
 import { SuppressWarnings, SuppressWarningsType } from '@kit.BasicServicesKit';
 import { Logger } from '../common/Logger';
+import { md5Hex } from '../common/Md5';
 
 /** Mirrors AccountType in the Android app (id values 1..6). */
 export enum AccountType {
@@ -112,12 +113,17 @@ function desKeyBytes(): Uint8Array {
 }
 
 function toBytes(text: string): Uint8Array {
-  return new Uint8Array(buffer.from(text, 'utf-8').buffer);
+  // Pass the Buffer itself (not its underlying ArrayBuffer): ArkWeb's Buffer can
+  // be a view with an offset, and new Uint8Array(buffer) then includes bytes
+  // outside the string, corrupting the plaintext passed to the cipher.
+  const buf = buffer.from(text, 'utf-8');
+  return new Uint8Array(buf.buffer, 0, buf.length);
 }
 
 function fromBytes(bytes: Uint8Array): string {
   try {
-    return buffer.from(bytes.buffer as ArrayBuffer, 0, bytes.byteLength).toString('utf-8');
+    // Same reason: build the Buffer from the view, not from its backing store.
+    return buffer.from(bytes).toString('utf-8');
   } catch (error) {
     Logger.warn(`Decode buffer failed: ${(error as Error).message}`);
     return '';
@@ -147,8 +153,7 @@ export class CredentialCodec {
       cipher.initSync(cryptoFramework.CryptoMode.ENCRYPT_MODE, CredentialCodec.key(), null);
       const encrypted: cryptoFramework.DataBlob =
         cipher.doFinalSync({ data: toBytes(JSON.stringify(credentials)) });
-      return buffer.from(encrypted.data.buffer as ArrayBuffer, 0, encrypted.data.byteLength)
-        .toString('base64');
+      return buffer.from(encrypted.data).toString('base64');
     } catch (error) {
       Logger.error(`Encode credentials failed: ${(error as Error).message}`);
       throw error as Error;
@@ -160,7 +165,8 @@ export class CredentialCodec {
     try {
       const cipher: cryptoFramework.Cipher = cryptoFramework.createCipher('DES64|ECB|PKCS7');
       cipher.initSync(cryptoFramework.CryptoMode.DECRYPT_MODE, CredentialCodec.key(), null);
-      const raw: Uint8Array = new Uint8Array(buffer.from(source, 'base64').buffer);
+      const decoded = buffer.from(source, 'base64');
+      const raw: Uint8Array = new Uint8Array(decoded.buffer, 0, decoded.length);
       const decrypted: cryptoFramework.DataBlob = cipher.doFinalSync({ data: raw });
       const parsed: RemoteCredentials = JSON.parse(fromBytes(decrypted.data)) as RemoteCredentials;
       return {
@@ -175,20 +181,9 @@ export class CredentialCodec {
     }
   }
 
+  /** Pure implementation: the Fever api_key must be correct on every device. */
   static md5Hex(text: string): string {
-    try {
-      const md: cryptoFramework.Md = cryptoFramework.createMd('MD5');
-      md.updateSync({ data: toBytes(text) });
-      const digest: cryptoFramework.DataBlob = md.digestSync();
-      let hex: string = '';
-      for (const byte of digest.data) {
-        hex += byte.toString(16).padStart(2, '0');
-      }
-      return hex;
-    } catch (error) {
-      Logger.error(`MD5 failed: ${(error as Error).message}`);
-      throw error as Error;
-    }
+    return md5Hex(text);
   }
 }
 
