@@ -22,7 +22,7 @@ interface TypeChoice {
 }
 
 const TYPES: TypeChoice[] = [
-  { type: AccountType.LOCAL, label: '本地' },
+  // { type: AccountType.LOCAL, label: '本地' }, // 本地账号入口已隐藏（保留代码，仅注释）
   { type: AccountType.FEVER, label: 'Fever' },
   { type: AccountType.GOOGLE_READER, label: 'Google Reader' },
   { type: AccountType.FRESH_RSS, label: 'FreshRSS' },
@@ -40,7 +40,8 @@ export struct AccountEditorView {
   @StorageProp('fontDataTick') fontDataTick: number = 0;
   @StorageProp('systemFontFamily') systemFontFamily: string = 'sans-serif';
   @StorageProp('topInset') topInset: number = 0;
-  @State type: AccountType = AccountType.LOCAL;
+  // @State type: AccountType = AccountType.LOCAL; // 新建账号不再默认本地账号
+  @State type: AccountType = AccountType.GOOGLE_READER;
   @State name: string = '';
   @State serverUrl: string = '';
   @State username: string = '';
@@ -277,7 +278,7 @@ export struct AccountEditorView {
               .enabled(!this.isSaving)
               .onClick(() => this.save())
 
-            Text('Fever 的 API Key 由用户名与密码自动计算；Google Reader / FreshRSS 使用 ClientLogin + Token 鉴权。').fontFamily(this.appFont())
+            Text('用户信息仅在本地加密保存，不会上传到任何第三方服务器').fontFamily(this.appFont())
               .fontSize(this.fs(12))
               .fontColor(this.secondaryColor())
               .margin({ top: 20 })

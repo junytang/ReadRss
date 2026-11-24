@@ -18,7 +18,7 @@ import { FilterBarView } from './FilterBarView';
 import { FontManager } from '../common/FontManager';
 import { FeedIcon } from '../common/FeedIcon';
 import { accountRepository } from '../account/AccountRepository';
-import { accountTypeShortName } from '../account/AccountModels';
+import { accountTypeShortName, AccountType } from '../account/AccountModels';
 import { FeedListView } from './FeedListView';
 import { ArticleRowView } from './ArticleRowView';
 import { ToastUtil } from '../common/ToastUtil';
@@ -389,7 +389,10 @@ export struct ArticleListView {
         name = credentials.username;
       }
       this.accountName = name;
-      this.accountTypeLabel = accountTypeShortName(account.type);
+      // 本地账号的类型文案（「本地」）不再展示；保留原赋值语句以便恢复。
+      // this.accountTypeLabel = accountTypeShortName(account.type);
+      this.accountTypeLabel = account.type === AccountType.LOCAL
+        ? '' : accountTypeShortName(account.type);
     }
   }
 
@@ -536,6 +539,18 @@ export struct ArticleListView {
         this.curOffset = 0;
         this.prevOffset = 0;
       }
+      return;
+    }
+    // 首装不再自动创建账号：没有账号时直接呈现空列表，避免 activeAccount()
+    // 抛出「没有可用账号」，此时引导页正在让用户添加远程账号。
+    if ((await accountRepository.list()).length === 0) {
+      this.articles = [];
+      this.unreadCount = 0;
+      this.starredCount = 0;
+      this.allCount = 0;
+      this.globalUnread = 0;
+      this.globalStarred = 0;
+      this.globalAll = 0;
       return;
     }
     // Discard results from an older load: selecting a feed then tapping a filter

@@ -15,7 +15,7 @@ import {
   ROUTE_SYSTEM_STYLE,
   ROUTE_SUBSCRIBE,
 } from '../common/Constants';
-import { navStack } from '../common/NavigationService';
+import { navStack, openSettings, openAccounts, openAccountEditor } from '../common/NavigationService';
 import { FontManager } from '../common/FontManager';
 import { WindowInsets } from '../common/WindowInsets';
 import { settingsStore } from '../data/SettingsStore';
@@ -37,6 +37,8 @@ struct Index {
   @State pathStack: NavPathStack = navStack;
   @StorageLink('darkMode') darkMode: boolean = false;
   @StorageProp('topInset') topInset: number = 0;
+  @StorageProp('firstRunTick') @Watch('onFirstRunTick') firstRunTick: number = 0;
+  private firstRunGuided: boolean = false;
 
   @Builder
   pageMap(name: string, param: Object): void {
@@ -71,7 +73,28 @@ struct Index {
     }
   }
 
+  /** First install: guide the user to the add-account page (under Settings >
+   *  Account management). The tick is published by EntryAbility before the UI
+   *  loads, so aboutToAppear catches it; the watcher covers later updates. */
+  private guideFirstRun(): void {
+    if (this.firstRunGuided || this.firstRunTick <= 0) {
+      return;
+    }
+    this.firstRunGuided = true;
+    // Defer until the Navigation container is attached to the stack.
+    setTimeout((): void => {
+      openSettings();
+      openAccounts();
+      openAccountEditor('');
+    }, 200);
+  }
+
+  onFirstRunTick(): void {
+    this.guideFirstRun();
+  }
+
   aboutToAppear(): void {
+    this.guideFirstRun();
     // Publish insets one last time right before the UI tree is built.
     AppStorage.set<number>('topInset', WindowInsets.top);
     AppStorage.setOrCreate<number>('bottomInset', WindowInsets.bottom);

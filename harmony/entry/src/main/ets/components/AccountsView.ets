@@ -165,7 +165,8 @@ export struct AccountsView {
           .divider({ strokeWidth: 1, color: this.darkMode ? '#2A2D31' : '#ECEFF2' })
         }
 
-        Text('本地账号直接抓取 RSS；Fever 与 Google Reader / FreshRSS 通过远程服务同步。').fontFamily(this.appFont())
+        // Text('本地账号直接抓取 RSS；Fever 与 Google Reader / FreshRSS 通过远程服务同步。').fontFamily(this.appFont())
+        Text('Fever 与 Google Reader / FreshRSS 通过远程服务同步。').fontFamily(this.appFont())
           .fontSize(this.fs(12))
           .fontColor(this.secondaryColor())
           .padding(16)
@@ -177,7 +178,8 @@ export struct AccountsView {
                 .fontSize(this.fs(18))
                 .fontWeight(FontWeight.Medium)
                 .fontColor(this.textColor())
-              Text(`确定删除「${this.pendingDelete.name}」及其本地数据吗？`).fontFamily(this.appFont())
+              // Text(`确定删除「${this.pendingDelete.name}」及其本地数据吗？`).fontFamily(this.appFont())
+              Text(`确定删除「${this.pendingDelete.name}」吗？`).fontFamily(this.appFont())
                 .fontSize(this.fs(14))
                 .fontColor(this.secondaryColor())
                 .margin({ top: 12 })

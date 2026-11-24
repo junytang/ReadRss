@@ -85,12 +85,32 @@ function setupImageClicks() {
             if (img.closest && img.closest("a")) return;
             ev.preventDefault();
             if (window.readYouBridge && window.readYouBridge.onImageClick) {
-                try { window.readYouBridge.onImageClick(img.currentSrc || img.src); } catch (e) {}
+                try {
+                    var r = img.getBoundingClientRect();
+                    window.readYouBridge.onImageClick(
+                        img.currentSrc || img.src, r.left, r.top, r.width, r.height
+                    );
+                } catch (e) {}
             }
         });
     });
 }
 setupImageClicks();
+// Tell native that an article link was followed, so the reader's back button
+// walks the WebView history before popping the reader page.
+function setupLinkClicks() {
+    var links = document.querySelectorAll("article a");
+    links.forEach(function(a) {
+        if (a.getAttribute("data-ry-link")) return;
+        a.setAttribute("data-ry-link", "1");
+        a.addEventListener("click", function() {
+            if (window.readYouBridge && window.readYouBridge.onLinkClick) {
+                try { window.readYouBridge.onLinkClick(); } catch (e) {}
+            }
+        });
+    });
+}
+setupLinkClicks();
 window.addEventListener("scroll", setupImages);
 // The reader HTML is injected as a whole, so every <img> already exists when
 // this script runs; the old setInterval(setupImages, 800) just re-scanned all
@@ -98,7 +118,7 @@ window.addEventListener("scroll", setupImages);
 // Watch for genuine DOM changes instead (e.g. dynamically inserted images) and
 // drop the permanent 800ms wake-up.
 if (window.MutationObserver) {
-  var imgObserver = new MutationObserver(function() { setupImages(); setupImageClicks(); });
+  var imgObserver = new MutationObserver(function() { setupImages(); setupImageClicks(); setupLinkClicks(); });
   imgObserver.observe(document.body, { childList: true, subtree: true });
 }`;
 

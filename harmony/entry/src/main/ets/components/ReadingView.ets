@@ -17,6 +17,7 @@ import { ArticleImageConverter } from '../common/ArticleImageConverter';
 import { ReaderWebSupport } from '../common/ReaderWebSupport';
 import { readStatusStore } from '../rss/ReadStatusStore';
 import { ToastUtil } from '../common/ToastUtil';
+import { ImageRect } from '../common/ImageFit';
 import { ReaderImageViewer } from './ReaderImageViewer';
 
 /** Minimum vertical pull (vp) at a scroll edge that switches articles. Applies
@@ -35,15 +36,18 @@ const PULL_HINT_LIFT: number = 24;
 class ReaderBridgeHandler {
   private readonly onBoundary: (atTop: boolean, atBottom: boolean) => void;
   private readonly onReady: () => void;
-  private readonly onImage: (url: string) => void;
+  private readonly onImage: (url: string, x: number, y: number, w: number, h: number) => void;
+  private readonly onLink: () => void;
 
   constructor(
     callback: (atTop: boolean, atBottom: boolean) => void, onReady: () => void,
-    onImage: (url: string) => void
+    onImage: (url: string, x: number, y: number, w: number, h: number) => void,
+    onLink: () => void
   ) {
     this.onBoundary = callback;
     this.onReady = onReady;
     this.onImage = onImage;
+    this.onLink = onLink;
   }
 
   onScrollBoundary(atTop: boolean, atBottom: boolean): void {
@@ -55,8 +59,13 @@ class ReaderBridgeHandler {
     this.onReady();
   }
 
-  onImageClick(url: string): void {
-    this.onImage(url);
+  onImageClick(url: string, x: number, y: number, w: number, h: number): void {
+    this.onImage(url, x, y, w, h);
+  }
+
+  /** An in-article link was tapped; the WebView now has in-page history. */
+  onLinkClick(): void {
+    this.onLink();
   }
 }
 
@@ -101,6 +110,14 @@ export struct ReadingView {
   private atBottomNow: boolean = false;
   private boundaryReported: boolean = false;
   @State zoomImageUrl: string = '';
+  @State zoomOrigin: ImageRect = { x: 0, y: 0, width: 0, height: 0 };
+  // True once an article link opened a page inside this WebView. Back must then
+  // walk the WebView history before it is allowed to close the reader page.
+  private webNavigated: boolean = false;
+  // WebView's global position, used to convert the image rect reported by JS
+  // (relative to the WebView) into window coordinates for the open animation.
+  private webGlobalX: number = 0;
+  private webGlobalY: number = 0;
   private bridge: ReaderBridgeHandler = new ReaderBridgeHandler(
     (atTop: boolean, atBottom: boolean): void => {
       this.boundaryReported = true;
@@ -108,11 +125,21 @@ export struct ReadingView {
       this.atBottomNow = atBottom;
     },
     (): void => this.onPageRendered(),
-    (url: string): void => {
+    (url: string, x: number, y: number, w: number, h: number): void => {
       if (url.length > 0) {
+        this.zoomOrigin = {
+          // CSS pixels from the WebView map 1:1 to vp; converting with px2vp
+          // would shrink the rect by the device density and start the animation
+          // from a tiny point at the top-left corner.
+          x: x + this.webGlobalX,
+          y: y + this.webGlobalY,
+          width: w,
+          height: h,
+        };
         this.zoomImageUrl = url;
       }
-    }
+    },
+    (): void => { this.webNavigated = true; }
   );
   private pullStartY: number = 0;
   private lastPullY: number = 0;
@@ -282,6 +309,18 @@ export struct ReadingView {
    *  scrollTop/scrollHeight exactly and reports real edge state via the bridge,
    *  so pull-to-switch can only be armed at a genuine top or bottom. */
   private onWebPageEnd(): void {
+    // Walking WebView history back to the original article means there is no
+    // in-page history left; the next Back should close the reader.
+    const articleUrl: string = this.article?.link ?? '';
+    if (this.webNavigated && articleUrl.length > 0) {
+      try {
+        if (this.controller.getUrl() === articleUrl) {
+          this.webNavigated = false;
+        }
+      } catch (error) {
+        Logger.warn(`getUrl failed: ${(error as Error).message}`);
+      }
+    }
     const script: string =
       '(function(){' +
       'if(window.__ryBoundaryReady)return;' +
@@ -573,6 +612,52 @@ export struct ReadingView {
       ? FontManager.familyFor(this.systemFontFamily) : 'sans-serif';
   }
 
+  /** Back prioritises WebView history created by in-article links: the first
+   *  presses walk back through those pages, and only when history is exhausted
+   *  does it close the reader (same as the original behaviour). */
+  private handleBack(): void {
+    if (this.webNavigated) {
+      let canGoBack: boolean = false;
+      try {
+        canGoBack = this.controller.accessBackward();
+      } catch (error) {
+        Logger.warn(`accessBackward failed: ${(error as Error).message}`);
+      }
+      if (canGoBack) {
+        try {
+          this.controller.backward();
+        } catch (error) {
+          Logger.warn(`WebView backward failed: ${(error as Error).message}`);
+        }
+        return;
+      }
+      this.webNavigated = false;
+    }
+    goBack();
+  }
+
+  /** System back follows the same rule as the on-screen button. */
+  onBackPress(): boolean {
+    if (this.webNavigated) {
+      let canGoBack: boolean = false;
+      try {
+        canGoBack = this.controller.accessBackward();
+      } catch (error) {
+        Logger.warn(`accessBackward failed: ${(error as Error).message}`);
+      }
+      if (canGoBack) {
+        try {
+          this.controller.backward();
+        } catch (error) {
+          Logger.warn(`WebView backward failed: ${(error as Error).message}`);
+        }
+        return true;
+      }
+      this.webNavigated = false;
+    }
+    return false;
+  }
+
   private dateText(): string {
     const time: number = this.article?.publishedAt ?? 0;
     if (time <= 0) {
@@ -599,7 +684,7 @@ export struct ReadingView {
             .height(38)
             .backgroundColor(Color.White)
             .margin({ right: 8 })
-            .onClick(() => goBack())
+            .onClick(() => this.handleBack())
             if (this.feedIconUrl.length > 0) {
               Image(this.feedIconUrl)
                 .width(14)
@@ -685,7 +770,8 @@ export struct ReadingView {
                   'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36'
                 );
                 this.controller.registerJavaScriptProxy(
-                  this.bridge, 'readYouBridge', ['onScrollBoundary', 'onPageReady', 'onImageClick']
+                  this.bridge, 'readYouBridge',
+                  ['onScrollBoundary', 'onPageReady', 'onImageClick', 'onLinkClick']
                 );
                 // Mark attached BEFORE pushHtml so the pending HTML (possibly
                 // rendered while the controller was not ready) finally loads.
@@ -694,6 +780,8 @@ export struct ReadingView {
               })
               .onAreaChange((oldValue: Area, newValue: Area) => {
                 this.webHeight = newValue.height as number;
+                this.webGlobalX = newValue.globalPosition.x as number;
+                this.webGlobalY = newValue.globalPosition.y as number;
               })
               .onTouch((event: TouchEvent) => this.onWebTouch(event))
               .onScroll((event: OnScrollEvent) => this.onWebScroll(event))
@@ -798,6 +886,7 @@ export struct ReadingView {
       if (this.zoomImageUrl.length > 0) {
         ReaderImageViewer({
           url: this.zoomImageUrl,
+          originRect: this.zoomOrigin,
           referer: this.article?.link ?? '',
           onClose: (): void => { this.zoomImageUrl = ''; },
         })
@@ -813,6 +902,7 @@ export struct ReadingView {
       .width('100%')
       .height('100%')
     }
+    .onBackPressed(() => this.onBackPress())
     .hideTitleBar(true)
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
   }

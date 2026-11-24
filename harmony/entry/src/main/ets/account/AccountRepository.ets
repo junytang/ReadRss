@@ -32,34 +32,35 @@ class ReadYouAccountRepository {
     const accounts: Account[] = await database.listAccounts();
     if (accounts.length === 0) {
       this.firstRun = true;
-      const local: Account = {
-        id: '1',
-        name: 'Read You',
-        type: AccountType.LOCAL,
-        securityKey: EMPTY_SECURITY_KEY,
-        updateAt: null,
-        lastArticleId: null,
-        syncInterval: 30,
-        syncOnStart: false,
-        syncOnlyOnWiFi: false,
-        syncOnlyWhenCharging: false,
-        keepArchived: 2592000000,
-        syncBlockList: '',
-      };
-      await database.insertAccount(local);
-      await this.createDefaultGroup('1');
-      const initialFeed: Feed = {
-        id: dbId('1', `initial-${Date.now().toString()}`),
-        title: 'ReadYou Releases',
-        url: INITIAL_FEED_URL,
-        groupId: dbId('1', DEFAULT_GROUP_SUFFIX),
-        iconUrl: '',
-        sortOrder: 0,
-        unreadCount: 0,
-        starredCount: 0,
-      };
-      await database.upsertFeed(initialFeed, '1');
-      Logger.info('Created default account, group and starter feed');
+      // 首装不再自动创建本地账号（保留原代码，仅注释），由引导页让用户添加远程账号。
+      // const local: Account = {
+      //   id: '1',
+      //   name: 'Read You',
+      //   type: AccountType.LOCAL,
+      //   securityKey: EMPTY_SECURITY_KEY,
+      //   updateAt: null,
+      //   lastArticleId: null,
+      //   syncInterval: 30,
+      //   syncOnStart: false,
+      //   syncOnlyOnWiFi: false,
+      //   syncOnlyWhenCharging: false,
+      //   keepArchived: 2592000000,
+      //   syncBlockList: '',
+      // };
+      // await database.insertAccount(local);
+      // await this.createDefaultGroup('1');
+      // const initialFeed: Feed = {
+      //   id: dbId('1', `initial-${Date.now().toString()}`),
+      //   title: 'ReadYou Releases',
+      //   url: INITIAL_FEED_URL,
+      //   groupId: dbId('1', DEFAULT_GROUP_SUFFIX),
+      //   iconUrl: '',
+      //   sortOrder: 0,
+      //   unreadCount: 0,
+      //   starredCount: 0,
+      // };
+      // await database.upsertFeed(initialFeed, '1');
+      // Logger.info('Created default account, group and starter feed');
       return;
     }
     const active: string = settingsStore.get().activeAccountId;

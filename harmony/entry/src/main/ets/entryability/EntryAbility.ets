@@ -122,13 +122,20 @@ export default class EntryAbility extends UIAbility {
         // sync when the "启动时同步" setting is on — mirrors Android's
         // AbstractRssRepository.initSync() reading Account.syncOnStart.
         // Never block UI loading on network work.
-        if (accountRepository.isFirstRun() || settingsStore.get().syncOnLaunch) {
+        // 首装已不再创建默认账号，没有账号时不能同步；引导用户添加账号后再同步。
+        // if (accountRepository.isFirstRun() || settingsStore.get().syncOnLaunch) {
+        if (!accountRepository.isFirstRun() && settingsStore.get().syncOnLaunch) {
           rssRepository.syncAll().catch((error: Error) => {
             Logger.error(`Startup sync failed: ${error.message}`);
           });
         }
         AppStorage.setOrCreate<boolean>('darkMode', settingsStore.get().darkMode);
         AppStorage.setOrCreate<string>('activeAccountId', settingsStore.get().activeAccountId);
+        // First install: published for the mounted UI to guide the user to
+        // Settings > Account management > Add account.
+        AppStorage.setOrCreate<number>(
+          'firstRunTick', accountRepository.isFirstRun() ? Date.now() : 0
+        );
         AppStorage.setOrCreate<number>('accountSwitchTick', 0);
         AppStorage.setOrCreate<number>('feedDataTick', 0);
         AppStorage.setOrCreate<number>('syncFirstBatchTick', 0);

@@ -4,6 +4,15 @@ export interface FittedSize {
   height: number;
 }
 
+/** On-screen rect of the tapped image in the article WebView (vp). Used as the
+ *  starting point of the open animation in the full-screen viewer. */
+export interface ImageRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 /**
  * Fit an intrinsic image size (already in vp) into the available area while
  * preserving aspect ratio. Small images are never upscaled, matching Android's

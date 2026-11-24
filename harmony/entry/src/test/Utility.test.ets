@@ -302,7 +302,9 @@ export default function utilityTest(): void {
 
     it('body script wires image taps to the native zoom viewer', 0, () => {
       expect(WebViewHtml.SCRIPT.indexOf('onImageClick') >= 0).assertTrue();
+      expect(WebViewHtml.SCRIPT.indexOf('getBoundingClientRect') >= 0).assertTrue();
       expect(WebViewHtml.SCRIPT.indexOf('data-ry-zoom') >= 0).assertTrue();
+      expect(WebViewHtml.SCRIPT.indexOf('onLinkClick') >= 0).assertTrue();
       // Linked images must keep their link behaviour instead of zooming.
       expect(WebViewHtml.SCRIPT.indexOf('closest("a")') >= 0).assertTrue();
     });

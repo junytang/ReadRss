@@ -8,7 +8,7 @@ import { ArticleImageConverter } from '../common/ArticleImageConverter';
 import { Logger } from '../common/Logger';
 import { FontManager } from '../common/FontManager';
 import { ToastUtil } from '../common/ToastUtil';
-import { fitImageSize, FittedSize } from '../common/ImageFit';
+import { ImageRect } from '../common/ImageFit';
 
 /** Maximum pinch magnification, matching Android's telephoto ZoomSpec(4f). */
 const MAX_ZOOM: number = 4;
@@ -33,22 +33,23 @@ export struct ReaderImageViewer {
   // Article URL sent as Referer so hotlink-protected images can be downloaded
   // for saving (and decoded here instead of relying on ArkUI's URL loader).
   @Prop referer: string = '';
+  // Rect of the tapped image in the article, in window vp coordinates.
+  @Prop originRect: ImageRect = { x: 0, y: 0, width: 0, height: 0 };
   onClose: () => void = () => {};
   @StorageProp('fontScale') uiFontScale: number = 1;
   @StorageProp('systemFontFamily') systemFontFamily: string = 'sans-serif';
   @StorageProp('fontDataTick') fontDataTick: number = 0;
   @StorageProp('topInset') topInset: number = 0;
   @State pixelMap: image.PixelMap | undefined = undefined;
-  // The Image component is sized to the fitted image, so Stack centres the
-  // component itself. objectFit(Contain) inside a 100% box is not reliably
-  // centred on all ArkWeb builds and was leaving the image high on screen.
+  private imageBytes: ArrayBuffer | undefined = undefined;
   private imageWidth: number = 0;
   private imageHeight: number = 0;
-  private imageBytes: ArrayBuffer | undefined = undefined;
-  @State displayWidth: number = 0;
-  @State displayHeight: number = 0;
   private areaWidth: number = 0;
   private areaHeight: number = 0;
+  private openAnimated: boolean = false;
+  // Backdrop fades in with the image so the black layer does not blank out the
+  // article (and hide the zoom animation) on the first frame.
+  @State backdropAlpha: number = 0;
   @State zoomScale: number = 1;
   @State offsetX: number = 0;
   @State offsetY: number = 0;
@@ -119,33 +120,70 @@ export struct ReaderImageViewer {
       this.imageWidth = info.size.width;
       this.imageHeight = info.size.height;
       this.pixelMap = await source.createPixelMap();
-      this.recomputeDisplaySize();
+      this.tryAnimateOpen();
     } catch (error) {
       Logger.warn(`Decode zoom image failed: ${(error as Error).message}`);
     }
   }
 
-  /** Fit the image inside the available area using vp as the unit. */
-  private recomputeDisplaySize(): void {
-    if (this.imageWidth <= 0 || this.imageHeight <= 0
-      || this.areaWidth <= 0 || this.areaHeight <= 0) {
+  /** Animate from the tapped article image to the full-screen position. The
+   *  final layout is a full-screen Contain box; scale/translate are only the
+   *  transient starting transform and are animated back to identity. */
+  private tryAnimateOpen(): void {
+    if (this.openAnimated || !this.pixelMap) {
       return;
     }
-    let density: number = 1;
+    if (this.areaWidth <= 0 || this.areaHeight <= 0
+      || this.originRect.width <= 0 || this.originRect.height <= 0) {
+      // Nothing to animate from — show the backdrop immediately.
+      this.openAnimated = true;
+      this.backdropAlpha = 1;
+      return;
+    }
+    // Final image size = full-screen Contain result, computed from the real
+    // screen size (not the measured Stack area, which can be wrong). Allow
+    // upscaling: articles often stretch a small image to full width, and the
+    // no-upscale fit made the "start" bigger than the final image -> shrink.
+    let screenW: number = 0;
+    let screenH: number = 0;
     try {
-      density = display.getDefaultDisplaySync().densityPixels;
+      const screen: display.Display = display.getDefaultDisplaySync();
+      screenW = this.getUIContext().px2vp(screen.width);
+      screenH = this.getUIContext().px2vp(screen.height);
     } catch (error) {
-      density = 1;
+      Logger.warn(`Screen size unavailable for zoom animation: ${(error as Error).message}`);
+      this.openAnimated = true;
+      this.backdropAlpha = 1;
+      return;
     }
-    if (density <= 0) {
-      density = 1;
+    const imgW: number = this.getUIContext().px2vp(this.imageWidth);
+    const imgH: number = this.getUIContext().px2vp(this.imageHeight);
+    if (imgW <= 0 || imgH <= 0 || screenW <= 0 || screenH <= 0) {
+      this.openAnimated = true;
+      this.backdropAlpha = 1;
+      return;
     }
-    const fitted: FittedSize = fitImageSize(
-      this.imageWidth / density, this.imageHeight / density,
-      this.areaWidth, this.areaHeight
-    );
-    this.displayWidth = fitted.width;
-    this.displayHeight = fitted.height;
+    const fitScale: number = Math.min(screenW / imgW, screenH / imgH);
+    const finalW: number = imgW * fitScale;
+    const finalH: number = imgH * fitScale;
+    this.openAnimated = true;
+    const startScale: number = Math.max(0.05, Math.min(4, this.originRect.width / finalW));
+    const originCenterX: number = this.originRect.x + this.originRect.width / 2;
+    const originCenterY: number = this.originRect.y + this.originRect.height / 2;
+    const finalCenterX: number = screenW / 2;
+    const finalCenterY: number = screenH / 2;
+    // Seed the transform + transparent backdrop before the next paint, then
+    // animate both to their final values in the same frame.
+    this.zoomScale = startScale;
+    this.offsetX = originCenterX - finalCenterX;
+    this.offsetY = originCenterY - finalCenterY;
+    this.backdropAlpha = 0;
+    this.getUIContext().animateTo({ duration: 260, curve: Curve.EaseOut }, () => {
+      this.zoomScale = 1;
+      this.offsetX = 0;
+      this.offsetY = 0;
+      this.backdropAlpha = 1;
+    });
   }
 
   aboutToDisappear(): void {
@@ -273,61 +311,41 @@ export struct ReaderImageViewer {
 
   @Builder
   imageContent(): void {
+    // Full-screen Image box with Contain: ArkUI centres the decoded bitmap
+    // inside the box. No manual area/density math — that produced a tiny image
+    // and a wrong offset on the real device.
     if (this.pixelMap) {
-      if (this.displayWidth > 0 && this.displayHeight > 0) {
-        Image(this.pixelMap)
-          .width(this.displayWidth)
-          .height(this.displayHeight)
-          .objectFit(ImageFit.Contain)
-          .scale({ x: this.zoomScale, y: this.zoomScale })
-          .translate({ x: this.offsetX, y: this.offsetY })
-      } else {
-        Image(this.pixelMap)
-          .width('100%')
-          .height('100%')
-          .objectFit(ImageFit.Contain)
-      }
-    } else {
-      // Brief placeholder while bytes are being fetched/decoded.
-      Image(this.url)
-        .width('80%')
+      Image(this.pixelMap)
+        .width('100%')
+        .height('100%')
         .objectFit(ImageFit.Contain)
+        .scale({ x: this.zoomScale, y: this.zoomScale })
+        .translate({ x: this.offsetX, y: this.offsetY })
     }
+    // No URL placeholder: before decode it showed a second, differently-sized
+    // image for a frame, which is what made the viewer flash on open.
   }
 
   build() {
-    Column() {
-      // Header is a normal first child, so it stays pinned to the top. Putting
-      // it in the Stack before made Stack's default centre alignment push it
-      // to the middle of the screen.
-      Row() {
-        Text('点击关闭 · 双指缩放 · 长按保存').fontFamily(this.appFont())
-          .fontSize(this.fs(13))
-          .fontColor('#E8EAED')
-          .layoutWeight(1)
-        Text('✕').fontFamily(this.appFont())
-          .fontSize(this.fs(18))
-          .fontColor('#E8EAED')
-          .padding({ left: 12, right: 4 })
-          .onClick(() => this.onClose())
-      }
-      .width('100%')
-      .alignItems(VerticalAlign.Center)
-      .padding({ left: 16, right: 16, top: 12 + this.topInset, bottom: 8 })
+    Stack() {
+      // Backdrop is a separate layer whose opacity is animated together with
+      // the image transform. It must not be the Stack's own backgroundColor:
+      // that paints instantly and would cover the article before the zoom
+      // animation has a chance to show it.
+      Column()
+        .width('100%')
+        .height('100%')
+        .backgroundColor('#FF000000')
+        .opacity(this.backdropAlpha)
+        .hitTestBehavior(HitTestMode.None)
 
-      // The image area fills the rest; Stack's explicit centre alignment
-      // centres the image both vertically and horizontally.
-      Stack() {
+      // Full-screen, definite-size layer. Contain inside the Image centres the
+      // bitmap; the wrapper itself fills the screen so Stack alignment is moot.
+      Column() {
         this.imageContent()
       }
       .width('100%')
-      .layoutWeight(1)
-      .alignContent(Alignment.Center)
-      .onAreaChange((oldValue: Area, newValue: Area) => {
-        this.areaWidth = newValue.width as number;
-        this.areaHeight = newValue.height as number;
-        this.recomputeDisplaySize();
-      })
+      .height('100%')
       .onTouch((event: TouchEvent) => this.handleImageTouch(event))
       .onClick(() => {
         if (this.longPressHandled) {
@@ -357,10 +375,33 @@ export struct ReaderImageViewer {
             this.offsetY = this.gestureOffsetY + event.offsetY;
           })
       )
+
+      // Header is also absolutely positioned so it cannot be affected by the
+      // Stack's alignment either.
+      Row() {
+        Text('点击关闭 · 双指缩放 · 长按保存').fontFamily(this.appFont())
+          .fontSize(this.fs(13))
+          .fontColor('#E8EAED')
+          .layoutWeight(1)
+        Text('✕').fontFamily(this.appFont())
+          .fontSize(this.fs(18))
+          .fontColor('#E8EAED')
+          .padding({ left: 12, right: 4 })
+          .onClick(() => this.onClose())
+      }
+      .width('100%')
+      .position({ x: 0, y: 0 })
+      .alignItems(VerticalAlign.Center)
+      .padding({ left: 16, right: 16, top: 12, bottom: 8 })
     }
     .width('100%')
     .height('100%')
-    .backgroundColor('#E6000000')
+    .alignContent(Alignment.TopStart)
+    .onAreaChange((oldValue: Area, newValue: Area) => {
+      this.areaWidth = newValue.width as number;
+      this.areaHeight = newValue.height as number;
+      this.tryAnimateOpen();
+    })
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
   }
 }

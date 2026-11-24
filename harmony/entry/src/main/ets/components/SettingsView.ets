@@ -153,7 +153,8 @@ export struct SettingsView {
               Row() {
                 Column() {
                   Text('账号管理').fontFamily(this.appFont()).fontSize(this.fs(15)).fontColor(this.textColor())
-                  Text('本地 / Fever / Google Reader / FreshRSS').fontFamily(this.appFont())
+                  // Text('本地 / Fever / Google Reader / FreshRSS').fontFamily(this.appFont())
+                  Text('Fever / Google Reader / FreshRSS').fontFamily(this.appFont())
                     .fontSize(this.fs(13)).fontColor(this.secondaryColor()).margin({ top: 3 })
                 }
                 .layoutWeight(1)
