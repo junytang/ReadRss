@@ -3,7 +3,10 @@ import { accountRepository } from '../account/AccountRepository';
 import { database } from '../data/Database';
 import { settingsStore } from '../data/SettingsStore';
 import { Article, Feed, FeedGroup } from '../model/Models';
-import { beginSync, notifySyncBatch, notifySyncFinal, notifyContentReady } from './SyncProgress';
+import {
+  beginSync, notifySyncBatch, notifyContentReady, UiReadySignal,
+} from './SyncProgress';
+import { UI_WINDOW_SIZE } from './SyncRuntime';
 import { FeverApi, FeverFeed, FeverGroupMapping, FeverItem, FeverStatus } from './FeverApi';
 import { FeedSyncService, FeedNotify, SyncResult } from './SyncService';
 import { Logger } from '../common/Logger';
@@ -51,8 +54,58 @@ export class FeverSyncService implements FeedSyncService {
     const api: FeverApi = this.api(account);
     const result: SyncResult = { succeeded: 0, failed: 0, newArticles: 0 };
     beginSync();
+    const uiReady: UiReadySignal = new UiReadySignal(preTime);
 
     try {
+      // First-screen fast path (fresh account): one item page with cached feed
+      // titles, committed before group/feed/icon metadata so the list appears
+      // immediately. The main loop below starts from the same cursor and skips
+      // rows already inserted.
+      let newArticles: number = 0;
+      const fastIds: Set<string> = new Set<string>();
+      if (!account.lastArticleId || account.lastArticleId.length === 0) {
+        const cachedFeeds: Feed[] = await database.listFeeds(account.id);
+        const firstTitles: Map<string, string> = new Map<string, string>();
+        for (const feed of cachedFeeds) {
+          firstTitles.set(feed.id, feed.title);
+        }
+        const firstBody = await api.getItemsSince('');
+        const firstItems: FeverItem[] = (firstBody.items ?? []).slice(0, UI_WINDOW_SIZE);
+        const firstArticles: Article[] = [];
+        for (const item of firstItems) {
+          if (item.id === undefined || item.id === null
+            || item.feed_id === undefined || item.feed_id === null) {
+            continue;
+          }
+          fastIds.add(String(item.id));
+          const feedKey: string = dbId(account.id, item.feed_id.toString());
+          const html: string = item.html ?? '';
+          const published: number = item.created_on_time ? item.created_on_time * 1000 : preTime;
+          firstArticles.push({
+            id: dbId(account.id, String(item.id)),
+            feedId: feedKey,
+            feedTitle: firstTitles.get(feedKey) ?? '',
+            title: FeverApi.decodeHtml(item.title) || 'Empty',
+            author: item.author ?? '',
+            link: item.url ?? '',
+            summary: this.plainText(html).substring(0, 280),
+            content: html,
+            imageUrl: this.firstImage(html),
+            publishedAt: published > preTime ? preTime : published,
+            isRead: (item.is_read ?? 0) > 0,
+            isStarred: (item.is_saved ?? 0) > 0,
+            fullContent: '',
+          });
+        }
+        if (firstArticles.length > 0) {
+          newArticles += await database.insertArticles(firstArticles, account.id);
+          notifySyncBatch();
+        }
+        // Nothing new still means the UI is ready — don't wait for full sync.
+        uiReady.fire();
+        Logger.info(`Fever first-screen window: ${firstArticles.length} articles`);
+      }
+
       const groupsBody = await api.getGroups();
       const feedsBody = await api.getFeeds();
       const faviconsBody = await api.getFavicons();
@@ -145,7 +198,6 @@ export class FeverSyncService implements FeedSyncService {
       }
 
       let lastSeenId: string = account.lastArticleId ?? '';
-      let newArticles: number = 0;
       const batchSize: number = settingsStore.get().fetchBatchSize;
       // One notification per feed for the whole sync (Android behaviour), instead
       // of re-notifying and re-reading the feed table on every batch.
@@ -156,6 +208,9 @@ export class FeverSyncService implements FeedSyncService {
         const articles: Article[] = [];
         for (const item of items) {
           const id: string = String(item.id ?? '');
+          if (fastIds.has(id)) {
+            continue; // already committed by the first-screen fast path
+          }
           if (item.id === undefined || item.id === null || item.feed_id === undefined || item.feed_id === null) {
             throw new Error('Fever item missing required field');
           }
@@ -184,6 +239,9 @@ export class FeverSyncService implements FeedSyncService {
           const chunk: Article[] = articles.slice(start, start + batchSize);
           newArticles += await database.insertArticles(chunk, account.id);
           notifySyncBatch();
+          // First committed batch fills the visible window + buffer; the rest
+          // of the pages continue silently with only badge refreshes.
+          uiReady.fire();
           for (const article of chunk) {
             if (article.isRead) {
               continue;
@@ -215,8 +273,12 @@ export class FeverSyncService implements FeedSyncService {
       // clients may change it). Only the local Set-building and full-table
       // rewrite are skipped when the signature is unchanged. Newly inserted
       // articles force one reconciliation even with an unchanged signature.
-      const unread: string[] | undefined = await api.getUnreadIds();
-      const savedRaw: string[] = await api.getSavedIds();
+      // Independent ID lists — fetch concurrently (still under SYNC_CONCURRENCY).
+      const stateIds: [string[] | undefined, string[]] = await Promise.all([
+        api.getUnreadIds(), api.getSavedIds(),
+      ]);
+      const unread: string[] | undefined = stateIds[0];
+      const savedRaw: string[] = stateIds[1];
       const unreadSig: string = unread === undefined ? '__undef__' : unread.join(',');
       const signature: string = unreadSig + '||' + savedRaw.join(',');
       if (this.stateSignatures.get(account.id) !== signature || result.newArticles > 0) {
@@ -262,7 +324,8 @@ export class FeverSyncService implements FeedSyncService {
       account.lastArticleId = lastSeenId.length > 0 ? dbId(account.id, lastSeenId) : null;
       await database.updateAccount(account);
       result.succeeded = 1;
-      notifySyncFinal();
+      // Fallback when no new item was committed.
+      uiReady.fire();
     } catch (error) {
       Logger.error(`Fever sync failed: ${(error as Error).message}`);
       result.failed = 1;

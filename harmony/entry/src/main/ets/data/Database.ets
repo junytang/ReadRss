@@ -768,6 +768,35 @@ class ReadYouDatabase {
     await this.exec("UPDATE article SET full_content = ''");
   }
 
+  /** On a fresh install the first articles are committed before remote feed
+   *  metadata arrives, so their feed_title is empty. Backfill it once the feed
+   *  rows exist. */
+  async fillMissingFeedTitles(): Promise<void> {
+    await this.exec(
+      `UPDATE article SET feed_title = (SELECT f.title FROM feed f WHERE f.id = article.feed_id)
+       WHERE feed_title = ''
+         AND EXISTS (SELECT 1 FROM feed f WHERE f.id = article.feed_id)`
+    );
+  }
+
+  /** Debug only: wipe every local article and reset the incremental cursors so
+   *  the next sync behaves like a first install (full re-fetch). Kept in the DB
+   *  layer so feed/group/account rows survive — only articles and cursors go. */
+  async debugClearAllArticles(): Promise<number> {
+    const rs = await this.query('SELECT COUNT(*) AS n FROM article');
+    let count: number = 0;
+    try {
+      if (this.nextRow(rs)) {
+        count = this.lng(rs, this.colIndex(rs, 'n'));
+      }
+    } finally {
+      this.closeRs(rs);
+    }
+    await this.exec('DELETE FROM article');
+    await this.exec('UPDATE account SET update_at = 0, last_article_id = NULL');
+    return count;
+  }
+
   async setArticleRead(id: string, read: boolean): Promise<void> {
     await this.exec('UPDATE article SET is_read = ? WHERE id = ?', [read ? 1 : 0, id]);
   }

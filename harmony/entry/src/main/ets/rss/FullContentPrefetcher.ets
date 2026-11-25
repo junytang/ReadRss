@@ -1,6 +1,7 @@
 import { Article } from '../model/Models';
 import { rssRepository } from './RssRepository';
 import { Logger } from '../common/Logger';
+import { SYNC_CONCURRENCY } from './SyncRuntime';
 
 /** A queued fetch together with the list index where it entered the viewport. */
 interface PendingFetch {
@@ -20,7 +21,8 @@ class ReadYouFullContentPrefetcher {
   private static readonly BUFFER_MULTIPLIER: number = 1;
   private static readonly DEFAULT_BUFFER: number = 6;
   private static readonly MAX_BUFFER: number = 10;
-  private static readonly CONCURRENCY: number = 2;
+  /** Same cap as every sync protocol: gentle on the origin servers. */
+  private static readonly CONCURRENCY: number = SYNC_CONCURRENCY;
 
   // Cap the tracking sets. They only exist to avoid duplicate fetches; once a
   // user scrolls far, old ids are irrelevant.

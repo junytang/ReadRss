@@ -35,7 +35,10 @@ export class FullContentFetcher {
       const html: string = FullContentFetcher.decode(bytes, charset);
       return FullContentFetcher.clean(html, title);
     } catch (error) {
-      Logger.error(`Full content fetch failed: ${(error as Error).message}`);
+      // A slow/unreachable origin page is an expected, non-fatal case: the
+      // caller keeps the server-provided summary. Don't log it as an error —
+      // the background prefetcher retries many articles and would flood ERROR.
+      Logger.warn(`Full content fetch failed: ${(error as Error).message}`);
       return '';
     } finally {
       request.destroy();

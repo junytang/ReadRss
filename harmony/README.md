@@ -29,7 +29,7 @@
 
 | 功能 | 说明 | Android 对应实现 |
 |---|---|---|
-| 多账号 | 本地 / Fever / Google Reader / FreshRSS，切换、增删改、凭据加密 | `AccountService`、`AccountType`、安全密钥类 |
+| 多账号 | Fever / Google Reader / FreshRSS / Miniflux，切换、增删改、凭据加密（本地账号入口已隐藏） | `AccountService`、`AccountType`、安全密钥类 |
 | 订阅管理 | 添加 / 删除 RSS 地址，推荐源，未读数统计 | `SubscribeViewModel`、`FeedsPage`、`FeedDao` |
 | 内容抓取 | `@ohos.net.http` 拉取 RSS/Atom | `RssHelper`、`OkHttpClientModule` |
 | Feed 解析 | 自研轻量 XML 解析器 + RSS 2.0 / Atom 解析 | ROME + Jsoup + readability4j |
@@ -38,6 +38,7 @@
 | 设置 | 深色模式、启动时同步、打开即已读、字号 | `SettingsPage` + 72 个 DataStore Preference |
 | Fever 同步 | 分组/订阅/图标拉取、分页文章、未读与收藏状态对账、标记读写 | `FeverRssService`、`FeverAPI` |
 | Google Reader / FreshRSS 同步 | ClientLogin + Token、订阅与标签、ID 流对账、批量正文抓取、标记读写 | `GoogleReaderRssService`、`GoogleReaderAPI` |
+| Miniflux 同步 | 原生 REST API（API Token / Basic Auth）、分类与订阅、图标、分页文章、状态对账、标记读写、订阅管理 | Android 无原生实现（仅 GReader 兼容） |
 | 凭据加密 | DES/ECB/PKCS7（与 Android `DESUtils` 同密钥，可直接迁移账号配置） | `DESUtils`、`SecurityKey` |
 | 本地存储 | `@ohos.data.relationalStore`（RDB，含 account / feed_group 表） | Room `Reader` 数据库 v7 |
 | 偏好设置 | `@ohos.data.preferences` | Jetpack DataStore Preferences |
@@ -296,7 +297,7 @@ toFetch=0 → contentReady signaled → onSyncFinished → load done → toast �
 cd <repo-root> && ./run_tests.sh
 ```
 
-1. **ArkTS 单元测试**（`harmony/entry/src/test/`，Hypium 框架）：覆盖解析层（XmlParser / RssParser / HtmlDom / HtmlBuilder / WebViewHtml）、ID/模型助手、纯状态机（StatusDiffs / ArticlePaging）、同步进度节流、网络分页、SettingsStore / GReaderTokenStore（注入假 Preferences）、ReadStatusStore flush（MockKit mock repository）、Database SQL 构造（mock RdbStore）等。
+1. **ArkTS 单元测试**（`harmony/entry/src/test/`，Hypium 框架）：覆盖解析层（XmlParser / RssParser / HtmlDom / HtmlBuilder / WebViewHtml）、ID/模型助手、纯状态机（StatusDiffs / ArticlePaging）、同步进度节流、网络分页、SettingsStore / GReaderTokenStore（注入假 Preferences）、ReadStatusStore flush（MockKit mock repository）、Miniflux 服务（mock DB/API）、Database SQL 构造（mock RdbStore）等。
    - 单独运行：`cd harmony && hvigorw --mode module -p product=default -p buildMode=debug test`
    - 结果：`harmony/entry/.test/default/intermediates/test/coverage_data/test_result.txt`
 2. **全文提取 fixture**（仓库根 `testcases/`，`verify.py`）：用真实站点保存的 HTML 验证正文容器选择算法（Python 参考实现，与 ArkTS 的 `HtmlDom` / `FullContentFetcher` 镜像同步）。单独运行：`cd testcases && python3 verify.py`。

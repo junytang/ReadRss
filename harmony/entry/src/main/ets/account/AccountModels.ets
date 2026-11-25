@@ -4,7 +4,8 @@ import { SuppressWarnings, SuppressWarningsType } from '@kit.BasicServicesKit';
 import { Logger } from '../common/Logger';
 import { md5Hex } from '../common/Md5';
 
-/** Mirrors AccountType in the Android app (id values 1..6). */
+/** Account types. 1..6 mirror Android; Miniflux (7) is a HarmonyOS extension
+ *  because Android only supports Miniflux through its GReader-compatible API. */
 export enum AccountType {
   LOCAL = 1,
   FEVER = 2,
@@ -12,6 +13,7 @@ export enum AccountType {
   FRESH_RSS = 4,
   FEEDLY = 5,
   INOREADER = 6,
+  MINIFLUX = 7,
 }
 
 export interface Account {
@@ -70,6 +72,7 @@ export function accountTypeName(type: AccountType): string {
     case AccountType.FRESH_RSS: return 'FreshRSS';
     case AccountType.FEEDLY: return 'Feedly';
     case AccountType.INOREADER: return 'Inoreader';
+    case AccountType.MINIFLUX: return 'Miniflux';
     default: return '未知';
   }
 }
@@ -80,7 +83,7 @@ export function accountTypeShortName(type: AccountType): string {
 }
 
 export function isValidAccountType(type: number): boolean {
-  return type >= 1 && type <= 6;
+  return type >= 1 && type <= AccountType.MINIFLUX;
 }
 
 export function usesLocalService(type: AccountType): boolean {

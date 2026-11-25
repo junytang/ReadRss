@@ -28,6 +28,11 @@ export struct FeedListView {
   // Re-render badges as soon as a local status diff changes, without waiting
   // for the parent to re-read the DB (which only happens on flush/sync).
   @StorageProp('readStatusTick') readStatusTick: number = 0;
+  // Banner count: published by ArticleListView.refreshCounts() and read on
+  // every tick. The banner row is a ForEach keyed by this value, so a change
+  // rebuilds just that item instead of the whole drawer.
+  @StorageProp('drawerBannerTick') @Watch('onBannerDataChanged') bannerDataTick: number = 0;
+  @State displayBannerCount: number = 0;
 
   private scroller: Scroller = new Scroller();
   // Three @Watch callbacks plus aboutToAppear can each schedule a 30ms
@@ -41,7 +46,6 @@ export struct FeedListView {
   @Prop accountName: string = '';
   @Prop accountTypeLabel: string = '';
   @Prop bannerLabel: string = '';
-  @Prop bannerCount: number = 0;
   @Prop @Watch('onSelectionChanged') selectedFeedId: string = '';
   @Prop @Watch('onSelectionChanged') selectedGroupId: string = '';
 
@@ -67,8 +71,13 @@ export struct FeedListView {
   onDeletedFeed: () => void = () => {};
 
   aboutToAppear(): void {
+    this.displayBannerCount = AppStorage.get<number>('drawerBannerCount') ?? 0;
     // Scroll the last-selected source/group into view when the drawer opens.
     this.scheduleScrollToSelection();
+  }
+
+  onBannerDataChanged(): void {
+    this.displayBannerCount = AppStorage.get<number>('drawerBannerCount') ?? 0;
   }
 
   aboutToDisappear(): void {
@@ -245,14 +254,14 @@ export struct FeedListView {
   }
 
   @Builder
-  banner(): void {
+  banner(count: number): void {
     Row() {
       Text(this.bannerLabel).fontFamily(this.appFont())
         .fontSize(this.fs(17))
         .fontWeight(FontWeight.Medium)
         .fontColor(this.textColor())
         .layoutWeight(1)
-      this.countBadge(this.bannerCount, 0)
+      this.countBadge(count, 0)
     }
     .width('100%')
     .padding({ left: 16, right: 16, top: 14, bottom: 14 })
@@ -346,9 +355,13 @@ export struct FeedListView {
       this.header()
 
       List({ scroller: this.scroller }) {
-        ListItem() {
-          this.banner()
-        }
+        // Data-driven so the badge rebuilds when the count changes. A static
+        // ListItem is cached by ArkUI and kept the first account's number.
+        ForEach([this.displayBannerCount], (count: number): void => {
+          ListItem() {
+            this.banner(count)
+          }
+        }, (count: number): string => `banner-${count}`)
         ListItem() {
           Row().width('100%').height(12)
         }

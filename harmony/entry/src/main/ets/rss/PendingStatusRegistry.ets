@@ -18,6 +18,11 @@ class PendingStatusRegistry {
   has(id: string): boolean {
     return this.ids.has(id);
   }
+
+  /** Debug reset alongside a full article wipe. */
+  clear(): void {
+    this.ids.clear();
+  }
 }
 
 export const pendingStatusRegistry: PendingStatusRegistry = new PendingStatusRegistry();

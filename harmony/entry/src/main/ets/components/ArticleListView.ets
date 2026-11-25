@@ -78,6 +78,7 @@ export struct ArticleListView {
   @StorageProp('feedDataTick') @Watch('onSyncBatch') syncBatchTick: number = 0;
   @StorageProp('syncFirstBatchTick') @Watch('onSyncFirstBatch') firstBatchTick: number = 0;
   @StorageProp('syncFinishedTick') @Watch('onSyncFinished') syncFinishedTick: number = 0;
+  @StorageProp('articleListClearTick') @Watch('onListCleared') listClearTick: number = 0;
   @StorageLink('currentFilter') currentFilter: string = FILTER_UNREAD;
 
   @State articles: Article[] = [];
@@ -159,6 +160,9 @@ export struct ArticleListView {
   private pendingShowSearch: boolean = false;
   @State accountName: string = '';
   @State accountTypeLabel: string = '';
+  // Kept in sync on account switch so global count deltas are scoped to the
+  // active account (pending marks from the old account must not leak).
+  private activeAccountId: string = '';
   @State showArticleMenu: boolean = false;
   @State menuArticleId: string = '';
   @State menuArticleRead: boolean = false;
@@ -183,7 +187,6 @@ export struct ArticleListView {
     readStatusStore.applyTo(this.articles);
     this.articles = this.articles.slice();
     this.refreshCounts();
-    this.notifyBannerTick();
   }
 
   /** The store committed a batch to the DB: re-read per-feed unread badges so
@@ -204,9 +207,18 @@ export struct ArticleListView {
     this.allCount = scoped.total;
     // Global totals for the drawer top row, never scoped by feed/group.
     const global: ArticleCounts = await rssRepository.articleCounts();
-    this.globalUnread = Math.max(0, global.unread + readStatusStore.unreadDelta('', '', true));
-    this.globalStarred = global.starred + readStatusStore.starredDelta('');
+    this.globalUnread = Math.max(
+      0, global.unread + readStatusStore.unreadDeltaForAccount(this.activeAccountId)
+    );
+    this.globalStarred = global.starred + readStatusStore.starredDeltaForAccount(this.activeAccountId);
     this.globalAll = global.total;
+    // Publish the banner total and a monotonically increasing tick. The
+    // drawer's banner row is a ForEach keyed by this value, so it rebuilds
+    // even while the drawer stays mounted across an account switch.
+    AppStorage.setOrCreate<number>('drawerBannerCount', this.drawerTotalCount());
+    AppStorage.setOrCreate<number>(
+      'drawerBannerTick', (AppStorage.get<number>('drawerBannerTick') ?? 0) + 1
+    );
   }
 
   /** First batch size: roughly two screens of rows, adapted to the device.
@@ -300,11 +312,6 @@ export struct ArticleListView {
     }, SLIDE_DURATION);
   }
 
-  /** Notify the subscription page to refresh its banner totals after a mark. */
-  private notifyBannerTick(): void {
-    AppStorage.setOrCreate<number>('bannerTick', Date.now());
-  }
-
   /** Set feeds + groups together from the cached unfiltered lists, keeping the
    *  drawer group headers and their feeds consistent for the active filter. */
   private applyFeedFilter(): void {
@@ -351,15 +358,17 @@ export struct ArticleListView {
     this.load(false, true);
   }
 
-  /** A full sync finished. Reload the article list with everything committed so
-   *  far, preserving paging depth (covers first-install sync from EntryAbility). */
+  /** UI is ready: first content batch (visible window + buffer) is committed.
+   *  The remaining batches/state work continue silently, so the toast and the
+   *  reload happen here rather than after the whole sync finishes. */
   onSyncFinished(): void {
     this.load(false, true);
-    // A page-level pull refresh (isSyncing=true) shows its own toast; this covers
-    // syncs started elsewhere (first install / launch sync from EntryAbility).
-    if (!this.isSyncing) {
-      ToastUtil.show(this.getUIContext(), '同步完成');
-    }
+    ToastUtil.show(this.getUIContext(), '同步完成');
+  }
+
+  /** Debug wipe of all articles: reload without a misleading "同步完成" toast. */
+  onListCleared(): void {
+    this.load(false, true);
   }
 
   /** A sync batch was committed: refresh unread counts/badges live. The list
@@ -369,8 +378,15 @@ export struct ArticleListView {
     this.refreshFeeds();
   }
 
-  onAccountSwitched(): void {
-    this.loadAccount();
+  async onAccountSwitched(): Promise<void> {
+    await this.loadAccount();
+    // Refresh feeds AND counts immediately rather than relying solely on
+    // load(), which can early-return during a sync or be invalidated by an
+    // overlapping watcher. refreshFeeds() reloads this.feeds (per-feed badges)
+    // and then calls refreshCounts() (banner totals), so neither can stay on
+    // the previous account's values after a switch.
+    await this.refreshFeeds();
+    await this.refreshCounts();
     this.load();
   }
 
@@ -383,6 +399,7 @@ export struct ArticleListView {
   private async loadAccount(): Promise<void> {
     const account = await accountRepository.active();
     if (account) {
+      this.activeAccountId = account.id;
       // Prefer the user-entered display name; fall back to the username when
       // no name was provided.
       let name: string = account.name;
@@ -754,9 +771,9 @@ export struct ArticleListView {
     this.isRefreshing = true;
     try {
       await rssRepository.syncAll();
-      // No load() here: syncAll emits syncFinishedTick internally, whose watcher
-      // (onSyncFinished) already reloaded the list while preserving paging depth.
-      ToastUtil.show(this.getUIContext(), '同步完成');
+      // No load() or toast here: the service fires syncFinishedTick as soon as
+      // the first batch lands (onSyncFinished already reloaded + showed toast).
+      // Remaining batches only refresh badges.
     } catch (error) {
       ToastUtil.show(this.getUIContext(), `同步失败：${(error as Error).message}`);
     } finally {
@@ -818,14 +835,12 @@ export struct ArticleListView {
       }
       // markAllRead wrote the DB directly: re-read per-feed badges (and counts).
       this.refreshFeeds();
-      this.notifyBannerTick();
     }).catch((error: Error) => {
       for (const id of ids) {
         readStatusStore.clearConfirmed(id);
       }
       this.setLocalRead(ids, false);
       this.refreshFeeds();
-      this.notifyBannerTick();
       Logger.error(`Mark read failed: ${error.message}`);
     });
   }
@@ -1075,12 +1090,6 @@ export struct ArticleListView {
     if (this.currentFilter === FILTER_STARRED) return this.globalStarred;
     if (this.currentFilter === FILTER_ALL) return this.globalAll;
     return this.globalUnread;
-  }
-
-  private filterName(): string {
-    if (this.currentFilter === FILTER_STARRED) return '星标';
-    if (this.currentFilter === FILTER_ALL) return '全部';
-    return '未读';
   }
 
   /** Drawer callbacks. The drawer panel (FeedListView) reports the selection;
@@ -1589,8 +1598,8 @@ export struct ArticleListView {
             currentFilter: this.currentFilter,
             accountName: this.accountName,
             accountTypeLabel: this.accountTypeLabel,
-            bannerLabel: this.filterName(),
-            bannerCount: this.drawerTotalCount(),
+            bannerLabel: this.currentFilter === FILTER_STARRED ? '星标'
+              : (this.currentFilter === FILTER_ALL ? '全部' : '未读'),
             selectedFeedId: this.currentFeedId,
             selectedGroupId: this.currentGroupId,
             onSelectFeed: (feedId: string) => this.onDrawerSelectFeed(feedId),
@@ -1617,9 +1626,13 @@ export struct ArticleListView {
       .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
     }
     .hideTitleBar(true)
-    // Returning from the reader re-runs load() to refresh read state. Keep the
-    // user's scroll position here (still suppressing stale-offset marking),
-    // unlike filter/feed/group switches which snap to the top.
-    .onShown(() => this.load(true, false, false))
+    // Returning from the reader or accounts page: reload, then refresh feeds
+    // and counts explicitly because load() can be cut short by stale guards.
+    .onShown(async () => {
+      await this.loadAccount();
+      await this.load(true, false, false);
+      await this.refreshFeeds();
+      await this.refreshCounts();
+    })
   }
 }

@@ -40,6 +40,14 @@ export class StatusDiffs {
   private starDiffs: Map<string, StarDiff> = new Map<string, StarDiff>();
   private attempts: Map<string, number> = new Map<string, number>();
 
+  /** Debug reset: drop every pending diff. Used when wiping all local articles
+   *  so stale ids from a previous test run cannot affect counts or filtering. */
+  clearAll(): void {
+    this.readDiffs.clear();
+    this.starDiffs.clear();
+    this.attempts.clear();
+  }
+
   // ------------------------------- queries --------------------------------
 
   effectiveUnread(articleId: string, dbUnread: boolean): boolean {
@@ -93,6 +101,31 @@ export class StatusDiffs {
         return;
       }
       delta += diff.starred ? 1 : -1;
+    });
+    return delta;
+  }
+
+  /** Global delta for ONE account only. Article ids are `${accountId}$${id}`,
+   *  so pending marks from a previously active account must not leak into the
+   *  drawer banner after switching accounts. */
+  unreadDeltaForAccount(accountId: string): number {
+    const prefix: string = `${accountId}$`;
+    let delta: number = 0;
+    this.readDiffs.forEach((diff: ReadDiff, id: string): void => {
+      if (id.startsWith(prefix)) {
+        delta += diff.unread ? 1 : -1;
+      }
+    });
+    return delta;
+  }
+
+  starredDeltaForAccount(accountId: string): number {
+    const prefix: string = `${accountId}$`;
+    let delta: number = 0;
+    this.starDiffs.forEach((diff: StarDiff, id: string): void => {
+      if (id.startsWith(prefix)) {
+        delta += diff.starred ? 1 : -1;
+      }
     });
     return delta;
   }

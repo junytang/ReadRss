@@ -14,7 +14,10 @@ import { accountRepository, DEFAULT_GROUP_SUFFIX } from '../account/AccountRepos
 import { database, ArticleState } from '../data/Database';
 import { settingsStore } from '../data/SettingsStore';
 import { Article, Feed, FeedGroup } from '../model/Models';
-import { beginSync, notifySyncBatch, notifySyncFinal, notifyContentReady } from './SyncProgress';
+import {
+  beginSync, notifySyncBatch, notifyContentReady, UiReadySignal,
+} from './SyncProgress';
+import { forEachLimited, SYNC_CONCURRENCY, UI_WINDOW_SIZE } from './SyncRuntime';
 import {
   ApiParams,
   GReaderSubscription,
@@ -42,6 +45,7 @@ const STARRED_TAG: string = 'user/-/state/com.google/starred';
  *  the configured fetchBatchSize only governs content fetch + insert batches. */
 const ID_PAGE_SIZE: string = '1000';
 const READ_ID_PAGES: number = 3;
+/** Bounded parallelism for content batches, shared with every other protocol. */
 
 /** Port of GoogleReaderRssService.kt (also handles FreshRSS). */
 export class GoogleReaderSyncService implements FeedSyncService {
@@ -194,31 +198,111 @@ export class GoogleReaderSyncService implements FeedSyncService {
     }
     const api: GoogleReaderApi = this.api(account);
     const now: number = Date.now();
+    let phaseTime: number = now;
     beginSync();
+    const uiReady: UiReadySignal = new UiReadySignal(now);
     try {
       // Use cached tokens for sync and let 401 recovery re-authenticate; a
       // fresh ClientLogin on every refresh is unnecessary and can be throttled
       // by FreshRSS. Credential validity is checked when the account is added.
       await api.ensureAuthIfNeeded();
 
+      // First-screen fast path (fresh account): one unread ID page + one
+      // contents request, committed before the full ID/metadata work so the
+      // list appears in ~1s. The main pass reads article states from the DB
+      // and will not re-fetch these ids.
+      if (account.updateAt === 0) {
+        const firstIds: string[] = await this.allItemIds(
+          api, { s: READING_LIST_STREAM, xt: READ_TAG, n: String(UI_WINDOW_SIZE) }, 1
+        );
+        if (firstIds.length > 0) {
+          const contents: ItemsContentsResult = await api.getItemsContents(firstIds);
+          const firstArticles: Article[] = [];
+          for (const item of contents.items) {
+            if (!isValidItemId(item.id)) {
+              continue;
+            }
+            const streamId: string | undefined = item.origin?.streamId;
+            if (!streamId) {
+              continue;
+            }
+            const id: string = shortItemId(item.id);
+            const publishedSec: number = item.published ?? Math.floor(now / 1000);
+            const published: number = publishedSec * 1000;
+            firstArticles.push({
+              id: dbId(account.id, id),
+              feedId: dbId(account.id, feedIdFromStreamId(streamId)),
+              feedTitle: XmlParser.decode(item.origin?.title),
+              title: XmlParser.decode(item.title),
+              author: item.author ?? '',
+              link: item.canonical?.[0]?.href ?? item.alternate?.[0]?.href ?? item.origin?.htmlUrl ?? '',
+              summary: this.plainText(item.summary?.content ?? '').substring(0, 280),
+              content: item.summary?.content ?? '',
+              imageUrl: this.firstImage(item.summary?.content ?? ''),
+              publishedAt: published > now ? now : published,
+              isRead: false,
+              isStarred: false,
+              fullContent: '',
+            });
+          }
+          if (firstArticles.length > 0) {
+            result.newArticles += await database.insertArticles(firstArticles, account.id);
+            notifySyncBatch();
+          }
+          // No new articles is still "UI ready": the existing list is readable.
+          uiReady.fire();
+          Logger.info(`GReader first-screen window: ${firstArticles.length} articles`);
+        }
+      }
+
       const isFreshRss: boolean = account.type === AccountType.FRESH_RSS;
-      const since: number = Math.floor((now - 30 * 24 * 3600 * 1000) / 1000);
       const batchSize: number = settingsStore.get().fetchBatchSize;
+      // Incremental read-ID reconciliation uses `ot=<上次同步时间>` as a lower
+      // bound; on a fresh account fall back to a 30-day window. This stream is
+      // only used to mark local articles READ, so a partial set is safe.
+      // Unread/starred ID streams stay COMPLETE (no `ot`): they are the
+      // authoritative state sets, and a partial set would wrongly revert old
+      // stars/unreads during reconciliation. Their `c` continuation cursors
+      // already make paging stable even when new items arrive mid-sync.
+      const lastSync: number = account.updateAt ?? 0;
+      const sinceSec: number = Math.floor(
+        (lastSync > 0 ? lastSync : now - 30 * 24 * 3600 * 1000) / 1000
+      );
+      const since: string = sinceSec.toString();
       const readParams: ApiParams = isFreshRss
-        ? { s: READING_LIST_STREAM, it: READ_TAG, ot: since.toString(), n: ID_PAGE_SIZE }
-        : { s: READ_TAG, ot: since.toString(), n: ID_PAGE_SIZE };
+        ? { s: READING_LIST_STREAM, it: READ_TAG, ot: since, n: ID_PAGE_SIZE }
+        : { s: READ_TAG, ot: since, n: ID_PAGE_SIZE };
       const unreadParams: ApiParams = { s: READING_LIST_STREAM, xt: READ_TAG, n: ID_PAGE_SIZE };
       const starredParams: ApiParams = { s: STARRED_TAG, n: ID_PAGE_SIZE };
 
-      // Only unread + starred IDs are needed to fetch and render content. Fetch
-      // these first so the first article batch can be shown quickly. The slow
-      // read-ID reconciliation is deferred until after content is committed.
-      // Build the sets directly: keeping both the id arrays and the sets held
-      // two full copies of every id for the whole sync (tens of MB on a large
-      // account). Set iteration order equals the original array order, so the
-      // downstream toFetch order and dedupe behaviour are unchanged.
-      const unreadSet: Set<string> = new Set<string>(await this.allItemIds(api, unreadParams));
-      const starredSet: Set<string> = new Set<string>(await this.allItemIds(api, starredParams));
+      // Content IDs: unread + starred (authoritative state sets) plus recently
+      // read (ot=<上次同步时间>) so an article another client read after our last
+      // sync still gets its body stored. Build sets directly: keeping both id
+      // arrays and sets held two full copies of every id for the whole sync
+      // (tens of MB on a large account). Set iteration order equals the original
+      // array order, so downstream toFetch order and dedupe are unchanged.
+      // The three ID streams are independent — fetch them concurrently. On a
+      // first sync this was 3 sequential round-trips before any article could
+      // be shown; now it costs one (bounded by SYNC_CONCURRENCY = 3).
+      const idStreams: [string[], string[], string[]] = await Promise.all([
+        this.allItemIds(api, unreadParams),
+        this.allItemIds(api, starredParams),
+        // Recently-read IDs (ot=<上次同步时间>) are needed both for state
+        // reconciliation AND for content: an article that arrived after our last
+        // sync but was read by another client is in neither unreadSet nor
+        // starredSet. Fetching these IDs up front lets us store its body (marked
+        // read) instead of silently losing it. The dbId-form set is reused by
+        // the deferred reconciliation below, so no extra ID request is issued.
+        this.allItemIds(api, readParams, READ_ID_PAGES),
+      ]);
+      const unreadSet: Set<string> = new Set<string>(idStreams[0]);
+      const starredSet: Set<string> = new Set<string>(idStreams[1]);
+      const recentReadIds: string[] = idStreams[2];
+      const readSet: Set<string> = new Set<string>(
+        recentReadIds.map((id: string): string => dbId(account.id, id))
+      );
+      Logger.info(`GReader sync auth+ids: ${Date.now() - phaseTime}ms`);
+      phaseTime = Date.now();
 
       const subscriptions: GReaderSubscription[] = await api.getSubscriptionList();
       const keepGroupIds: string[] = [];
@@ -297,10 +381,12 @@ export class GoogleReaderSyncService implements FeedSyncService {
       await database.setStates(toUnstar, undefined, false);
 
       const toFetch: string[] = [];
-      // Only unread + starred need content. Read ids are used purely for state
-      // reconciliation. localRemoteIds is no longer read after this block, so
-      // reuse it as the "already queued" marker and drop the duplicate `queued`
-      // set. Iterating the sets preserves the original order and dedupe.
+      // Unread + starred + recently-read IDs all need content. The read IDs
+      // cover the cross-client case where another client read a newly-arrived
+      // article before we synced; its body must still be stored (isRead=true
+      // is derived from !unreadSet.has(id) below). localRemoteIds is no longer
+      // read after this block, so reuse it as the "already queued" marker.
+      // Iterating the sets preserves order and dedupe.
       for (const id of unreadSet) {
         if (!localRemoteIds.has(id)) {
           localRemoteIds.add(id);
@@ -313,12 +399,39 @@ export class GoogleReaderSyncService implements FeedSyncService {
           toFetch.push(id);
         }
       }
+      for (const id of recentReadIds) {
+        if (!localRemoteIds.has(id)) {
+          localRemoteIds.add(id);
+          toFetch.push(id);
+        }
+      }
       // Collect notification candidates per feed and publish once at the end:
       // notifying inside the batch loop sent the same feed's notification again
       // for every batch, and re-read the whole feed list each time.
       const notifyByFeed: Map<string, FeedNotify> = new Map<string, FeedNotify>();
-      for (const batch of await this.chunks(toFetch, batchSize)) {
-        const contents: ItemsContentsResult = await api.getItemsContents(batch);
+      // Build only batch indexes, not a full 2D copy of every id: each worker
+      // slices its own batch and drops it after the insert. Lower peak memory
+      // on a first sync with tens of thousands of ids.
+      const batchCount: number = Math.ceil(toFetch.length / batchSize);
+      const batchIndexes: number[] = [];
+      for (let i: number = 0; i < batchCount; i++) {
+        batchIndexes.push(i);
+      }
+      // Shared bounded runner: at most SYNC_CONCURRENCY requests in flight.
+      // Inserts are serialized by Database.withTransaction, so only network
+      // work overlaps. The UI becomes ready after the FIRST committed batch;
+      // every remaining batch then updates badges silently.
+      await forEachLimited(batchIndexes, async (index: number): Promise<void> => {
+        const batch: string[] = toFetch.slice(index * batchSize, (index + 1) * batchSize);
+        let contents: ItemsContentsResult;
+        try {
+          contents = await api.getItemsContents(batch);
+        } catch (error) {
+          // Android's deferred fetch tolerates a failed page; one bad batch
+          // must not abort the whole sync.
+          Logger.warn(`GReader contents batch failed: ${(error as Error).message}`);
+          return;
+        }
         const articles: Article[] = [];
         for (const item of contents.items) {
           if (!isValidItemId(item.id)) {
@@ -348,10 +461,12 @@ export class GoogleReaderSyncService implements FeedSyncService {
             fullContent: '',
           });
         }
+        if (articles.length === 0) {
+          return;
+        }
         result.newArticles += await database.insertArticles(articles, account.id);
-        // Let the UI refresh unread badges after this batch, without waiting
-        // for the remaining batches to finish.
         notifySyncBatch();
+        uiReady.fire();
         for (const article of articles) {
           if (article.isRead) {
             continue;
@@ -365,24 +480,20 @@ export class GoogleReaderSyncService implements FeedSyncService {
             entry.count += 1;
           }
         }
-      }
+      }, SYNC_CONCURRENCY);
+      Logger.info(`GReader sync meta+db+contents: ${Date.now() - phaseTime}ms`);
+      phaseTime = Date.now();
       NotificationHelper.notifyAll(notifyByFeed);
 
       // All readable content is committed. Stop the spinner now even if there
       // were no new articles (toFetch empty), before the slow reconciliation.
       notifyContentReady();
 
-      // Deferred, slow part: read-ID pages are only used to mark locally-unread
-      // articles that the server considers read. By now content is committed and
-      // the user can already read, so this runs silently in the background.
-      // Convert the (at most 3000) remote read ids to dbId form once, instead
-      // of allocating a short-id substring for every local unread row (100k
-      // allocations on a large account). dbId/remoteId are inverse operations,
-      // so membership results are identical.
-      const readSet: Set<string> = new Set<string>(
-        (await this.allItemIds(api, readParams, READ_ID_PAGES))
-          .map((id: string): string => dbId(account.id, id))
-      );
+      // Deferred, slow part: mark locally-unread articles that the server
+      // considers read. readSet was fetched (with ot=since) before the content
+      // phase and is reused here — no duplicate request. dbId/remoteId are
+      // inverse operations, so membership results are identical. By now content
+      // is committed and the user can already read, so this runs silently.
       const localUnread: string[] = await database.listRemoteIds(account.id, false);
       const toRead: string[] = [];
       for (const dbIdValue of localUnread) {
@@ -398,8 +509,11 @@ export class GoogleReaderSyncService implements FeedSyncService {
       await database.deleteGroupsExcept(account.id, keepGroupIds);
       account.updateAt = now;
       await database.updateAccount(account);
+      Logger.info(`GReader sync reconcile+prune: ${Date.now() - phaseTime}ms; total: ${Date.now() - now}ms`);
       result.succeeded = 1;
-      notifySyncFinal();
+      // Fallback when toFetch was empty: nothing was committed, so no batch
+      // fired the signal. One-shot guard makes this a no-op otherwise.
+      uiReady.fire();
     } catch (error) {
       Logger.error(`GReader sync failed: ${(error as Error).message}`);
       result.failed = 1;

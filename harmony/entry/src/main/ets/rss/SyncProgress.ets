@@ -1,3 +1,5 @@
+import { Logger } from '../common/Logger';
+
 /** Minimum interval between UI progress notifications, in milliseconds.
  *  Prevents a storm of full list reloads when many small batches are inserted. */
 const NOTIFY_INTERVAL_MS: number = 800;
@@ -51,4 +53,31 @@ export function notifySyncFinal(): void {
   // with everything committed so far (e.g. first-install sync started from the
   // EntryAbility, which has no page-level sync() to do a final load itself).
   AppStorage.setOrCreate<number>('syncFinishedTick', now);
+}
+
+/**
+ * One-shot UI readiness signal shared by all protocols. Fired as soon as the
+ * first article batch (the visible window + buffer) is committed: the spinner
+ * stops, the list reloads and the "sync complete" toast appears. Everything
+ * after that (remaining batches, state reconciliation, pruning, notifications)
+ * runs silently in the background and must not keep the UI in a loading state.
+ */
+export class UiReadySignal {
+  private fired: boolean = false;
+  private start: number;
+
+  constructor(startTime: number) {
+    this.start = startTime;
+  }
+
+  fire(): void {
+    if (this.fired) {
+      return;
+    }
+    this.fired = true;
+    // Time-to-UI: the moment the first article batch is usable. Everything
+    // after this is silent background work and must not block the user.
+    Logger.info(`UI ready after ${Date.now() - this.start}ms`);
+    notifySyncFinal();
+  }
 }

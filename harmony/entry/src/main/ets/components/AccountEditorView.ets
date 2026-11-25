@@ -15,6 +15,7 @@ import { goBack } from '../common/NavigationService';
 import { Logger } from '../common/Logger';
 import { FontManager } from '../common/FontManager';
 import { ToastUtil } from '../common/ToastUtil';
+import { MinifluxSyncService } from '../rss/MinifluxSyncService';
 
 interface TypeChoice {
   type: AccountType;
@@ -26,6 +27,7 @@ const TYPES: TypeChoice[] = [
   { type: AccountType.FEVER, label: 'Fever' },
   { type: AccountType.GOOGLE_READER, label: 'Google Reader' },
   { type: AccountType.FRESH_RSS, label: 'FreshRSS' },
+  { type: AccountType.MINIFLUX, label: 'Miniflux' },
 ];
 
 /** Add/edit account form with credential validation. */
@@ -105,27 +107,37 @@ export struct AccountEditorView {
     }
     const credentials: RemoteCredentials = this.credentials();
     if (this.type !== AccountType.LOCAL) {
+      const needsPassword: boolean = this.type !== AccountType.MINIFLUX;
       if (credentials.serverUrl.length === 0 || credentials.username.length === 0
-        || credentials.password.length === 0) {
-        this.errorMessage = '服务器地址、用户名和密码均为必填项';
+        || (needsPassword && credentials.password.length === 0)) {
+        this.errorMessage = this.type === AccountType.MINIFLUX
+          ? '请填写服务器地址和 API 令牌（或用户名+密码）'
+          : '服务器地址、用户名和密码均为必填项';
         return;
       }
     }
     this.isSaving = true;
     this.errorMessage = '';
+    // Fall back to the username when the optional display name is left blank.
+    const resolvedName: string = this.name.trim().length > 0 ? this.name.trim() : credentials.username;
     try {
       if (this.isNew()) {
         // Android inserts first, then validates, then rolls back on failure.
-        const added: Account = await accountRepository.add(this.type, this.name, credentials);
+        const added: Account = await accountRepository.add(this.type, resolvedName, credentials);
         try {
-          const valid: boolean = await syncServiceFor(added).validCredentials(added);
+          const service = syncServiceFor(added);
+          const valid: boolean = await service.validCredentials(added);
           if (!valid) {
+            const detail: string = service instanceof MinifluxSyncService
+              ? (service as MinifluxSyncService).lastError() : '';
             // FreshRSS needs its dedicated API password (Settings > API
             // management), not the normal login password. Surface that hint
             // instead of a bare "Unauthorized".
             throw new Error(this.type === AccountType.FRESH_RSS
               ? '验证失败：请填写 FreshRSS 的 API 密码（设置 > API 管理中重置），不是登录密码'
-              : '验证失败：请检查服务器地址、用户名和密码');
+              : this.type === AccountType.MINIFLUX
+                ? `Miniflux 验证失败${detail.length > 0 ? `：${detail}` : '，请检查服务器地址与凭据'}`
+                : '验证失败：请检查服务器地址、用户名和密码');
           }
           // Android's doSyncOneTime() only enqueues background work and returns immediately.
           // Do not block the save flow on a potentially long first sync.
@@ -141,14 +153,38 @@ export struct AccountEditorView {
         if (!account) {
           throw new Error('账号不存在');
         }
+        // Snapshot for rollback: Android only clears authorization on edit, but
+        // a changed server URL / credentials must be validated before we keep
+        // them, otherwise the account silently breaks on the next refresh.
+        const previous: Account = {
+          id: account.id, name: account.name, type: account.type,
+          securityKey: account.securityKey, updateAt: account.updateAt,
+          lastArticleId: account.lastArticleId, syncInterval: account.syncInterval,
+          syncOnStart: account.syncOnStart, syncOnlyOnWiFi: account.syncOnlyOnWiFi,
+          syncOnlyWhenCharging: account.syncOnlyWhenCharging,
+          keepArchived: account.keepArchived, syncBlockList: account.syncBlockList,
+        };
         account.type = this.type;
-        account.name = this.name;
+        account.name = resolvedName;
         if (this.type === AccountType.LOCAL) {
           account.securityKey = EMPTY_SECURITY_KEY;
         }
         await accountRepository.update(account, this.type === AccountType.LOCAL ? undefined : credentials);
-        // Android only clears authorization on edit; it does not re-validate.
-        syncServiceFor(account).clearAuthorization();
+        if (this.type !== AccountType.LOCAL) {
+          const service = syncServiceFor(account);
+          const valid: boolean = await service.validCredentials(account);
+          if (!valid) {
+            await database.updateAccount(previous);
+            const detail: string = service instanceof MinifluxSyncService
+              ? (service as MinifluxSyncService).lastError() : '';
+            throw new Error(this.type === AccountType.FRESH_RSS
+              ? '验证失败：请填写 FreshRSS 的 API 密码（设置 > API 管理中重置），不是登录密码'
+              : this.type === AccountType.MINIFLUX
+                ? `Miniflux 验证失败${detail.length > 0 ? `：${detail}` : '，请检查服务器地址与凭据'}`
+                : '验证失败：请检查服务器地址、用户名和密码');
+          }
+          service.clearAuthorization();
+        }
       }
       AppStorage.setOrCreate<number>('accountSwitchTick', Date.now());
       ToastUtil.show(this.getUIContext(), '账号已保存');
@@ -226,7 +262,9 @@ export struct AccountEditorView {
                   text: this.serverUrl,
                   placeholder: this.type === AccountType.FEVER
                     ? 'https://demo.freshrss.org/api/fever.php'
-                    : 'https://demo.freshrss.org/api/greader.php',
+                    : this.type === AccountType.MINIFLUX
+                      ? 'https://miniflux.example.org/v1'
+                      : 'https://demo.freshrss.org/api/greader.php',
                 })
                   .width('100%').height(44).margin({ top: 8 }).fontSize(this.fs(15))
                   .backgroundColor(this.darkMode ? '#1F2226' : '#FFFFFF')
@@ -236,7 +274,8 @@ export struct AccountEditorView {
               .width('100%').margin({ top: 16 })
 
               Column() {
-                Text('用户名').fontFamily(this.appFont()).fontSize(this.fs(13)).fontColor(this.secondaryColor()).alignSelf(ItemAlign.Start)
+                Text(this.type === AccountType.MINIFLUX ? '用户名 / API Key（密码留空时）' : '用户名')
+                  .fontFamily(this.appFont()).fontSize(this.fs(13)).fontColor(this.secondaryColor()).alignSelf(ItemAlign.Start)
                 TextInput({ text: this.username })
                   .width('100%').height(44).margin({ top: 8 }).fontSize(this.fs(15))
                   .backgroundColor(this.darkMode ? '#1F2226' : '#FFFFFF')
@@ -255,6 +294,14 @@ export struct AccountEditorView {
                   .onChange((value: string) => { this.password = value; })
               }
               .width('100%').margin({ top: 16 })
+
+              // if (this.type === AccountType.MINIFLUX) {
+              //  Text('密码留空时，用户名栏填写 API 令牌（设置 > API Keys）')
+              //    .fontFamily(this.appFont()).fontSize(this.fs(13))
+              //    .fontColor(this.secondaryColor())
+              //    .alignSelf(ItemAlign.Start)
+              //    .padding({ top: 5 })
+              //}
 
               Column() {
                 Text('客户端证书别名（可选）').fontFamily(this.appFont()).fontSize(this.fs(13)).fontColor(this.secondaryColor())

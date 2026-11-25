@@ -3,6 +3,7 @@ import { syncServiceFor } from '../main/ets/rss/SyncServiceFactory';
 import { LocalSyncService } from '../main/ets/rss/LocalSyncService';
 import { FeverSyncService } from '../main/ets/rss/FeverSyncService';
 import { GoogleReaderSyncService } from '../main/ets/rss/GoogleReaderSyncService';
+import { MinifluxSyncService } from '../main/ets/rss/MinifluxSyncService';
 import { Account, AccountType } from '../main/ets/account/AccountModels';
 
 function account(type: AccountType): Account {
@@ -23,6 +24,10 @@ export default function syncFactoryTest(): void {
     it('GOOGLE_READER and FRESH_RSS -> GoogleReaderSyncService', 0, () => {
       expect(syncServiceFor(account(AccountType.GOOGLE_READER)) instanceof GoogleReaderSyncService).assertTrue();
       expect(syncServiceFor(account(AccountType.FRESH_RSS)) instanceof GoogleReaderSyncService).assertTrue();
+    });
+
+    it('MINIFLUX -> MinifluxSyncService', 0, () => {
+      expect(syncServiceFor(account(AccountType.MINIFLUX)) instanceof MinifluxSyncService).assertTrue();
     });
 
     it('FEEDLY / INOREADER / LOCAL -> LocalSyncService', 0, () => {

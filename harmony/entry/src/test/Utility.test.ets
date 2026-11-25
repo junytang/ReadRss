@@ -11,6 +11,7 @@ import { XmlParser } from '../main/ets/rss/XmlParser';
 import { md5Hex } from '../main/ets/common/Md5';
 import { WebViewStyle } from '../main/ets/rss/WebViewStyle';
 import { fitImageSize } from '../main/ets/common/ImageFit';
+import { ContentInFlight, forEachLimited, SYNC_CONCURRENCY } from '../main/ets/rss/SyncRuntime';
 import {
   FILTER_UNREAD, FILTER_STARRED, FILTER_ALL,
   READ_ALIGN_START, READ_ALIGN_END, READ_ALIGN_CENTER, READ_ALIGN_JUSTIFY,
@@ -346,6 +347,54 @@ export default function utilityTest(): void {
       expect(WebViewHtml.SCRIPT.indexOf('onLinkClick') >= 0).assertTrue();
       // Linked images must keep their link behaviour instead of zooming.
       expect(WebViewHtml.SCRIPT.indexOf('closest("a")') >= 0).assertTrue();
+    });
+  });
+
+  describe('SyncRuntime shared policy', () => {
+    it('caps concurrent work and visits every item exactly once', 0, async () => {
+      const items: number[] = [];
+      for (let i: number = 0; i < 20; i++) {
+        items.push(i);
+      }
+      const seen: number[] = [];
+      let active: number = 0;
+      let peak: number = 0;
+      await forEachLimited(items, async (item: number): Promise<void> => {
+        active++;
+        if (active > peak) peak = active;
+        seen.push(item);
+        await new Promise<void>((resolve: () => void): void => {
+          setTimeout(resolve, 1);
+        });
+        active--;
+      });
+      expect(seen.length).assertEqual(20);
+      seen.sort((a: number, b: number): number => a - b);
+      for (let i: number = 0; i < 20; i++) {
+        expect(seen[i]).assertEqual(i);
+      }
+      expect(peak <= SYNC_CONCURRENCY).assertTrue();
+    });
+
+    it('de-duplicates identical in-flight content requests', 0, async () => {
+      const registry: ContentInFlight = new ContentInFlight();
+      let calls: number = 0;
+      const action = async (): Promise<string> => {
+        calls++;
+        await new Promise<void>((resolve: () => void): void => {
+          setTimeout(resolve, 5);
+        });
+        return 'body';
+      };
+      const results: string[] = await Promise.all([
+        registry.run('id1', action), registry.run('id1', action),
+      ]);
+      expect(results[0]).assertEqual('body');
+      expect(results[1]).assertEqual('body');
+      expect(calls).assertEqual(1);
+      // After completion a new request starts fresh.
+      await registry.run('id1', action);
+      expect(calls).assertEqual(2);
     });
   });
 }

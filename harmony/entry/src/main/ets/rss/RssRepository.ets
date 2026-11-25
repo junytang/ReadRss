@@ -7,13 +7,10 @@ import { syncServiceFor } from './SyncServiceFactory';
 import { Logger } from '../common/Logger';
 import { FullContentFetcher, FULL_CONTENT_VERSION_MARKER } from './FullContentFetcher';
 import { readStatusStore } from './ReadStatusStore';
+import { articleBodyInFlight, fullContentInFlight } from './SyncRuntime';
 
 /** Facade used by the UI; always operates on the active account. */
 class FeedRepository {
-  // The prefetcher and the reader can both request full text for the same
-  // article at once. Share one in-flight fetch per id so the origin is hit once
-  // and the DB is written once; each caller still updates its own Article copy.
-  private fullContentInFlight: Map<string, Promise<string>> = new Map();
 
   async activeAccount(): Promise<Account> {
     const account: Account | undefined = await accountRepository.active();
@@ -130,11 +127,16 @@ class FeedRepository {
     }
     const account: Account = await this.activeAccount();
     const service: FeedSyncService = syncServiceFor(account);
-    if (!service.fetchContent) {
+    const fetchBody: ((acc: Account, art: Article) => Promise<string>) | undefined = service.fetchContent;
+    if (fetchBody === undefined) {
       return article;
     }
     try {
-      const content: string = await service.fetchContent(account, article);
+      // Sync, the prefetcher and the reader can all ask for the same body at
+      // once; the shared in-flight map makes that a single server request.
+      const content: string = await articleBodyInFlight.run(articleId, (): Promise<string> =>
+        fetchBody(account, article as Article)
+      );
       if (content.length > 0) {
         await database.updateArticleContent(articleId, content);
         article.content = content;
@@ -164,6 +166,16 @@ class FeedRepository {
     await database.clearFullContent();
   }
 
+  /** Debug only: wipe all local articles, reset sync cursors and pending marks
+   *  so the next pull-to-refresh re-downloads everything from scratch. */
+  async debugClearAllArticles(): Promise<number> {
+    const count: number = await database.debugClearAllArticles();
+    readStatusStore.resetForDebug();
+    AppStorage.setOrCreate<number>('feedDataTick', Date.now());
+    AppStorage.setOrCreate<number>('articleListClearTick', Date.now());
+    return count;
+  }
+
   /** True only for a body produced by the current extraction algorithm. */
   hasCurrentFullContent(article: Article): boolean {
     return article.fullContent.startsWith(FULL_CONTENT_VERSION_MARKER);
@@ -177,25 +189,16 @@ class FeedRepository {
   /** Fetch + persist full text once per article id, shared across concurrent
    *  callers (prefetch window and the opened reader). */
   private fetchAndStoreFullContent(article: Article): Promise<string> {
-    let task: Promise<string> | undefined = this.fullContentInFlight.get(article.id);
-    if (task === undefined) {
-      const id: string = article.id;
-      task = (async (): Promise<string> => {
-        const content: string = await FullContentFetcher.fetch(article.link, article.title);
-        if (content.length > 0) {
-          await database.updateArticleFullContent(id, content);
-        }
-        return content;
-      })();
-      this.fullContentInFlight.set(id, task);
-      // Drop from the in-flight table on both success and failure; a later
-      // explicit re-fetch (e.g. version bump) can start a fresh task.
-      task.then(
-        (): void => { this.fullContentInFlight.delete(id); },
-        (): void => { this.fullContentInFlight.delete(id); }
-      );
-    }
-    return task;
+    const id: string = article.id;
+    // Shared registry de-dupes the prefetcher and the opened reader; on failure
+    // the entry is removed so a later explicit re-fetch can start afresh.
+    return fullContentInFlight.run(id, async (): Promise<string> => {
+      const content: string = await FullContentFetcher.fetch(article.link, article.title);
+      if (content.length > 0) {
+        await database.updateArticleFullContent(id, content);
+      }
+      return content;
+    });
   }
 
   /** Ensure full text for an already-loaded article, avoiding a second DB read.

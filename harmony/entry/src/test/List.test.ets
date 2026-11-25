@@ -16,6 +16,8 @@ import settingsStoreTest from './SettingsStore.test';
 import gReaderTokenStoreTest from './GReaderTokenStore.test';
 import miscModulesTest from './MiscModules.test';
 import accountRepositoryTest from './AccountRepository.test';
+import minifluxTest from './Miniflux.test';
+import protocolApiTest from './ProtocolApi.test';
 
 export default function testsuite(): void {
   parserTest();
@@ -36,4 +38,6 @@ export default function testsuite(): void {
   gReaderTokenStoreTest();
   miscModulesTest();
   accountRepositoryTest();
+  minifluxTest();
+  protocolApiTest();
 }

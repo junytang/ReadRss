@@ -92,6 +92,33 @@ export struct SettingsView {
     return items;
   }
 
+  private clearCacheMenu(): Array<MenuElement> {
+    const items: Array<MenuElement> = [];
+    items.push({
+      value: '清除全文缓存',
+      action: async () => {
+        await rssRepository.clearFullContentCache();
+        ToastUtil.show(this.getUIContext(), '全文缓存已清除');
+      },
+    });
+    items.push({
+      value: '清除所有文章',
+      action: () => {
+        this.getUIContext().showAlertDialog({
+          message: '清除所有本地文章并重置同步游标？下次下拉刷新将重新下载全部内容。',
+          confirm: {
+            value: '清除',
+            action: async () => {
+              const count: number = await rssRepository.debugClearAllArticles();
+              ToastUtil.show(this.getUIContext(), `已清除 ${count} 篇文章`);
+            },
+          },
+        });
+      },
+    });
+    return items;
+  }
+
   private keepDaysLabel(): string {
     if (this.keepArticleDays === 7) return '1周';
     if (this.keepArticleDays === 14) return '2周';
@@ -336,18 +363,37 @@ export struct SettingsView {
             .backgroundColor(this.surfaceColor())
             .borderRadius(10)
 
+            Text('缓存').fontFamily(this.appFont()).fontSize(this.fs(14)).fontColor(this.secondaryColor())
+              .width('100%').textAlign(TextAlign.Start).padding({ left: 16, bottom: 8 })
+              .margin({ top: 24 })
             Column() {
-              Text('调试').fontFamily(this.appFont()).fontSize(this.fs(15)).fontWeight(FontWeight.Medium).fontColor(this.textColor())
-              Text('清除全文缓存')
-                .fontFamily(this.appFont())
-                .fontSize(this.fs(13)).fontColor('#2663D6')
-                .margin({ top: 10 })
-                .onClick(async () => {
-                  await rssRepository.clearFullContentCache();
-                  ToastUtil.show(this.getUIContext(), '全文缓存已清除');
-                })
+              Row() {
+                Column() {
+                  Text('清除缓存').fontFamily(this.appFont()).fontSize(this.fs(15)).fontColor(this.textColor())
+                  Text('清除全文缓存或所有文章').fontFamily(this.appFont())
+                    .fontSize(this.fs(13)).fontColor(this.secondaryColor()).margin({ top: 3 })
+                }
+                .layoutWeight(1)
+                .alignItems(HorizontalAlign.Start)
+                Row() {
+                  Image($r('sys.media.ohos_ic_public_arrow_right'))
+                    .width(18).height(18).fillColor(this.secondaryColor())
+                }
+                .alignItems(VerticalAlign.Center)
+              }
+              .width('100%')
+              .alignItems(VerticalAlign.Center)
+              // Bind to the whole row: an 18px arrow alone is too small a tap
+              // target and made the item appear unresponsive.
+              .bindMenu(this.clearCacheMenu(), { placement: Placement.BottomRight })
+              .padding({ left: 16, right: 16, top: 14, bottom: 14 })
+            }
+            .width('100%')
+            .backgroundColor(this.surfaceColor())
+            .borderRadius(10)
+
+            Column() {
               Text('关于').fontFamily(this.appFont()).fontSize(this.fs(15)).fontWeight(FontWeight.Medium).fontColor(this.textColor())
-                .margin({ top: 20 })
               Text(`ReadRss · ${this.versionLabel}`).fontFamily(this.appFont())
                 .fontSize(this.fs(13)).fontColor(this.secondaryColor()).margin({ top: 10 })
               Text('This version is a hard fork of Android ReadYou version.')

@@ -77,16 +77,19 @@ export default function modelTest(): void {
     it('maps type names', 0, () => {
       expect(accountTypeName(AccountType.FEVER)).assertEqual('Fever');
       expect(accountTypeName(AccountType.GOOGLE_READER)).assertEqual('Google Reader');
+      expect(accountTypeName(AccountType.MINIFLUX)).assertEqual('Miniflux');
     });
 
     it('local service detection', 0, () => {
       expect(usesLocalService(AccountType.LOCAL)).assertTrue();
       expect(usesLocalService(AccountType.FEEDLY)).assertTrue();
       expect(usesLocalService(AccountType.FEVER)).assertFalse();
+      expect(usesLocalService(AccountType.MINIFLUX)).assertFalse();
     });
 
     it('valid account type range', 0, () => {
       expect(isValidAccountType(AccountType.GOOGLE_READER)).assertTrue();
+      expect(isValidAccountType(AccountType.MINIFLUX)).assertTrue();
       expect(isValidAccountType(0)).assertFalse();
       expect(isValidAccountType(999)).assertFalse();
     });

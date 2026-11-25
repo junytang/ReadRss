@@ -48,6 +48,37 @@ class ReadStatusStore {
     }
   }
 
+  /** Debug only: discard every pending/retry diff and its cache after the
+   *  article table is wiped by the settings "clear all articles" action. */
+  resetForDebug(): void {
+    if (this.timer >= 0) {
+      clearTimeout(this.timer);
+      this.timer = -1;
+    }
+    if (this.remoteTimer >= 0) {
+      clearTimeout(this.remoteTimer);
+      this.remoteTimer = -1;
+    }
+    if (this.cacheTimer >= 0) {
+      clearTimeout(this.cacheTimer);
+      this.cacheTimer = -1;
+    }
+    this.flushing = false;
+    this.retryingRemote = false;
+    this.cacheDirty = false;
+    this.diffs.clearAll();
+    this.remoteReads.clearAll();
+    this.remoteStars.clearAll();
+    pendingStatusRegistry.clear();
+    if (this.context !== undefined) {
+      try {
+        fs.unlinkSync(this.cachePath());
+      } catch (error) {
+        // Cache file may not exist yet — nothing to clean up.
+      }
+    }
+  }
+
   // ------------------------------ persistence -----------------------------
 
   private cachePath(): string {
@@ -187,6 +218,15 @@ class ReadStatusStore {
     return this.diffs.starredDelta(feedId);
   }
 
+  /** Account-scoped global deltas, for the drawer banner after a switch. */
+  unreadDeltaForAccount(accountId: string): number {
+    return this.diffs.unreadDeltaForAccount(accountId);
+  }
+
+  starredDeltaForAccount(accountId: string): number {
+    return this.diffs.starredDeltaForAccount(accountId);
+  }
+
   // -------------------------------- marking ------------------------------
 
   markRead(articleId: string, unread: boolean, currentUnread: boolean, feedId: string, groupId: string): void {
@@ -219,7 +259,6 @@ class ReadStatusStore {
   private publish(): void {
     this.markCacheDirty();
     AppStorage.setOrCreate<number>('readStatusTick', Date.now());
-    AppStorage.setOrCreate<number>('bannerTick', Date.now());
   }
 
   // ------------------------------ background merge -----------------------
