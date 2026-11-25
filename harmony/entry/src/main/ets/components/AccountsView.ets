@@ -16,6 +16,9 @@ export struct AccountsView {
   @StorageProp('systemFontFamily') systemFontFamily: string = 'sans-serif';
   @StorageProp('topInset') topInset: number = 0;
   @StorageLink('activeAccountId') activeAccountId: string = '1';
+  // The editor bumps this tick after a save. onShown is not reliable when
+  // returning from another destination, so watch the tick to reload the list.
+  @StorageProp('accountSwitchTick') @Watch('load') accountSwitchTick: number = 0;
   @State accounts: Account[] = [];
   @State isLoading: boolean = true;
   @State pendingDelete: Account | undefined = undefined;
@@ -100,11 +103,18 @@ export struct AccountsView {
             .fontWeight(FontWeight.Medium)
             .fontColor(this.textColor())
           Blank()
-          Text('+ 添加').fontFamily(this.appFont())
-            .fontSize(this.fs(15))
-            .fontColor('#2663D6')
-            .padding({ right: 8 })
-            .onClick(() => openAccountEditor(''))
+          // Same nav-bar icon button style/size used on the other pages.
+          Button() {
+            Image($r('app.media.ic_add'))
+              .width(19)
+              .height(19)
+              .fillColor('#1A1C1E')
+          }
+          .type(ButtonType.Circle)
+          .width(38)
+          .height(38)
+          .backgroundColor(Color.White)
+          .onClick(() => openAccountEditor(''))
         }
         .width('100%')
         .padding({ left: 12, right: 16, top: 14, bottom: 20 })
@@ -140,17 +150,35 @@ export struct AccountsView {
                   .layoutWeight(1)
                   .alignItems(HorizontalAlign.Start)
 
-                  Text('编辑').fontFamily(this.appFont())
-                    .fontSize(this.fs(14))
-                    .fontColor('#2663D6')
-                    .padding({ left: 10, right: 10 })
+                  Row() {
+                    // Same 38vp circle + 19vp icon as the navigation bars.
+                    Button() {
+                      Image($r('sys.media.ohos_ic_public_edit'))
+                        .width(19)
+                        .height(19)
+                        .fillColor('#1A1C1E')
+                    }
+                    .type(ButtonType.Circle)
+                    .width(38)
+                    .height(38)
+                    .backgroundColor(Color.White)
                     .onClick(() => openAccountEditor(account.id))
-                  if (this.accounts.length > 1) {
-                    Text('删除').fontFamily(this.appFont())
-                      .fontSize(this.fs(14))
-                      .fontColor('#D93025')
-                      .padding({ right: 8 })
+
+                    if (this.accounts.length > 1) {
+                      Button() {
+                        Image($r('app.media.ic_delete'))
+                          .width(19)
+                          .height(19)
+                          .fillColor('#D93025')
+                      }
+                      .type(ButtonType.Circle)
+                      .width(38)
+                      .height(38)
+                      // Space the destructive button away from edit.
+                      .margin({ left: 16 })
+                      .backgroundColor(Color.White)
                       .onClick(() => this.confirmDelete(account))
+                    }
                   }
                 }
                 .width('100%')
@@ -158,7 +186,11 @@ export struct AccountsView {
                 .backgroundColor(this.surfaceColor())
               }
               .onClick(() => this.switchTo(account))
-            }, (account: Account) => account.id)
+            // Include the name in the key: editing only a name keeps the id
+            // unchanged, and ArkUI reuses the ListItem without re-rendering its
+            // Text unless the key changes. Exiting/re-entering rebuilt it, which
+            // is why the new name appeared only then.
+            }, (account: Account) => `${account.id}|${account.name}`)
           }
           .width('100%')
           .layoutWeight(1)

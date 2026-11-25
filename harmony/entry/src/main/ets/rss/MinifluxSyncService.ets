@@ -240,6 +240,10 @@ export class MinifluxSyncService implements FeedSyncService {
         const firstPage = await api.getEntries(firstOptions);
         const firstArticles: Article[] = [];
         for (const entry of firstPage.entries ?? []) {
+          // INSERT OR REPLACE would wipe a locally pending mark's DB copy.
+          if (pendingStatusRegistry.has(dbId(account.id, String(entry.id)))) {
+            continue;
+          }
           const article: Article | undefined = this.buildArticle(
             account, entry, firstTitles, preTime
           );
@@ -263,7 +267,14 @@ export class MinifluxSyncService implements FeedSyncService {
       const batchSize: number = Math.max(1, settingsStore.get().fetchBatchSize);
       const pageSize: number = ENTRY_PAGE_SIZE;
       let maxEntryId: number = lastMaxId;
-      const knownIds: Set<string> = new Set<string>(await database.listRemoteIds(account.id));
+      // listRemoteIds returns DB primary keys (account$id), but everywhere in
+      // this service ids are RAW server ids. Normalise here: without this,
+      // dedupe fails and reconciliation builds double-prefixed ids that match
+      // no row, so pre-existing articles never pick up cross-client marks.
+      const knownIds: Set<string> = new Set<string>();
+      for (const storedId of await database.listRemoteIds(account.id)) {
+        knownIds.add(remoteId(storedId));
+      }
       const feedTitles: Map<string, string> = new Map<string, string>();
       for (const feed of await database.listFeeds(account.id)) {
         feedTitles.set(feed.id, feed.title);
@@ -351,21 +362,25 @@ export class MinifluxSyncService implements FeedSyncService {
           before = items[items.length - 1].id;
         }
       };
-      if (lastMaxId === 0) {
-        // Fresh sync without any unread/starred entry would otherwise leave the
-        // cursor at 0 forever, so the next sync could never be incremental.
-        // One tiny request (limit=1) learns the current high-water mark.
-        const probe = await api.getEntries({ limit: 1, order: 'id', direction: 'desc' });
-        const newest: MinifluxEntry | undefined = (probe.entries ?? [])[0];
-        if (newest !== undefined && newest.id > maxEntryId) {
-          maxEntryId = newest.id;
-        }
-      }
       for (const stream of this.bodyFetchStreams(true, lastMaxId, lastMaxId === 0)) {
         await fetchBodies(
           stream.status, stream.starred, stream.afterEntryId ?? 0,
           stream.status !== undefined || stream.starred !== undefined
         );
+      }
+      if (lastMaxId === 0) {
+        // Fresh sync also stores a small UNFILTERED window so an entry that
+        // arrived and was read (not starred) by another client is not skipped.
+        // Never advance the cursor from a probe: only entries we actually store
+        // may move it, otherwise that entry's body is lost forever.
+        const window = await api.getEntries({
+          limit: UI_WINDOW_SIZE, order: 'id', direction: 'desc',
+        });
+        for (const entry of window.entries ?? []) {
+          if (entry.id > maxEntryId) maxEntryId = entry.id;
+          addNew(entry);
+        }
+        await insertPending();
       }
       // Deferred state-ID fetch (incremental only). It used to run before the
       // body fetch and delayed the first screen; now it happens after the UI

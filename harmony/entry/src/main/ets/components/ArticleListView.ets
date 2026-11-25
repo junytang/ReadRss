@@ -827,13 +827,16 @@ export struct ArticleListView {
     const task: Promise<void> = days <= 0
       ? rssRepository.markAllRead(this.currentFeedId, this.currentGroupId)
       : rssRepository.markAllReadBefore(this.currentFeedId, this.currentGroupId, before);
-    task.then(() => {
+    task.then(async () => {
       // Commit succeeded: clear the local diffs that are now persisted, then
       // re-derive counts. The store's publish tick drives the rest.
       for (const id of ids) {
         readStatusStore.clearConfirmed(id);
       }
-      // markAllRead wrote the DB directly: re-read per-feed badges (and counts).
+      // markAllRead wrote the DB directly. Reload rows from the DB too: the
+      // optimistic diff above only covered loaded rows, so without this the
+      // rest of the list keeps showing the old unread state.
+      await this.load(false, true, false);
       this.refreshFeeds();
     }).catch((error: Error) => {
       for (const id of ids) {

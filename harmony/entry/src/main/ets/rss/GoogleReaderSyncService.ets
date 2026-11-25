@@ -161,13 +161,10 @@ export class GoogleReaderSyncService implements FeedSyncService {
       if (continuation) {
         params.c = continuation;
       }
-      let body: ItemIdsDto;
-      try {
-        body = await api.getItemIds(params);
-      } catch (error) {
-        Logger.error(`GReader ids page failed: ${(error as Error).message}`);
-        break;
-      }
+      // A partial ID set must never be treated as authoritative: reconciliation
+      // marks articles read by absence from unreadSet. Fail the whole sync on a
+      // page error so the user can retry instead of losing read/star states.
+      const body: ItemIdsDto = await api.getItemIds(params);
       for (const ref of body.itemRefs ?? []) {
         if (ref.id) {
           ids.push(shortItemId(ref.id));
@@ -227,10 +224,16 @@ export class GoogleReaderSyncService implements FeedSyncService {
               continue;
             }
             const id: string = shortItemId(item.id);
+            const localId: string = dbId(account.id, id);
+            // insertArticles uses INSERT OR REPLACE: never overwrite a row whose
+            // mark is still pending locally, or the DB copy would diverge.
+            if (pendingStatusRegistry.has(localId)) {
+              continue;
+            }
             const publishedSec: number = item.published ?? Math.floor(now / 1000);
             const published: number = publishedSec * 1000;
             firstArticles.push({
-              id: dbId(account.id, id),
+              id: localId,
               feedId: dbId(account.id, feedIdFromStreamId(streamId)),
               feedTitle: XmlParser.decode(item.origin?.title),
               title: XmlParser.decode(item.title),
@@ -287,20 +290,16 @@ export class GoogleReaderSyncService implements FeedSyncService {
       const idStreams: [string[], string[], string[]] = await Promise.all([
         this.allItemIds(api, unreadParams),
         this.allItemIds(api, starredParams),
-        // Recently-read IDs (ot=<上次同步时间>) are needed both for state
-        // reconciliation AND for content: an article that arrived after our last
-        // sync but was read by another client is in neither unreadSet nor
-        // starredSet. Fetching these IDs up front lets us store its body (marked
-        // read) instead of silently losing it. The dbId-form set is reused by
-        // the deferred reconciliation below, so no extra ID request is issued.
+        // Recently-read IDs (ot=<上次同步时间>) are only for CONTENT: an
+        // article that arrived after our last sync but was read by another
+        // client is in neither unreadSet nor starredSet, so its body would
+        // otherwise be lost. State uses the complete unreadSet instead, because
+        // FreshRSS's ot filters on crawl time, not on when a mark happened.
         this.allItemIds(api, readParams, READ_ID_PAGES),
       ]);
       const unreadSet: Set<string> = new Set<string>(idStreams[0]);
       const starredSet: Set<string> = new Set<string>(idStreams[1]);
       const recentReadIds: string[] = idStreams[2];
-      const readSet: Set<string> = new Set<string>(
-        recentReadIds.map((id: string): string => dbId(account.id, id))
-      );
       Logger.info(`GReader sync auth+ids: ${Date.now() - phaseTime}ms`);
       phaseTime = Date.now();
 
@@ -356,6 +355,7 @@ export class GoogleReaderSyncService implements FeedSyncService {
       // One state scan replaces three full-table id queries (all / read /
       // starred) plus the per-id indexOf scans used to dedupe fetches.
       const localRemoteIds: Set<string> = new Set<string>();
+      const toRead: string[] = [];
       const toUnread: string[] = [];
       const toStar: string[] = [];
       const toUnstar: string[] = [];
@@ -371,11 +371,16 @@ export class GoogleReaderSyncService implements FeedSyncService {
           if (pendingStatusRegistry.has(state.id)) {
             continue;
           }
+          // unreadSet is COMPLETE (no ot), so it is authoritative in both
+          // directions. FreshRSS's ot filters on crawl time, not read time, so
+          // a read-ID stream cannot detect old articles read by another client.
           if (state.isRead && unreadSet.has(id)) toUnread.push(state.id);
+          if (!state.isRead && !unreadSet.has(id)) toRead.push(state.id);
           if (!state.isStarred && starredSet.has(id)) toStar.push(state.id);
           if (state.isStarred && !starredSet.has(id)) toUnstar.push(state.id);
         }
       }
+      await database.setStates(toRead, true, undefined);
       await database.setStates(toUnread, false, undefined);
       await database.setStates(toStar, undefined, true);
       await database.setStates(toUnstar, undefined, false);
@@ -489,21 +494,9 @@ export class GoogleReaderSyncService implements FeedSyncService {
       // were no new articles (toFetch empty), before the slow reconciliation.
       notifyContentReady();
 
-      // Deferred, slow part: mark locally-unread articles that the server
-      // considers read. readSet was fetched (with ot=since) before the content
-      // phase and is reused here — no duplicate request. dbId/remoteId are
-      // inverse operations, so membership results are identical. By now content
-      // is committed and the user can already read, so this runs silently.
-      const localUnread: string[] = await database.listRemoteIds(account.id, false);
-      const toRead: string[] = [];
-      for (const dbIdValue of localUnread) {
-        if (!pendingStatusRegistry.has(dbIdValue) && readSet.has(dbIdValue)) {
-          toRead.push(dbIdValue);
-        }
-      }
-      if (toRead.length > 0) {
-        await database.setStates(toRead, true, undefined);
-      }
+      // Read-state reconciliation now happens in the single state scan above
+      // using the complete unread ID set; the ot-based read stream is only for
+      // fetching bodies of articles another client read since our last sync.
 
       await database.deleteFeedsExcept(account.id, keepFeedIds);
       await database.deleteGroupsExcept(account.id, keepGroupIds);

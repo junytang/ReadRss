@@ -6,7 +6,7 @@ import { Article, Feed, FeedGroup } from '../model/Models';
 import {
   beginSync, notifySyncBatch, notifyContentReady, UiReadySignal,
 } from './SyncProgress';
-import { UI_WINDOW_SIZE } from './SyncRuntime';
+import { forEachLimited, SYNC_CONCURRENCY, UI_WINDOW_SIZE } from './SyncRuntime';
 import { FeverApi, FeverFeed, FeverGroupMapping, FeverItem, FeverStatus } from './FeverApi';
 import { FeedSyncService, FeedNotify, SyncResult } from './SyncService';
 import { Logger } from '../common/Logger';
@@ -77,7 +77,12 @@ export class FeverSyncService implements FeedSyncService {
             || item.feed_id === undefined || item.feed_id === null) {
             continue;
           }
-          fastIds.add(String(item.id));
+          const id: string = String(item.id);
+          // Never REPLACE a row whose mark is still pending locally.
+          if (pendingStatusRegistry.has(dbId(account.id, id))) {
+            continue;
+          }
+          fastIds.add(id);
           const feedKey: string = dbId(account.id, item.feed_id.toString());
           const html: string = item.html ?? '';
           const published: number = item.created_on_time ? item.created_on_time * 1000 : preTime;
@@ -197,7 +202,9 @@ export class FeverSyncService implements FeedSyncService {
         feedTitles.set(local.id, local.title);
       }
 
-      let lastSeenId: string = account.lastArticleId ?? '';
+      // lastArticleId is persisted in dbId form (account$id), but Fever's
+      // since_id is a numeric remote id — strip the prefix like Android does.
+      let lastSeenId: string = remoteId(account.lastArticleId ?? '');
       const batchSize: number = settingsStore.get().fetchBatchSize;
       // One notification per feed for the whole sync (Android behaviour), instead
       // of re-notifying and re-reading the feed table on every batch.
@@ -210,6 +217,10 @@ export class FeverSyncService implements FeedSyncService {
           const id: string = String(item.id ?? '');
           if (fastIds.has(id)) {
             continue; // already committed by the first-screen fast path
+          }
+          // INSERT OR REPLACE must not clobber a locally pending mark.
+          if (pendingStatusRegistry.has(dbId(account.id, id))) {
+            continue;
           }
           if (item.id === undefined || item.id === null || item.feed_id === undefined || item.feed_id === null) {
             throw new Error('Fever item missing required field');
@@ -353,9 +364,12 @@ export class FeverSyncService implements FeedSyncService {
     // Fever's documented API only accepts a single item id.
     await database.setStates(articleIds, read, undefined);
     const done: string[] = [];
-    for (const id of articleIds) {
-      // Report only ids whose per-item POST succeeded. A failed item must stay
-      // in the batcher's pending set for a bounded retry; one failure must not
+    // Fever has no bulk mark-by-ids endpoint: one POST per item is required.
+    // Run them with the shared concurrency cap instead of fully sequentially,
+    // so a "mark all read" of hundreds of articles does not stall for minutes.
+    await forEachLimited(articleIds, async (id: string): Promise<void> => {
+      // Report only ids whose per-item POST succeeded. A failed item stays in
+      // the batcher's pending set for a bounded retry; one failure must not
       // abort the remaining items or be mistaken for overall success.
       try {
         await api.markItem(status, remoteId(id));
@@ -363,7 +377,7 @@ export class FeverSyncService implements FeedSyncService {
       } catch (error) {
         Logger.error(`Fever markItem failed: ${(error as Error).message} id=${id}`);
       }
-    }
+    }, SYNC_CONCURRENCY);
     return done;
   }
 
