@@ -13,6 +13,8 @@ import { Logger } from '../common/Logger';
 import { NotificationHelper } from '../common/NotificationHelper';
 import { pendingStatusRegistry } from './PendingStatusRegistry';
 import { md5Hex } from '../common/Md5';
+import { gReaderPublishedAt } from './EntryPublishedTime';
+import { normalizeFeedText } from '../model/FeedDisplay';
 
 const MAX_TIMESTAMP: number = 9223372036854775; // Date(Long.MAX_VALUE).time / 1000
 
@@ -86,18 +88,18 @@ export class FeverSyncService implements FeedSyncService {
           fastIds.add(id);
           const feedKey: string = dbId(account.id, item.feed_id.toString());
           const html: string = item.html ?? '';
-          const published: number = item.created_on_time ? item.created_on_time * 1000 : preTime;
+          const published: number = gReaderPublishedAt(item.created_on_time, preTime);
           firstArticles.push({
             id: dbId(account.id, String(item.id)),
             feedId: feedKey,
-            feedTitle: firstTitles.get(feedKey) ?? '',
+            feedTitle: normalizeFeedText(firstTitles.get(feedKey) ?? ''),
             title: FeverApi.decodeHtml(item.title) || 'Empty',
             author: item.author ?? '',
             link: item.url ?? '',
             summary: this.plainText(html).substring(0, 280),
             content: html,
             imageUrl: this.firstImage(html),
-            publishedAt: published > preTime ? preTime : published,
+            publishedAt: published,
             isRead: (item.is_read ?? 0) > 0,
             isStarred: (item.is_saved ?? 0) > 0,
             fullContent: '',
@@ -180,14 +182,14 @@ export class FeverSyncService implements FeedSyncService {
           throw new Error(`Missing Fever group mapping for feed ${feed.id}`);
         }
         const groupId: string = dbId(account.id, remoteGroup.toString());
-        const title: string = FeverApi.decodeHtml(feed.title) || 'Empty';
+        const title: string = normalizeFeedText(FeverApi.decodeHtml(feed.title)) || 'Empty';
         const favicon: string = feed.favicon_id !== undefined && feed.favicon_id !== null
           ? iconMap.get(String(feed.favicon_id)) ?? ''
           : '';
         const local: Feed = {
           id: dbId(account.id, feed.id.toString()),
           title: title,
-          url: feed.url,
+          url: normalizeFeedText(feed.url),
           groupId: groupId,
           iconUrl: favicon,
           sortOrder: i,
@@ -227,19 +229,19 @@ export class FeverSyncService implements FeedSyncService {
             throw new Error('Fever item missing required field');
           }
           const feedKey: string = dbId(account.id, item.feed_id.toString());
-          const published: number = item.created_on_time ? item.created_on_time * 1000 : preTime;
+          const published: number = gReaderPublishedAt(item.created_on_time, preTime);
           const html: string = item.html ?? '';
           articles.push({
             id: dbId(account.id, id),
             feedId: feedKey,
-            feedTitle: feedTitles.get(feedKey) ?? '',
+            feedTitle: normalizeFeedText(feedTitles.get(feedKey) ?? ''),
             title: FeverApi.decodeHtml(item.title) || 'Empty',
             author: item.author ?? '',
             link: item.url ?? '',
             summary: this.plainText(html).substring(0, 280),
             content: html,
             imageUrl: this.firstImage(html),
-            publishedAt: published > preTime ? preTime : published,
+            publishedAt: published,
             isRead: (item.is_read ?? 0) > 0,
             isStarred: (item.is_saved ?? 0) > 0,
             fullContent: '',

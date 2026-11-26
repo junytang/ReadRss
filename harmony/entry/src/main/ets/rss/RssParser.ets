@@ -1,5 +1,6 @@
 import { XmlNode, XmlParser } from './XmlParser';
 import { Article } from '../model/Models';
+import { normalizeFeedText } from '../model/FeedDisplay';
 
 export interface ParsedFeed {
   title: string;
@@ -24,8 +25,9 @@ export class RssParser {
   }
 
   private parseRss2(channel: XmlNode, feedId: string, fallbackTitle: string): ParsedFeed {
-    const title: string =
-      XmlParser.text(XmlParser.child(channel, 'title')) || fallbackTitle;
+    const title: string = normalizeFeedText(
+      XmlParser.text(XmlParser.child(channel, 'title')) || fallbackTitle
+    );
     const siteUrl: string = XmlParser.text(XmlParser.child(channel, 'link'));
     const description: string = XmlParser.text(XmlParser.child(channel, 'description'));
 
@@ -76,7 +78,9 @@ export class RssParser {
   }
 
   private parseAtom(feed: XmlNode, feedId: string, fallbackTitle: string): ParsedFeed {
-    const title: string = XmlParser.text(XmlParser.child(feed, 'title')) || fallbackTitle;
+    const title: string = normalizeFeedText(
+      XmlParser.text(XmlParser.child(feed, 'title')) || fallbackTitle
+    );
     const siteUrl: string = XmlParser.attr(XmlParser.child(feed, 'link'), 'href');
     const description: string = XmlParser.text(XmlParser.child(feed, 'subtitle'));
 

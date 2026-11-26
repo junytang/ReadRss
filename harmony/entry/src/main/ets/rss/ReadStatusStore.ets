@@ -341,7 +341,11 @@ class ReadStatusStore {
       // Commit only broadcasts the authoritative refresh (not readStatusTick):
       // local diffs are cleared (delta=0) while views still hold old DB baselines.
       this.markCacheDirty();
-      AppStorage.setOrCreate<number>('readStatusFlushedTick', Date.now());
+      // Monotonic counter, not Date.now(): two flushes in the same
+      // millisecond produce equal values, which AppStorage/@Watch drops and
+      // the drawer badges stay stale.
+      const flushed: number = (AppStorage.get<number>('readStatusFlushedTick') ?? 0) + 1;
+      AppStorage.setOrCreate<number>('readStatusFlushedTick', flushed);
       this.scheduleRemoteIfPending();
     } catch (error) {
       // The DB write itself failed: keep the local diffs and retry them (they

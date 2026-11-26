@@ -2,7 +2,7 @@ import { Logger } from '../common/Logger';
 
 /** Minimum interval between UI progress notifications, in milliseconds.
  *  Prevents a storm of full list reloads when many small batches are inserted. */
-const NOTIFY_INTERVAL_MS: number = 800;
+export const NOTIFY_INTERVAL_MS: number = 800;
 let lastNotify: number = 0;
 let firstBatchNotified: boolean = false;
 

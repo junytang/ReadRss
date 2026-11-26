@@ -8,7 +8,10 @@ import { Account, AccountType, dbId } from '../main/ets/account/AccountModels';
 
 interface ApiAccess { entryQuery(params: MinifluxEntryParams): string; }
 interface ApiInternals { basic: string; token: string; baseUrl: string; }
-interface ServiceAccess { lastMaxEntryId(account: Account): number; }
+interface ServiceAccess {
+  lastMaxEntryId(account: Account): number;
+  firstScreenParams(freshSync: boolean, lastMaxId: number): MinifluxEntryParams;
+}
 interface StreamAccess {
   bodyFetchStreams(idsAvailable: boolean, lastMaxId: number, freshSync: boolean): MinifluxEntryParams[];
 }
@@ -183,6 +186,19 @@ export default function minifluxTest(): void {
   });
 
   describe('MinifluxSyncService incremental cursor', () => {
+    it('first-screen window sorts by published_at, matching the list order', 0, () => {
+      const svc: MinifluxSyncService = new MinifluxSyncService();
+      const access = svc as object as ServiceAccess;
+      const incremental: MinifluxEntryParams = access.firstScreenParams(false, 42);
+      expect(incremental.afterEntryId).assertEqual(42);
+      expect(incremental.order).assertEqual('published_at');
+      expect(incremental.direction).assertEqual('desc');
+      expect(incremental.status).assertEqual(undefined);
+      const fresh: MinifluxEntryParams = access.firstScreenParams(true, 0);
+      expect(fresh.status).assertEqual('unread');
+      expect(fresh.order).assertEqual('published_at');
+    });
+
     it('reads last max entry id from the stored high-water mark', 0, () => {
       const svc: MinifluxSyncService = new MinifluxSyncService();
       const access = svc as object as ServiceAccess;

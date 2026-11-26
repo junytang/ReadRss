@@ -16,17 +16,19 @@ import { Logger } from '../common/Logger';
 import { NotificationHelper } from '../common/NotificationHelper';
 import { pendingStatusRegistry } from './PendingStatusRegistry';
 import { XmlParser } from './XmlParser';
+import { parseEntryPublishedAt } from './EntryPublishedTime';
+import { normalizeFeedText } from '../model/FeedDisplay';
 
 const DEFAULT_GROUP_TITLE: string = 'Defaults';
 /** Miniflux caps /v1/entries at 1000; 100 keeps responses small and is stable
  *  across versions. Decoupled from the UI's fetchBatchSize. */
-const ENTRY_PAGE_SIZE: number = 300;
+export const ENTRY_PAGE_SIZE: number = 300;
 /** Fresh-sync first-screen budget: at most 9000 newest entries per stream.
  *  Older history beyond this is intentionally NOT imported: the cursor is a
  *  high-water mark, so incremental syncs only see ids above it and will not
  *  revisit the skipped tail. Keeping the bound avoids a multi-hundred-MB first
  *  sync; raise it if full-history import is required. */
-const MAX_FRESH_BODY_PAGES: number = 30;
+export const MAX_FRESH_BODY_PAGES: number = 30;
 /** Miniflux allows up to 10,000 ids per response. Using the maximum turns a
  *  large unread stream into ONE request instead of ten sequential OFFSET pages
  *  (OFFSET paging gets progressively slower on a big entries table). */
@@ -155,6 +157,22 @@ export class MinifluxSyncService implements FeedSyncService {
     return Number.isNaN(value) ? 0 : value;
   }
 
+  /** The first visible batch must be ordered like the list itself
+   *  (published_at DESC, id DESC), NOT by entry id. Some feeds publish entries
+   *  whose id order disagrees with their date; fetching by id made the first
+   *  batch miss articles that later appeared on top during the full sync
+   *  (abcd -> 1234abcd). The cursor still filters by id; only sort changes. */
+  firstScreenParams(freshSync: boolean, lastMaxId: number): MinifluxEntryParams {
+    if (freshSync) {
+      return {
+        status: 'unread', limit: UI_WINDOW_SIZE, order: 'published_at', direction: 'desc',
+      };
+    }
+    return {
+      afterEntryId: lastMaxId, limit: UI_WINDOW_SIZE, order: 'published_at', direction: 'desc',
+    };
+  }
+
   /**
    * Streams used for the body fetch.
    * - Fresh sync (no cursor): only unread + starred bodies are fetched. An
@@ -236,13 +254,8 @@ export class MinifluxSyncService implements FeedSyncService {
         for (const feed of cachedFeeds) {
           firstTitles.set(feed.id, feed.title);
         }
-        const firstOptions: MinifluxEntryParams = freshSync
-          ? {
-            status: 'unread', limit: UI_WINDOW_SIZE, order: 'id', direction: 'desc',
-          }
-          : {
-            afterEntryId: lastMaxId, limit: UI_WINDOW_SIZE, order: 'id', direction: 'desc',
-          };
+        const firstOptions: MinifluxEntryParams =
+          this.firstScreenParams(freshSync, lastMaxId);
         const firstPage = await api.getEntries(firstOptions);
         const firstArticles: Article[] = [];
         for (const entry of firstPage.entries ?? []) {
@@ -510,8 +523,8 @@ export class MinifluxSyncService implements FeedSyncService {
         }
         const local: Feed = {
           id: feedId,
-          title: XmlParser.decode(remote.title) || 'Empty',
-          url: remote.feed_url ?? '',
+          title: normalizeFeedText(XmlParser.decode(remote.title)) || 'Empty',
+          url: normalizeFeedText(remote.feed_url ?? ''),
           groupId: groupId,
           iconUrl: icon,
           sortOrder: i,
@@ -714,24 +727,24 @@ export class MinifluxSyncService implements FeedSyncService {
     }
     const feedKey: string = dbId(account.id, String(entry.feed_id));
     const html: string = XmlParser.decode(entry.content) || '';
-    let published: number = preTime;
-    if (entry.published_at) {
-      const parsed: number = new Date(entry.published_at).getTime();
-      if (!Number.isNaN(parsed)) {
-        published = parsed;
-      }
-    }
+    // GReader compatibility maps its `published` from Miniflux's published_at
+    // (the feed pubDate), so use the same field here to keep ordering parity.
+    // created_at is only a fallback for servers that omit published_at.
+    // Parsing also tolerates numeric seconds/ms.
+    const published: number = parseEntryPublishedAt(
+      entry.published_at ?? entry.created_at, preTime, preTime
+    );
     return {
       id: dbId(account.id, String(entry.id)),
       feedId: feedKey,
-      feedTitle: feedTitles.get(feedKey) ?? '',
+      feedTitle: normalizeFeedText(feedTitles.get(feedKey) ?? ''),
       title: XmlParser.decode(entry.title) || 'Empty',
       author: XmlParser.decode(entry.author) || '',
       link: entry.url ?? '',
       summary: this.plainText(html).substring(0, 280),
       content: html,
       imageUrl: this.firstImage(html),
-      publishedAt: published > preTime ? preTime : published,
+      publishedAt: published,
       isRead: entry.status !== 'unread',
       isStarred: entry.starred === true,
       fullContent: '',

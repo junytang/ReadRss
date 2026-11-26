@@ -31,6 +31,11 @@ import { FeedSyncService, FeedNotify, SyncResult } from './SyncService';
 import { Logger } from '../common/Logger';
 import { NotificationHelper } from '../common/NotificationHelper';
 import { pendingStatusRegistry } from './PendingStatusRegistry';
+import {
+  resolveRemoteItemState, reconcileRemoteStates, LocalRowState, selectContentFetchIds,
+} from './RemoteStateResolver';
+import { gReaderPublishedAt } from './EntryPublishedTime';
+import { normalizeFeedText } from '../model/FeedDisplay';
 
 const READING_LIST_STREAM: string = 'user/-/state/com.google/reading-list';
 const READ_TAG: string = 'user/-/state/com.google/read';
@@ -43,12 +48,12 @@ const STARRED_TAG: string = 'user/-/state/com.google/starred';
  */
 /** ID streams are paged with a large page size to minimise network round-trips;
  *  the configured fetchBatchSize only governs content fetch + insert batches. */
-const ID_PAGE_SIZE: string = '1000';
-const READ_ID_PAGES: number = 3;
+export const ID_PAGE_SIZE: string = '1000';
+export const READ_ID_PAGES: number = 3;
 /** Unread/starred ID streams are authoritative for state. Cap them at 20 pages
  *  (20k ids) to protect self-hosted servers; if a stream is truncated we skip
  *  that direction of state reconciliation rather than marking the tail read. */
-const STATE_ID_PAGES: number = 20;
+export const STATE_ID_PAGES: number = 20;
 
 interface ItemIdPage {
   ids: string[];
@@ -244,19 +249,18 @@ export class GoogleReaderSyncService implements FeedSyncService {
             if (pendingStatusRegistry.has(localId)) {
               continue;
             }
-            const publishedSec: number = item.published ?? Math.floor(now / 1000);
-            const published: number = publishedSec * 1000;
+            const published: number = gReaderPublishedAt(item.published, now);
             firstArticles.push({
               id: localId,
               feedId: dbId(account.id, feedIdFromStreamId(streamId)),
-              feedTitle: XmlParser.decode(item.origin?.title),
+              feedTitle: normalizeFeedText(XmlParser.decode(item.origin?.title)),
               title: XmlParser.decode(item.title),
               author: item.author ?? '',
               link: item.canonical?.[0]?.href ?? item.alternate?.[0]?.href ?? item.origin?.htmlUrl ?? '',
               summary: this.plainText(item.summary?.content ?? '').substring(0, 280),
               content: item.summary?.content ?? '',
               imageUrl: this.firstImage(item.summary?.content ?? ''),
-              publishedAt: published > now ? now : published,
+              publishedAt: published,
               isRead: false,
               isStarred: false,
               fullContent: '',
@@ -357,8 +361,8 @@ export class GoogleReaderSyncService implements FeedSyncService {
         }
         const feed: Feed = {
           id: dbId(account.id, feedIdFromStreamId(subscription.id)),
-          title: XmlParser.normalizeFullWidth(XmlParser.decode(subscription.title)),
-          url: feedUrl,
+          title: normalizeFeedText(XmlParser.decode(subscription.title)),
+          url: normalizeFeedText(feedUrl),
           groupId: groupId,
           iconUrl: subscription.iconUrl ?? '',
           sortOrder: keepFeedIds.length,
@@ -386,56 +390,45 @@ export class GoogleReaderSyncService implements FeedSyncService {
         // long content-fetch loop (previously it stayed alive to end of sync).
         const localStates: ArticleState[] = await database.listArticleStates(account.id);
         for (const state of localStates) {
-          const id: string = remoteId(state.id);
-          localRemoteIds.add(id);
-          // Do not reconcile an id whose mark is still pending locally: the
-          // server view is stale and would revert the user's just-changed state.
+          localRemoteIds.add(remoteId(state.id));
+        }
+        // unreadSet is COMPLETE (no ot), so it is authoritative in both
+        // directions. FreshRSS's ot filters on crawl time, not read time, so a
+        // read-ID stream cannot detect old articles read by another client.
+        // Pending local marks are skipped by the resolver below: the server
+        // view is stale and must not revert a just-changed state.
+        const rows: LocalRowState[] = localStates.map((state: ArticleState): LocalRowState => ({
+          localId: state.id,
+          remoteId: remoteId(state.id),
+          isRead: state.isRead,
+          isStarred: state.isStarred,
+        }));
+        const pending: Set<string> = new Set<string>();
+        for (const state of localStates) {
           if (pendingStatusRegistry.has(state.id)) {
-            continue;
-          }
-          // unreadSet is COMPLETE (no ot), so it is authoritative in both
-          // directions. FreshRSS's ot filters on crawl time, not read time, so
-          // a read-ID stream cannot detect old articles read by another client.
-          if (reconcileReadState) {
-            if (state.isRead && unreadSet.has(id)) toUnread.push(state.id);
-            if (!state.isRead && !unreadSet.has(id)) toRead.push(state.id);
-          }
-          if (reconcileStarState) {
-            if (!state.isStarred && starredSet.has(id)) toStar.push(state.id);
-            if (state.isStarred && !starredSet.has(id)) toUnstar.push(state.id);
+            pending.add(state.id);
           }
         }
+        const diff = reconcileRemoteStates(
+          rows, unreadSet, starredSet, pending, reconcileReadState, reconcileStarState
+        );
+        toRead.push(...diff.toRead);
+        toUnread.push(...diff.toUnread);
+        toStar.push(...diff.toStar);
+        toUnstar.push(...diff.toUnstar);
       }
       await database.setStates(toRead, true, undefined);
       await database.setStates(toUnread, false, undefined);
       await database.setStates(toStar, undefined, true);
       await database.setStates(toUnstar, undefined, false);
 
-      const toFetch: string[] = [];
-      // Unread + starred + recently-read IDs all need content. The read IDs
-      // cover the cross-client case where another client read a newly-arrived
-      // article before we synced; its body must still be stored (isRead=true
-      // is derived from !unreadSet.has(id) below). localRemoteIds is no longer
-      // read after this block, so reuse it as the "already queued" marker.
-      // Iterating the sets preserves order and dedupe.
-      for (const id of unreadSet) {
-        if (!localRemoteIds.has(id)) {
-          localRemoteIds.add(id);
-          toFetch.push(id);
-        }
-      }
-      for (const id of starredSet) {
-        if (!localRemoteIds.has(id)) {
-          localRemoteIds.add(id);
-          toFetch.push(id);
-        }
-      }
-      for (const id of recentReadIds) {
-        if (!localRemoteIds.has(id)) {
-          localRemoteIds.add(id);
-          toFetch.push(id);
-        }
-      }
+      // Fetch bodies ONLY for unread + starred (authoritative state sets).
+      // Including the `ot` read stream here made a fresh sync store up to 3000
+      // already-read articles at once — 全部 jumped to thousands and the sync
+      // took minutes while the unread second batch never appeared in time.
+      const toFetch: string[] = selectContentFetchIds(
+        localRemoteIds, Array.from(unreadSet), Array.from(starredSet), recentReadIds
+      );
       // Collect notification candidates per feed and publish once at the end:
       // notifying inside the batch loop sent the same feed's notification again
       // for every batch, and re-read the whole feed list each time.
@@ -475,28 +468,32 @@ export class GoogleReaderSyncService implements FeedSyncService {
             continue;
           }
           const id: string = shortItemId(item.id);
-          const publishedSec: number = item.published ?? Math.floor(now / 1000);
-          const published: number = publishedSec * 1000;
+          const published: number = gReaderPublishedAt(item.published, now);
+          // State comes ONLY from the authoritative unread/star ID sets,
+          // never from item.categories (Android parity). Several GReader
+          // servers omit the read tag in categories, so trusting it inserted
+          // articles another client had read as unread: the first refresh
+          // showed a stale count and only the next one converged. When a
+          // stream was truncated its set is partial, so fall back to tags /
+          // positively observed recent-read ids instead of absence.
+          const state = resolveRemoteItemState(
+            { id: id, categories: item.categories },
+            reconcileReadState, reconcileStarState,
+            unreadSet, starredSet, recentReadSet, READ_TAG, STARRED_TAG
+          );
           articles.push({
             id: dbId(account.id, id),
             feedId: dbId(account.id, feedIdFromStreamId(streamId)),
-            feedTitle: XmlParser.decode(item.origin?.title),
+            feedTitle: normalizeFeedText(XmlParser.decode(item.origin?.title)),
             title: XmlParser.decode(item.title),
             author: item.author ?? '',
             link: item.canonical?.[0]?.href ?? item.alternate?.[0]?.href ?? item.origin?.htmlUrl ?? '',
             summary: this.plainText(item.summary?.content ?? '').substring(0, 280),
             content: item.summary?.content ?? '',
             imageUrl: this.firstImage(item.summary?.content ?? ''),
-            publishedAt: published > now ? now : published,
-            // If the unread stream was truncated, absence from the partial set
-            // does NOT mean read. Fall back to the ot read stream; unknown
-            // entries stay unread so they are not silently hidden from the user.
-            isRead: item.categories !== undefined && item.categories.length > 0
-              ? item.categories.indexOf(READ_TAG) >= 0
-              : (reconcileReadState ? !unreadSet.has(id) : recentReadSet.has(id)),
-            isStarred: item.categories !== undefined && item.categories.length > 0
-              ? item.categories.indexOf(STARRED_TAG) >= 0
-              : starredSet.has(id),
+            publishedAt: published,
+            isRead: state.isRead,
+            isStarred: state.isStarred,
             fullContent: '',
           });
         }

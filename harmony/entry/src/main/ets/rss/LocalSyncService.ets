@@ -8,6 +8,7 @@ import { ParsedFeed, RssParser } from './RssParser';
 import { FeedSyncService, SyncResult } from './SyncService';
 import { Logger } from '../common/Logger';
 import { forEachLimited, SYNC_CONCURRENCY } from './SyncRuntime';
+import { normalizeFeedText } from '../model/FeedDisplay';
 
 /** Direct RSS/Atom fetching. Equivalent to Android's LocalRssService. */
 export class LocalSyncService implements FeedSyncService {
@@ -65,8 +66,8 @@ export class LocalSyncService implements FeedSyncService {
     const parsed: ParsedFeed = this.parser.parse(await this.fetch(url), feedId, url);
     const feed: Feed = {
       id: feedId,
-      title: parsed.title,
-      url: url,
+      title: normalizeFeedText(parsed.title),
+      url: normalizeFeedText(url),
       groupId: '',
       iconUrl: '',
       sortOrder: Date.now(),

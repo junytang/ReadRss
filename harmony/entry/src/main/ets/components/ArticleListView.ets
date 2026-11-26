@@ -2,6 +2,8 @@ import { common } from '@kit.AbilityKit';
 import { systemShare } from '@kit.ShareKit';
 import { uniformTypeDescriptor as utd } from '@kit.ArkData';
 import { Article, Feed, FeedGroup, filterFeedsByDrawer } from '../model/Models';
+import { remapSelectionToAccount } from '../model/AccountSelection';
+import { articleRowKey } from '../model/RowIdentity';
 import { rssRepository } from '../rss/RssRepository';
 import { ArticleCounts } from '../data/Database';
 import { fullContentPrefetcher } from '../rss/FullContentPrefetcher';
@@ -411,6 +413,20 @@ export struct ArticleListView {
 
   async onAccountSwitched(): Promise<void> {
     await this.loadAccount();
+    // Feed/group ids are account-scoped and differ across protocols on the
+    // same server. Carry the selection over by stable identity (feed URL / group
+    // name) BEFORE loading, so the new account never lands on an id that does
+    // not exist (which rendered as nothing selected).
+    const previousFeeds: Feed[] = this.iconFeeds;
+    const previousGroups: FeedGroup[] = this.allGroups;
+    const nextFeeds: Feed[] = await rssRepository.listFeeds();
+    const nextGroups: FeedGroup[] = await rssRepository.listGroups();
+    const selection = remapSelectionToAccount(
+      this.currentFeedId, this.currentGroupId,
+      previousFeeds, previousGroups, nextFeeds, nextGroups
+    );
+    this.currentFeedId = selection.feedId;
+    this.currentGroupId = selection.groupId;
     // fromSync=true bypasses the isSyncing early-return: switching accounts
     // while a startup sync is running must still show the new account's data.
     // resetPaging=true so the new account starts from a clean scroll position
@@ -1491,11 +1507,10 @@ export struct ArticleListView {
                     builder: () => { this.swipeActionButton(article, this.swipeEndAction); },
                   },
                 })
-              // Keep isRead/isStarred in the key: ArkUI ForEach reuses a node
-              // when its key is unchanged and will NOT re-run the item builder,
-              // so a pure-id key leaves the row's gray/star visuals stale after
-              // an optimistic mark. The state fields force a fresh row.
-              }, (article: Article) => `${article.id}-${article.isRead}-${article.isStarred}`)
+              // Stable identity that includes display state: this ArkUI build
+              // does not refresh a reused node's @Prop, so an id-only key makes
+              // optimistic marks appear ineffective. Enforced by RowIdentity tests.
+              }, (article: Article) => articleRowKey(article))
 
               if (this.isRoot) {
                 // Trailing spacer: the floating HdsTabs capsule sits ~64vp above

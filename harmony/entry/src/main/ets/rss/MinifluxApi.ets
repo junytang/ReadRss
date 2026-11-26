@@ -33,7 +33,9 @@ export interface MinifluxEntry {
   author?: string;
   content?: string;
   url?: string;
-  published_at?: string;
+  // RFC3339 string normally; some compatible servers emit Unix seconds/ms.
+  published_at?: string | number;
+  created_at?: string | number;
   status?: string;
   starred?: boolean;
 }

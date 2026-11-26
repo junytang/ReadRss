@@ -18,6 +18,11 @@ import miscModulesTest from './MiscModules.test';
 import accountRepositoryTest from './AccountRepository.test';
 import minifluxTest from './Miniflux.test';
 import protocolApiTest from './ProtocolApi.test';
+import remoteStateTest from './RemoteState.test';
+import entryTimeTest from './EntryTime.test';
+import accountSelectionTest from './AccountSelection.test';
+import feedDisplayTest from './FeedDisplay.test';
+import designInvariantsTest from './DesignInvariants.test';
 
 export default function testsuite(): void {
   parserTest();
@@ -40,4 +45,9 @@ export default function testsuite(): void {
   accountRepositoryTest();
   minifluxTest();
   protocolApiTest();
+  remoteStateTest();
+  entryTimeTest();
+  accountSelectionTest();
+  feedDisplayTest();
+  designInvariantsTest();
 }

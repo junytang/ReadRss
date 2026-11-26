@@ -2,6 +2,7 @@ import { describe, it, expect, MockKit, when, ArgumentMatchers } from '@ohos/hyp
 import { readStatusStore } from '../main/ets/rss/ReadStatusStore';
 import { rssRepository } from '../main/ets/rss/RssRepository';
 import { StatusDiffs } from '../main/ets/rss/StatusDiffs';
+import { Article } from '../main/ets/model/Models';
 
 // Access to the private server-retry entry point (ArkTS: `as object as Interface`).
 interface RetryAccess { retryRemote(): Promise<void>; }
@@ -161,6 +162,60 @@ export default function statusIntegrationTest(): void {
       failOnce = false;
       await (readStatusStore as object as RetryAccess).retryRemote();
       expect(readStatusStore.hasRemotePending('y1')).assertFalse();
+      mock.clear(rssRepository);
+    });
+
+    it('markRead then applyTo keeps the row read (regression probe)', 0, async () => {
+      const mock: MockKit = new MockKit();
+      const rm = mock.mockFunc(rssRepository, rssRepository.markReadBatch);
+      when(rm)(ArgumentMatchers.any, ArgumentMatchers.any).afterAction(
+        (ids: string[]): Promise<string[]> => Promise.resolve(ids));
+      const sm = mock.mockFunc(rssRepository, rssRepository.markStarredBatch);
+      when(sm)(ArgumentMatchers.any, ArgumentMatchers.any).afterAction(
+        (ids: string[]): Promise<string[]> => Promise.resolve(ids));
+
+      await readStatusStore.flush();
+      const article: Article = {
+        id: 'probe1', feedId: 'f1', feedTitle: 'F', title: 't', author: '', link: '',
+        summary: '', content: '', fullContent: '', imageUrl: '', publishedAt: 0,
+        isRead: false, isStarred: false,
+      };
+      const rows: Article[] = [article];
+      // Simulate toggleRead: optimistic update, then the store tick reprojects.
+      rows[0] = {
+        id: article.id, feedId: article.feedId, feedTitle: article.feedTitle,
+        title: article.title, author: article.author, link: article.link,
+        summary: article.summary, content: article.content,
+        fullContent: article.fullContent, imageUrl: article.imageUrl,
+        publishedAt: article.publishedAt, isRead: true, isStarred: false,
+      };
+      readStatusStore.markRead('probe1', false, true, 'f1', 'g1');
+      readStatusStore.applyTo(rows);
+      expect(rows[0].isRead).assertTrue();
+      expect(rows[0].id).assertEqual('probe1');
+      await readStatusStore.flush();
+      readStatusStore.clearConfirmed('probe1');
+      mock.clear(rssRepository);
+    });
+
+    it('flush publishes a monotonic readStatusFlushedTick', 0, async () => {
+      const mock: MockKit = new MockKit();
+      const rm = mock.mockFunc(rssRepository, rssRepository.markReadBatch);
+      when(rm)(ArgumentMatchers.any, ArgumentMatchers.any).afterAction(
+        (ids: string[]): Promise<string[]> => Promise.resolve(ids));
+      const sm = mock.mockFunc(rssRepository, rssRepository.markStarredBatch);
+      when(sm)(ArgumentMatchers.any, ArgumentMatchers.any).afterAction(
+        (ids: string[]): Promise<string[]> => Promise.resolve(ids));
+
+      await readStatusStore.flush();
+      const before: number = AppStorage.get<number>('readStatusFlushedTick') ?? 0;
+      readStatusStore.markRead('tick1', false, true, 'f1', 'g1');
+      await readStatusStore.flush();
+      const after: number = AppStorage.get<number>('readStatusFlushedTick') ?? 0;
+      // A counter always advances even if two flushes share a millisecond;
+      // Date.now() could repeat and AppStorage would drop the notification.
+      expect(after).assertEqual(before + 1);
+      readStatusStore.clearConfirmed('tick1');
       mock.clear(rssRepository);
     });
   });
