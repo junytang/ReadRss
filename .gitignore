@@ -99,6 +99,8 @@ out/
 .vscode/
 
 signature
-# Local RSS server test environments (contain credentials/data)
-test/
+# Local RSS server test environments (contain credentials/data).
+# Anchored to the repo root: an unanchored `test/` also swallowed the HarmonyOS
+# unit tests under harmony/entry/src/test/, so new test files were never committed.
+/test/
 .workbuddy/memory/
