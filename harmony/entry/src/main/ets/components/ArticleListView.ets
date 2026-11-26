@@ -36,6 +36,8 @@ const FULL_PAGE_SIZE: number = 100;
 const EXPAND_CHUNK: number = 100;
 /** Rows added per loadMore page when scrolling past the expanded batch. */
 const LOAD_MORE_STEP: number = 100;
+/** Bound in-memory rows in a long scrolling session; older pages stay in DB. */
+const MAX_LOADED_ARTICLES: number = 1000;
 /** Largest single scroll jump treated as genuine scrolling. Bigger jumps are
  *  stale offsets from a context switch and must not mass-mark articles read. */
 const MAX_SCROLL_MARK_STEP: number = 30;
@@ -111,6 +113,8 @@ export struct ArticleListView {
   // Separate guard for badge/count refreshes so overlapping Watch callbacks
   // cannot pair feeds from one filter with groups from another.
   private feedRefreshSeq: number = 0;
+  // Guards against an older refreshCounts resolving after a newer one.
+  private countsSeq: number = 0;
   // AppStorage-backed so toggling it in Settings updates this always-mounted
   // list immediately, without relying on load()/onShown refresh timing.
   @StorageProp('markReadOnScroll') markReadOnScroll: boolean = false;
@@ -147,6 +151,12 @@ export struct ArticleListView {
   // tied to AppStorage propagation, so it cannot desync from the visible tab.
   private selectedFilterIndex: number = 0;
   private slideTimer: number = 0;
+  private contextTimer: number = 0;
+  private searchTimer: number = 0;
+  private searchInputTimer: number = 0;
+  // Final-tick value already turned into a toast; prevents the watcher (which
+  // may fire a frame later) from showing a second "同步完成" after sync().
+  private lastSyncToastTick: number = 0;
   private slideAnimating: boolean = false;
   // Deferred second batch: fill the rest of the list after the first paint.
   private expandTimer: number = 0;
@@ -196,8 +206,12 @@ export struct ArticleListView {
   }
 
   private async refreshCounts(): Promise<void> {
+    const seq: number = ++this.countsSeq;
     // Counts = DB aggregate + local diff delta. No dual counters to keep in sync.
     const scoped: ArticleCounts = await rssRepository.articleCounts(this.currentFeedId, this.currentGroupId);
+    if (seq !== this.countsSeq) {
+      return;
+    }
     const scopedUnreadDelta: number =
       readStatusStore.unreadDelta(this.currentFeedId, this.currentGroupId, false);
     this.unreadCount = Math.max(0, scoped.unread + scopedUnreadDelta);
@@ -207,6 +221,9 @@ export struct ArticleListView {
     this.allCount = scoped.total;
     // Global totals for the drawer top row, never scoped by feed/group.
     const global: ArticleCounts = await rssRepository.articleCounts();
+    if (seq !== this.countsSeq) {
+      return;
+    }
     this.globalUnread = Math.max(
       0, global.unread + readStatusStore.unreadDeltaForAccount(this.activeAccountId)
     );
@@ -358,12 +375,26 @@ export struct ArticleListView {
     this.load(false, true);
   }
 
-  /** UI is ready: first content batch (visible window + buffer) is committed.
-   *  The remaining batches/state work continue silently, so the toast and the
-   *  reload happen here rather than after the whole sync finishes. */
+  /** The whole sync has ended. Reload once with everything committed; only
+   *  startup syncs (no page-level pull) show their toast here. */
   onSyncFinished(): void {
     this.load(false, true);
-    ToastUtil.show(this.getUIContext(), '同步完成');
+    // Read the authoritative AppStorage values: @StorageProp may not have
+    // propagated yet, which could otherwise show a stale "success" or miss the
+    // toast entirely. Page-level sync() claims the same tick, so this only
+    // reports background syncs (EntryAbility) with no awaiting caller.
+    const tick: number = AppStorage.get<number>('syncFinishedTick') ?? 0;
+    if (!this.isSyncing && tick !== this.lastSyncToastTick) {
+      this.lastSyncToastTick = tick;
+      const ok: boolean = AppStorage.get<boolean>('syncFinishedOk') ?? true;
+      const failed: number = AppStorage.get<number>('syncFailedCount') ?? 0;
+      if (ok) {
+        ToastUtil.show(this.getUIContext(), '同步完成');
+      } else {
+        ToastUtil.show(this.getUIContext(),
+          failed > 0 ? `同步完成，${failed} 个源失败` : '同步失败');
+      }
+    }
   }
 
   /** Debug wipe of all articles: reload without a misleading "同步完成" toast. */
@@ -380,14 +411,15 @@ export struct ArticleListView {
 
   async onAccountSwitched(): Promise<void> {
     await this.loadAccount();
-    // Refresh feeds AND counts immediately rather than relying solely on
-    // load(), which can early-return during a sync or be invalidated by an
-    // overlapping watcher. refreshFeeds() reloads this.feeds (per-feed badges)
-    // and then calls refreshCounts() (banner totals), so neither can stay on
-    // the previous account's values after a switch.
+    // fromSync=true bypasses the isSyncing early-return: switching accounts
+    // while a startup sync is running must still show the new account's data.
+    // resetPaging=true so the new account starts from a clean scroll position
+    // instead of reusing the previous account's depth and suppressScrollMark.
+    await this.load(true, true);
+    // load() can still be discarded by a stale-sequence guard; refresh feeds
+    // and counts explicitly so per-source badges and the banner never stay on
+    // the previous account.
     await this.refreshFeeds();
-    await this.refreshCounts();
-    this.load();
   }
 
   /** A list-behavior setting changed (sort / display toggles): reload so the
@@ -415,10 +447,11 @@ export struct ArticleListView {
     }
   }
 
-  aboutToAppear(): void {
+  async aboutToAppear(): Promise<void> {
     this.disposed = false;
     this.currentFeedId = this.feedId;
-    this.loadAccount();
+    // activeAccountId is needed by account-scoped count deltas; load it first.
+    await this.loadAccount();
     this.load();
   }
 
@@ -433,6 +466,18 @@ export struct ArticleListView {
     if (this.expandTimer !== 0) {
       clearTimeout(this.expandTimer);
       this.expandTimer = 0;
+    }
+    if (this.contextTimer !== 0) {
+      clearTimeout(this.contextTimer);
+      this.contextTimer = 0;
+    }
+    if (this.searchTimer !== 0) {
+      clearTimeout(this.searchTimer);
+      this.searchTimer = 0;
+    }
+    if (this.searchInputTimer !== 0) {
+      clearTimeout(this.searchInputTimer);
+      this.searchInputTimer = 0;
     }
     this.flushScrollMarks();
     readStatusStore.flush();
@@ -463,9 +508,12 @@ export struct ArticleListView {
         // re-projects rows and re-derives counts. Mutate in place now and slice
         // once on Idle (flushScrollMarks) to avoid per-frame ForEach rebuilds.
         this.articles[i] = ArticleListView.withReadState(article, true);
-        readStatusStore.markRead(article.id, false, true, article.feedId, this.currentGroupId);
+        readStatusStore.markRead(article.id, false, true, article.feedId, this.currentGroupId, true);
         markedCount++;
       }
+    }
+    if (markedCount > 0) {
+      readStatusStore.notifyChanged();
     }
     this.lastMarkedIndex = start;
     if (markedCount > 0) {
@@ -546,6 +594,9 @@ export struct ArticleListView {
   private async load(
     resetPaging: boolean = true, fromSync: boolean = false, snapToTop: boolean = true
   ): Promise<void> {
+    if (this.disposed) {
+      return;
+    }
     // During a sync the DB is being written batch by batch. An externally
     // triggered load would read an intermediate state and reset paging/scroll
     // markers, so ignore it. The sync's own refreshes pass fromSync=true.
@@ -669,18 +720,27 @@ export struct ArticleListView {
     // Capture the ordering at request time. If a sort/feed/filter switch lands
     // while the DB query is in flight, orderKey changes and these rows are stale.
     const orderKey: string = this.paging.getOrderKey();
+    const pageSize: number = targetLimit - this.paging.getDisplayLimit();
+    const last: Article | undefined = this.articles[this.articles.length - 1];
+    if (pageSize <= 0 || last === undefined) {
+      return false;
+    }
+    // Keyset paging: fetch only the next slice after the current last row.
     const rows: Article[] = await rssRepository.listArticles(
-      this.currentFeedId, this.currentFilter, targetLimit,
-      this.currentGroupId, this.sortAscending(), this.searchText, true
+      this.currentFeedId, this.currentFilter, pageSize,
+      this.currentGroupId, this.sortAscending(), this.searchText, true,
+      { publishedAt: last.publishedAt, id: last.id }
     );
     if (this.paging.isStale(seq, pageSeq, orderKey)) {
       return false;
     }
-    // Fewer rows than requested means the data source is exhausted.
-    this.paging.updateHasMore(rows.length, targetLimit);
     const merged: AppendResult = this.paging.mergeAppend(this.articles, rows);
     this.articles = merged.articles;
-    this.paging.setDisplayLimit(targetLimit);
+    this.paging.setDisplayLimit(merged.articles.length);
+    // If every row was a duplicate the cursor did not advance; stop paging
+    // instead of re-issuing the same keyset query forever. Otherwise a short
+    // slice means the data source is exhausted.
+    this.paging.updateHasMore(merged.appended ? rows.length : 0, pageSize);
     return merged.appended;
   }
 
@@ -716,7 +776,8 @@ export struct ArticleListView {
     // While a sync is committing batches the DB holds an intermediate state;
     // loading another page now could mix partial rows into the list. Triggered
     // automatically by scrolling, so ignore silently (no toast) to avoid spam.
-    if (this.isSyncing || !this.paging.getHasMore()) {
+    if (this.isSyncing || !this.paging.getHasMore()
+      || this.paging.getDisplayLimit() >= MAX_LOADED_ARTICLES) {
       return;
     }
     const seq: number = this.paging.getLoadSeq();
@@ -770,11 +831,22 @@ export struct ArticleListView {
     this.isSyncing = true;
     this.isRefreshing = true;
     try {
-      await rssRepository.syncAll();
-      // No load() or toast here: the service fires syncFinishedTick as soon as
-      // the first batch lands (onSyncFinished already reloaded + showed toast).
-      // Remaining batches only refresh badges.
+      const result = await rssRepository.syncAll();
+      // onSyncFinished performs the final reload. The toast belongs here so it
+      // reflects the real result instead of the first-batch UI-ready signal.
+      // Claim the authoritative tick: @StorageProp may lag a frame behind the
+      // AppStorage write that triggered the watcher, so reading the component
+      // field here could claim the previous tick and double-toast.
+      this.lastSyncToastTick = AppStorage.get<number>('syncFinishedTick') ?? 0;
+      if (result.failed === 0) {
+        ToastUtil.show(this.getUIContext(), '同步完成');
+      } else {
+        ToastUtil.show(this.getUIContext(), `同步完成，${result.failed} 个源失败`);
+      }
     } catch (error) {
+      // Claim the final tick here too, otherwise the watcher can show a second
+      // failure toast after this one when its deferred callback runs.
+      this.lastSyncToastTick = AppStorage.get<number>('syncFinishedTick') ?? 0;
       ToastUtil.show(this.getUIContext(), `同步失败：${(error as Error).message}`);
     } finally {
       this.isSyncing = false;
@@ -817,12 +889,18 @@ export struct ArticleListView {
     // Local diff drives rows and counts; the bulk service call persists to DB
     // and server in the background. On failure, drop the local diff and re-read.
     this.setLocalRead(ids, true);
+    const targetIds: Set<string> = new Set<string>(ids);
+    let marked: number = 0;
     for (const article of this.articles) {
-      if (ids.indexOf(article.id) >= 0) {
+      if (targetIds.has(article.id)) {
         // Display-only diff; markAllRead persists via its own service call, so
         // do not schedule a duplicate flush (avoids double-push race).
-        readStatusStore.markReadLocal(article.id, false, true, article.feedId, this.currentGroupId);
+        readStatusStore.markReadLocal(article.id, false, true, article.feedId, this.currentGroupId, true);
+        marked++;
       }
+    }
+    if (marked > 0) {
+      readStatusStore.notifyChanged();
     }
     const task: Promise<void> = days <= 0
       ? rssRepository.markAllRead(this.currentFeedId, this.currentGroupId)
@@ -952,13 +1030,19 @@ export struct ArticleListView {
     // Local diff drives the immediate gray-out and count; the service persists
     // in the background via the store's own batch path (no double push here).
     this.setLocalRead(ids, true);
+    const targetIds: Set<string> = new Set<string>(ids);
+    let marked: number = 0;
     for (const article of this.articles) {
-      if (ids.indexOf(article.id) >= 0) {
-        readStatusStore.markRead(article.id, false, true, article.feedId, this.currentGroupId);
+      if (targetIds.has(article.id)) {
+        readStatusStore.markRead(article.id, false, true, article.feedId, this.currentGroupId, true);
+        marked++;
       }
     }
-    // The markX calls publish readStatusTick; the watcher re-derives rows and
-    // counts. This path uses the store's background flush, so failures retry.
+    if (marked > 0) {
+      readStatusStore.notifyChanged();
+    }
+    // One tick for the whole batch; the watcher re-derives rows and counts.
+    // This path uses the store's background flush, so failures retry.
   }
 
   private menuToggleRead(): void {
@@ -1024,11 +1108,20 @@ export struct ArticleListView {
       .width('100%')
       .height(38)
       .fontSize(this.fs(14))
+      .fontFamily(this.appFont())
       .backgroundColor(this.darkMode ? '#1F2226' : '#FFFFFF')
       .fontColor(this.textColor())
       .onChange((value: string) => {
         this.searchText = value;
-        this.load();
+        // Debounce: each keystroke otherwise triggers a full reload with an
+        // expensive content LIKE scan.
+        if (this.searchInputTimer !== 0) {
+          clearTimeout(this.searchInputTimer);
+        }
+        this.searchInputTimer = setTimeout((): void => {
+          this.searchInputTimer = 0;
+          this.load();
+        }, 300);
       })
   }
 
@@ -1105,7 +1198,7 @@ export struct ArticleListView {
     this.currentFeedId = '';
     this.currentGroupId = '';
     this.closeDrawer();
-    this.load();
+    this.load(true, this.isSyncing);
   }
 
   private onDrawerSelectFeed(feedId: string): void {
@@ -1113,10 +1206,17 @@ export struct ArticleListView {
     if (key !== this.currentSelectionKey()) {
       this.prepareSlide(this.drawerSlideDirection(key));
     }
+    // Cancel a pending debounced search so it cannot re-load the old scope.
+    if (this.searchInputTimer !== 0) {
+      clearTimeout(this.searchInputTimer);
+      this.searchInputTimer = 0;
+    }
     this.currentFeedId = feedId;
     this.currentGroupId = '';
     this.closeDrawer();
-    this.load();
+    // fromSync=true during a running sync bypasses load()'s early-return, so a
+    // user-driven scope switch is never silently dropped.
+    this.load(true, this.isSyncing);
   }
 
   private onDrawerSelectGroup(groupId: string): void {
@@ -1124,10 +1224,14 @@ export struct ArticleListView {
     if (key !== this.currentSelectionKey()) {
       this.prepareSlide(this.drawerSlideDirection(key));
     }
+    if (this.searchInputTimer !== 0) {
+      clearTimeout(this.searchInputTimer);
+      this.searchInputTimer = 0;
+    }
     this.currentFeedId = '';
     this.currentGroupId = groupId;
     this.closeDrawer();
-    this.load();
+    this.load(true, this.isSyncing);
   }
 
   private closeDrawer(): void {
@@ -1138,7 +1242,7 @@ export struct ArticleListView {
 
   private onDrawerDeletedFeed(): void {
     this.refreshFeeds();
-    this.load();
+    this.load(true, this.isSyncing);
   }
 
   private appFont(): string {
@@ -1192,7 +1296,11 @@ export struct ArticleListView {
       this.awaitingTopConfirm = false;
     }
     // Safety net only. Normal release happens when onScrollIndex reports 0.
-    setTimeout(() => {
+    if (this.contextTimer !== 0) {
+      clearTimeout(this.contextTimer);
+    }
+    this.contextTimer = setTimeout(() => {
+      this.contextTimer = 0;
       if (seq !== this.contextSeq) return;
       if (snapToTop) {
         // Re-snap in case the first one ran before the new rows were measured.
@@ -1226,7 +1334,11 @@ export struct ArticleListView {
       // Safety net: if the smooth scroll never reports index 0 (e.g. before
       // first layout), snap to the top instantly before revealing the bar so
       // the reflow can't re-trigger the auto-hide. Also covers an empty list.
-      setTimeout(() => {
+      if (this.searchTimer !== 0) {
+        clearTimeout(this.searchTimer);
+      }
+      this.searchTimer = setTimeout(() => {
+        this.searchTimer = 0;
         if (this.pendingShowSearch) {
           this.pendingShowSearch = false;
           try {
@@ -1629,13 +1741,11 @@ export struct ArticleListView {
       .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
     }
     .hideTitleBar(true)
-    // Returning from the reader or accounts page: reload, then refresh feeds
-    // and counts explicitly because load() can be cut short by stale guards.
+    // Returning from the reader or accounts page: load() already refreshes
+    // feeds, groups and counts; repeating them here issued duplicate queries.
     .onShown(async () => {
       await this.loadAccount();
-      await this.load(true, false, false);
-      await this.refreshFeeds();
-      await this.refreshCounts();
+      await this.load(true, this.isSyncing, false);
     })
   }
 }

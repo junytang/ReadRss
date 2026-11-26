@@ -9,6 +9,7 @@ import {
 } from '../account/AccountModels';
 import { accountRepository } from '../account/AccountRepository';
 import { database } from '../data/Database';
+import { settingsStore } from '../data/SettingsStore';
 import { rssRepository } from '../rss/RssRepository';
 import { syncServiceFor } from '../rss/SyncServiceFactory';
 import { goBack } from '../common/NavigationService';
@@ -24,10 +25,10 @@ interface TypeChoice {
 
 const TYPES: TypeChoice[] = [
   // { type: AccountType.LOCAL, label: '本地' }, // 本地账号入口已隐藏（保留代码，仅注释）
-  { type: AccountType.FEVER, label: 'Fever' },
   { type: AccountType.GOOGLE_READER, label: 'Google Reader' },
   { type: AccountType.FRESH_RSS, label: 'FreshRSS' },
   { type: AccountType.MINIFLUX, label: 'Miniflux' },
+  { type: AccountType.FEVER, label: 'Fever' },
 ];
 
 /** Add/edit account form with credential validation. */
@@ -123,6 +124,7 @@ export struct AccountEditorView {
     try {
       if (this.isNew()) {
         // Android inserts first, then validates, then rolls back on failure.
+        const previousActive: string = settingsStore.get().activeAccountId;
         const added: Account = await accountRepository.add(this.type, resolvedName, credentials);
         try {
           const service = syncServiceFor(added);
@@ -146,6 +148,7 @@ export struct AccountEditorView {
           });
         } catch (error) {
           await accountRepository.remove(added.id);
+          await settingsStore.setActiveAccountId(previousActive);
           throw error as Error;
         }
       } else {
@@ -186,7 +189,10 @@ export struct AccountEditorView {
           service.clearAuthorization();
         }
       }
-      AppStorage.setOrCreate<number>('accountSwitchTick', Date.now());
+      if (!this.isNew()) {
+        // add() already publishes accountSwitchTick via setActiveAccountId().
+        AppStorage.setOrCreate<number>('accountSwitchTick', Date.now());
+      }
       ToastUtil.show(this.getUIContext(), '账号已保存');
       goBack();
     } catch (error) {
@@ -248,7 +254,7 @@ export struct AccountEditorView {
             Column() {
               Text('名称').fontFamily(this.appFont()).fontSize(this.fs(13)).fontColor(this.secondaryColor()).alignSelf(ItemAlign.Start)
               TextInput({ text: this.name, placeholder: '可选' })
-                .width('100%').height(44).margin({ top: 8 }).fontSize(this.fs(15))
+                .width('100%').height(44).margin({ top: 8 }).fontSize(this.fs(15)).fontFamily(this.appFont())
                 .backgroundColor(this.darkMode ? '#1F2226' : '#FFFFFF')
                 .fontColor(this.textColor())
                 .onChange((value: string) => { this.name = value; })
@@ -266,7 +272,7 @@ export struct AccountEditorView {
                       ? 'https://miniflux.example.org/v1'
                       : 'https://demo.freshrss.org/api/greader.php',
                 })
-                  .width('100%').height(44).margin({ top: 8 }).fontSize(this.fs(15))
+                  .width('100%').height(44).margin({ top: 8 }).fontSize(this.fs(15)).fontFamily(this.appFont())
                   .backgroundColor(this.darkMode ? '#1F2226' : '#FFFFFF')
                   .fontColor(this.textColor())
                   .onChange((value: string) => { this.serverUrl = value; })
@@ -277,7 +283,7 @@ export struct AccountEditorView {
                 Text(this.type === AccountType.MINIFLUX ? '用户名 / API Key（密码留空时）' : '用户名')
                   .fontFamily(this.appFont()).fontSize(this.fs(13)).fontColor(this.secondaryColor()).alignSelf(ItemAlign.Start)
                 TextInput({ text: this.username })
-                  .width('100%').height(44).margin({ top: 8 }).fontSize(this.fs(15))
+                  .width('100%').height(44).margin({ top: 8 }).fontSize(this.fs(15)).fontFamily(this.appFont())
                   .backgroundColor(this.darkMode ? '#1F2226' : '#FFFFFF')
                   .fontColor(this.textColor())
                   .onChange((value: string) => { this.username = value; })
@@ -287,7 +293,7 @@ export struct AccountEditorView {
               Column() {
                 Text('密码').fontFamily(this.appFont()).fontSize(this.fs(13)).fontColor(this.secondaryColor()).alignSelf(ItemAlign.Start)
                 TextInput({ text: this.password })
-                  .width('100%').height(44).margin({ top: 8 }).fontSize(this.fs(15))
+                  .width('100%').height(44).margin({ top: 8 }).fontSize(this.fs(15)).fontFamily(this.appFont())
                   .type(InputType.Password)
                   .backgroundColor(this.darkMode ? '#1F2226' : '#FFFFFF')
                   .fontColor(this.textColor())
@@ -307,7 +313,7 @@ export struct AccountEditorView {
                 Text('客户端证书别名（可选）').fontFamily(this.appFont()).fontSize(this.fs(13)).fontColor(this.secondaryColor())
                   .alignSelf(ItemAlign.Start)
                 TextInput({ text: this.clientCertificateAlias })
-                  .width('100%').height(44).margin({ top: 8 }).fontSize(this.fs(15))
+                  .width('100%').height(44).margin({ top: 8 }).fontSize(this.fs(15)).fontFamily(this.appFont())
                   .backgroundColor(this.darkMode ? '#1F2226' : '#FFFFFF')
                   .fontColor(this.textColor())
                   .onChange((value: string) => { this.clientCertificateAlias = value; })
@@ -324,6 +330,8 @@ export struct AccountEditorView {
             }
 
             Button(this.isSaving ? '正在验证…' : '保存')
+              .fontFamily(this.appFont())
+              .fontSize(this.fs(15))
               .width('100%')
               .height(44)
               .margin({ top: 28 })

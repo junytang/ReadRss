@@ -1,5 +1,11 @@
 import { http } from '@kit.NetworkKit';
 import { Logger } from './Logger';
+import { md5Hex } from './Md5';
+
+interface AvifPending {
+  tag: string;
+  url: string;
+}
 
 /**
  * Makes AVIF images displayable: neither the device ImageSource decoder nor its
@@ -15,8 +21,11 @@ export class ArticleImageConverter {
   private static readonly VIRTUAL: string = 'https://static3cdn.appinn.com/__ry_avif__/';
   // Cap cached JPEG bytes: a reader can open hundreds of articles, and each
   // converted image is tens of KB. Without a bound this map grows unbounded.
-  private static readonly MAX_CACHED_IMAGES: number = 20;
+  private static readonly MAX_CACHED_IMAGES: number = 200;
+  /** Also cap total bytes so a few very large JPEGs cannot dominate memory. */
+  private static readonly MAX_CACHED_BYTES: number = 32 * 1024 * 1024;
   private static readonly bytes: Map<string, ArrayBuffer> = new Map();
+  private static cachedBytes: number = 0;
 
   static getBytes(key: string): ArrayBuffer | undefined {
     const map: Map<string, ArrayBuffer> = ArticleImageConverter.bytes;
@@ -36,10 +45,16 @@ export class ArticleImageConverter {
       map.delete(key);
     }
     map.set(key, bytes);
-    while (map.size > ArticleImageConverter.MAX_CACHED_IMAGES) {
+    ArticleImageConverter.cachedBytes += bytes.byteLength;
+    while (map.size > ArticleImageConverter.MAX_CACHED_IMAGES
+      || ArticleImageConverter.cachedBytes > ArticleImageConverter.MAX_CACHED_BYTES) {
       const oldest: string | undefined = map.keys().next().value;
       if (oldest === undefined) {
         break;
+      }
+      const old: ArrayBuffer | undefined = map.get(oldest);
+      if (old !== undefined) {
+        ArticleImageConverter.cachedBytes -= old.byteLength;
       }
       map.delete(oldest);
     }
@@ -58,21 +73,34 @@ export class ArticleImageConverter {
     if (html.length === 0 || html.toLowerCase().indexOf('.avif') < 0) {
       return html;
     }
-    const parts: Array<string> = html.split(/(<img\b[^>]*>)/gi);
-    let result: string = '';
-    for (const part of parts) {
-      if (!/^<img\b/i.test(part)) {
-        result += part;
-        continue;
+    // One scan to collect AVIF tags, bounded-concurrency conversion, then one
+    // replacement pass. The old split/await loop copied the whole article once
+    // per tag and fetched images serially.
+    const pending: AvifPending[] = [];
+    const tags: Array<string> = html.match(/<img\b[^>]*>/gi) ?? [];
+    for (const tag of tags) {
+      const srcMatch: Array<string> | null = tag.match(/\bsrc\s*=\s*(["'])([^"']+)\1/i);
+      if (srcMatch !== null && srcMatch.length >= 3 && /\.avif(\?|$)/i.test(srcMatch[2])) {
+        pending.push({ tag: tag, url: srcMatch[2] });
       }
-      const srcMatch: Array<string> | null = part.match(/\bsrc\s*=\s*(["'])([^"']+)\1/i);
-      if (srcMatch === null || srcMatch.length < 3 || !/\.avif(\?|$)/i.test(srcMatch[2])) {
-        result += part;
-        continue;
-      }
-      result += await ArticleImageConverter.convertTag(part, srcMatch[2]);
     }
-    return result;
+    if (pending.length === 0) {
+      return html;
+    }
+    const converted: Map<string, string> = new Map<string, string>();
+    let next: number = 0;
+    const worker = async (): Promise<void> => {
+      while (next < pending.length) {
+        const item: AvifPending = pending[next++];
+        converted.set(item.tag, await ArticleImageConverter.convertTag(item.tag, item.url));
+      }
+    };
+    const workers: Promise<void>[] = [];
+    for (let i: number = 0; i < Math.min(3, pending.length); i++) {
+      workers.push(worker());
+    }
+    await Promise.all(workers);
+    return html.replace(/<img\b[^>]*>/gi, (tag: string): string => converted.get(tag) ?? tag);
   }
 
   private static async convertTag(tag: string, url: string): Promise<string> {
@@ -124,10 +152,7 @@ export class ArticleImageConverter {
   }
 
   private static hash(value: string): string {
-    let h: number = 5381;
-    for (let i: number = 0; i < value.length; i++) {
-      h = ((h << 5) + h + value.charCodeAt(i)) | 0;
-    }
-    return (h >>> 0).toString(36);
+    // A 32-bit hash collides on long URL lists and would serve the wrong image.
+    return md5Hex(value).substring(0, 24);
   }
 }

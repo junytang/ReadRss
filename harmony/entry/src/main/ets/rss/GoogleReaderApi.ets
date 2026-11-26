@@ -19,6 +19,8 @@ export interface GReaderOrigin { streamId?: string; htmlUrl?: string; title?: st
 export interface GReaderLink { href?: string }
 export interface GReaderItem {
   id: string;
+  /** Stream ids including read/starred tags, when the server provides them. */
+  categories?: string[];
   published?: number;
   updated?: number;
   crawlTimeMsec?: string;
@@ -68,8 +70,19 @@ const NO_PARAMS: ApiParams = {};
 const USER_AGENT: string = 'ReadYou-Harmony/0.1 (GReader)';
 const FORM_CONTENT_TYPE: string = 'application/x-www-form-urlencoded';
 
-/** Mirrors GoogleReaderAPI's retry config: 2 attempts, 1s/2s backoff, clear auth on retry. */
-async function withRetry<T>(action: () => Promise<T>, onRetry: () => void): Promise<T> {
+function isUnauthorized(error: Error): boolean {
+  const message: string = error.message ?? '';
+  // rawRequest emits the exact 'Unauthorized' sentinel on HTTP 401; matching
+  // any text containing "401" would clear tokens on arbitrary server errors.
+  return message === 'Unauthorized' || message.startsWith('HTTP 401');
+}
+
+/** Two attempts with 1s/2s backoff. Only a 401 invalidates the cached token;
+ *  429/5xx/timeouts keep it, otherwise a throttled server triggers a wave of
+ *  ClientLogin requests from the parallel sync workers. */
+async function withRetry<T>(
+  action: () => Promise<T>, onUnauthorized: () => Promise<void>
+): Promise<T> {
   let delay: number = 1000;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
@@ -78,7 +91,9 @@ async function withRetry<T>(action: () => Promise<T>, onRetry: () => void): Prom
       if (attempt === 1) {
         throw error as Error;
       }
-      onRetry();
+      if (isUnauthorized(error as Error)) {
+        await onUnauthorized();
+      }
       await new Promise<void>((resolve: () => void) => setTimeout(resolve, delay));
       delay = Math.min(delay * 2, 5000);
     }
@@ -107,8 +122,10 @@ export class GoogleReaderApi {
     if (this.tokensLoaded) {
       return;
     }
-    this.tokensLoaded = true;
     const cached = await gReaderTokenStore.load(this.serverUrl, this.username);
+    // Set only after the await: setting it first lets concurrent callers see
+    // true while the first load is still in flight and skip it entirely.
+    this.tokensLoaded = true;
     if (cached) {
       this.loginToken = cached.loginToken;
       this.actionToken = cached.actionToken;
@@ -117,7 +134,22 @@ export class GoogleReaderApi {
 
   // ------------------------------- auth -----------------------------------
 
+  private reauthInFlight?: Promise<void>;
+
+  /** All parallel workers share one ClientLogin while a token is being renewed. */
   private async reAuthenticate(): Promise<void> {
+    if (this.reauthInFlight !== undefined) {
+      return this.reauthInFlight;
+    }
+    this.reauthInFlight = this.doReAuthenticate();
+    try {
+      await this.reauthInFlight;
+    } finally {
+      this.reauthInFlight = undefined;
+    }
+  }
+
+  private async doReAuthenticate(): Promise<void> {
     const url: string = `${this.serverUrl}accounts/ClientLogin`;
     const form: ApiParams = {
       output: 'json',
@@ -180,10 +212,10 @@ export class GoogleReaderApi {
     }
   }
 
-  private clearAuth(): void {
+  private async clearAuth(): Promise<void> {
     this.loginToken = '';
     this.actionToken = '';
-    gReaderTokenStore.clear(this.serverUrl, this.username);
+    await gReaderTokenStore.clear(this.serverUrl, this.username);
   }
 
   /** True when a persisted login token has been loaded. */
@@ -243,7 +275,7 @@ export class GoogleReaderApi {
     try {
       const response: http.HttpResponse = await request.request(url, options);
       if (response.responseCode === 401) {
-        this.clearAuth();
+        await this.clearAuth();
         throw new Error('Unauthorized');
       }
       if (response.responseCode < 200 || response.responseCode >= 300) {
@@ -305,7 +337,7 @@ export class GoogleReaderApi {
         url, http.RequestMethod.GET, '', '', `GoogleLogin auth=${this.loginToken}`
       );
       return JSON.parse(text) as T;
-    }, () => this.clearAuth());
+    }, async () => this.clearAuth());
   }
 
   private async post(endpoint: string, form: ApiParams): Promise<string> {
@@ -316,7 +348,7 @@ export class GoogleReaderApi {
         url, http.RequestMethod.POST, this.formBody(form, true), FORM_CONTENT_TYPE,
         `GoogleLogin auth=${this.loginToken}`
       );
-    }, () => this.clearAuth());
+    }, async () => this.clearAuth());
   }
 
   // ------------------------------ endpoints -------------------------------
@@ -354,7 +386,7 @@ export class GoogleReaderApi {
         throw error as Error;
       }
       return { items: dto.items ?? [], updated: dto.updated };
-    }, () => this.clearAuth());
+    }, async () => this.clearAuth());
   }
 
   /** Android sends quickadd in BOTH the query string and the POST form. */
@@ -369,7 +401,7 @@ export class GoogleReaderApi {
         parts.join('&'), FORM_CONTENT_TYPE, `GoogleLogin auth=${this.loginToken}`
       );
       return JSON.parse(text) as QuickAddDto;
-    }, () => this.clearAuth());
+    }, async () => this.clearAuth());
   }
 
   subscriptionEdit(

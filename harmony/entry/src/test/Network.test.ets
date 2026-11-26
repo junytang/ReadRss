@@ -4,8 +4,12 @@ import { GoogleReaderApi, ApiParams, ItemIdsDto } from '../main/ets/rss/GoogleRe
 import { Account, AccountType } from '../main/ets/account/AccountModels';
 import { SyncResult, emptySyncResult } from '../main/ets/rss/SyncService';
 
+interface ItemIdPageLike {
+  ids: string[];
+  truncated: boolean;
+}
 interface AllIdsAccess {
-  allItemIds(api: GoogleReaderApi, base: ApiParams, maxPages: number): Promise<string[]>;
+  allItemIds(api: GoogleReaderApi, base: ApiParams, maxPages: number): Promise<ItemIdPageLike>;
 }
 interface ChunksAccess {
   chunks<T>(items: T[], size: number): Promise<T[][]>;
@@ -53,10 +57,11 @@ export default function networkTest(): void {
       const access = svc as object as AllIdsAccess;
       // maxPages large; no stub for other params -> real method would hit network,
       // but the two pages above cover all calls.
-      const ids: string[] = await access.allItemIds(fakeApi, base, 10);
-      expect(ids.length).assertEqual(3);
-      expect(ids[0]).assertEqual('1');
-      expect(ids[2]).assertEqual('3');
+      const page: ItemIdPageLike = await access.allItemIds(fakeApi, base, 10);
+      expect(page.ids.length).assertEqual(3);
+      expect(page.ids[0]).assertEqual('1');
+      expect(page.ids[2]).assertEqual('3');
+      expect(page.truncated).assertFalse();
       mock.clear(fakeApi);
     });
 
@@ -72,9 +77,10 @@ export default function networkTest(): void {
       when(gi)(p).afterReturn(Promise.resolve(page));
       when(gi)(p2).afterReturn(Promise.resolve(page));
       const access = svc as object as AllIdsAccess;
-      const ids: string[] = await access.allItemIds(fakeApi, base, 2);
-      // 2 pages max, each returns 2 ids -> 4.
-      expect(ids.length).assertEqual(4);
+      const result: ItemIdPageLike = await access.allItemIds(fakeApi, base, 2);
+      // 2 pages max, each returns 2 ids -> 4, with more pages remaining.
+      expect(result.ids.length).assertEqual(4);
+      expect(result.truncated).assertTrue();
       mock.clear(fakeApi);
     });
   });

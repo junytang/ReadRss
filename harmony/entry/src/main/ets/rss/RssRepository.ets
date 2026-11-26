@@ -1,6 +1,6 @@
 import { Account } from '../account/AccountModels';
 import { accountRepository } from '../account/AccountRepository';
-import { database, ArticleCounts } from '../data/Database';
+import { database, ArticleCounts, ArticleCursor } from '../data/Database';
 import { Article, ArticleNeighbors, Feed, FeedGroup } from '../model/Models';
 import { FeedSyncService, SyncResult } from './SyncService';
 import { syncServiceFor } from './SyncServiceFactory';
@@ -8,6 +8,7 @@ import { Logger } from '../common/Logger';
 import { FullContentFetcher, FULL_CONTENT_VERSION_MARKER } from './FullContentFetcher';
 import { readStatusStore } from './ReadStatusStore';
 import { articleBodyInFlight, fullContentInFlight } from './SyncRuntime';
+import { notifySyncFinal } from './SyncProgress';
 
 /** Facade used by the UI; always operates on the active account. */
 class FeedRepository {
@@ -70,14 +71,14 @@ class FeedRepository {
   async listArticles(
     feedId: string, filter: string, limit: number,
     groupId?: string, sortAscending?: boolean, searchContent?: string,
-    lightweight: boolean = false
+    lightweight: boolean = false, cursor?: ArticleCursor
   ): Promise<Article[]> {
     const account: Account = await this.activeAccount();
     // Include pending local read/star changes in the WHERE clause so a just
     // starred article shows up in the starred tab before the delayed DB commit.
     return database.listArticles(
       account.id, feedId, filter, limit, groupId, sortAscending, searchContent, lightweight,
-      readStatusStore.pendingFilterIds()
+      readStatusStore.pendingFilterIds(), cursor
     );
   }
 
@@ -127,15 +128,17 @@ class FeedRepository {
     }
     const account: Account = await this.activeAccount();
     const service: FeedSyncService = syncServiceFor(account);
-    const fetchBody: ((acc: Account, art: Article) => Promise<string>) | undefined = service.fetchContent;
-    if (fetchBody === undefined) {
+    // Call through the service object: every implementation dereferences
+    // `this` (api/remoteNumber), so detaching the method would throw.
+    const hasFetchBody: boolean = service.fetchContent !== undefined;
+    if (!hasFetchBody) {
       return article;
     }
     try {
       // Sync, the prefetcher and the reader can all ask for the same body at
       // once; the shared in-flight map makes that a single server request.
       const content: string = await articleBodyInFlight.run(articleId, (): Promise<string> =>
-        fetchBody(account, article as Article)
+        service.fetchContent!(account, article as Article)
       );
       if (content.length > 0) {
         await database.updateArticleContent(articleId, content);
@@ -147,17 +150,25 @@ class FeedRepository {
     return article;
   }
 
-  /** Android's renderFullContent: fetch original page and cache extracted body. */
-  /** Startup cleanup so the database does not grow without bound. */
-  async cleanExpiredArticles(keepDays: number): Promise<number> {
+  /** Startup cleanup so the database does not grow without bound. Uses the
+   *  GLOBAL keepDays setting only; the per-account keepArchived field is NOT
+   *  consulted yet (matching Android is tracked as future work). Unread and
+   *  starred articles are never removed, so a fully unread account still
+   *  grows — see Database.deleteArticlesBefore for the exact predicate. */
+  async cleanExpiredArticles(keepDays: number = 30): Promise<number> {
     if (keepDays <= 0) {
-      return 0;
+      return 0; // 0 means keep forever
     }
-    const cutoff: number = Date.now() - keepDays * 24 * 3600 * 1000;
-    const removed: number = await database.deleteArticlesBefore(cutoff);
+    const now: number = Date.now();
+    const cutoff: number = now - keepDays * 24 * 3600 * 1000;
+    // Scope cleanup per account so one account's retention cannot affect another.
+    let removed: number = 0;
+    for (const account of await accountRepository.list()) {
+      removed += await database.deleteArticlesBefore(cutoff, account.id);
+    }
     if (removed > 0) {
       Logger.info(`Cleaned ${removed} expired articles (older than ${keepDays} days)`);
-      AppStorage.set<number>('feedDataTick', Date.now());
+      AppStorage.set<number>('feedDataTick', now);
     }
     return removed;
   }
@@ -249,20 +260,27 @@ class FeedRepository {
   }
 
   private async doSync(): Promise<SyncResult> {
-    const account: Account = await this.activeAccount();
+    let succeeded: boolean = false;
+    let failedCount: number = 0;
     try {
+      const account: Account = await this.activeAccount();
       // Push optimistic marks BEFORE reconciliation. Without this, the 10s
       // batcher debounce leaves a window where the server still has the old
       // state and sync's toUnread/toUnstar/toRead overwrite what the user just
-      // changed (README known issue). flush() never throws (it retries).
+      // changed. flush() never throws (it retries).
       await readStatusStore.flush();
       const result: SyncResult = await syncServiceFor(account).sync(account);
-      // Each service emits feedDataTick per batch and notifySyncFinal at the end;
-      // no extra tick here to avoid a redundant full UI reload.
+      succeeded = result.failed === 0;
+      failedCount = result.failed;
       return result;
     } catch (error) {
       Logger.error(`Sync failed: ${(error as Error).message}`);
       throw error as Error;
+    } finally {
+      // Single authoritative end signal for every protocol and every error
+      // path. Services only signal first-batch readiness; the final reload and
+      // toast belong here, after all batches and reconciliation are committed.
+      notifySyncFinal(succeeded, failedCount);
     }
   }
 
@@ -299,6 +317,8 @@ class FeedRepository {
     return syncServiceFor(account).markRead(account, ids, read, before);
   }
 
+  /** No UI caller at the moment (the drawer's group actions go through
+   *  markAllRead). Kept with the interface's other protocol-level methods. */
   async markReadGroup(groupId: string, read: boolean, before?: number): Promise<void> {
     const account: Account = await this.activeAccount();
     await syncServiceFor(account).markReadGroup(account, groupId, read, before);
@@ -328,6 +348,12 @@ class FeedRepository {
   async markAllRead(feedId: string, groupId?: string): Promise<void> {
     const account: Account = await this.activeAccount();
     const service: FeedSyncService = syncServiceFor(account);
+    // Prefer the protocol's bulk endpoint (one request per feed/stream) over
+    // one request per article id — Fever/GReader implement it.
+    if (service.markAllRead !== undefined) {
+      await service.markAllRead(account, feedId, groupId ?? '', true);
+      return;
+    }
     const ids: string[] = await database.listArticleIds(account.id, 'unread', feedId, groupId);
     if (ids.length === 0) {
       return;
@@ -340,6 +366,10 @@ class FeedRepository {
   async markAllReadBefore(feedId: string, groupId: string | undefined, before: number): Promise<void> {
     const account: Account = await this.activeAccount();
     const service: FeedSyncService = syncServiceFor(account);
+    if (service.markAllRead !== undefined) {
+      await service.markAllRead(account, feedId, groupId ?? '', true, before);
+      return;
+    }
     const ids: string[] = await database.listArticleIds(account.id, 'unread', feedId, groupId, before);
     if (ids.length === 0) {
       return;

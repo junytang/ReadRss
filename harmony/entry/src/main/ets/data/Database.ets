@@ -40,6 +40,12 @@ interface ArticleColumns {
 /** Max ids per `UPDATE ... WHERE id IN (...)`; SQLite's variable limit is 999. */
 const STATE_UPDATE_CHUNK: number = 500;
 
+/** Keyset cursor for article pagination: the last row of the previous page. */
+export interface ArticleCursor {
+  publishedAt: number;
+  id: string;
+}
+
 /**
  * RDB-backed local store. Counterpart of Room's `Reader` database, extended
  * with accounts and groups for Fever / Google Reader sync.
@@ -87,7 +93,12 @@ class ReadYouDatabase {
       return;
     }
     if (!this.initTask) {
-      this.initTask = this.create(context);
+      this.initTask = this.create(context).catch((error: Error): never => {
+        // A half-built schema must not be treated as ready on a retry.
+        this.store = undefined;
+        this.initTask = undefined;
+        throw error;
+      });
     }
     return this.initTask;
   }
@@ -194,6 +205,17 @@ class ReadYouDatabase {
     // Covers listFeeds' per-feed unread/star sums without touching full text.
     await this.exec(
       'CREATE INDEX IF NOT EXISTS idx_article_feed_state ON article(feed_id, is_read, is_starred)'
+    );
+    // Both orders: some subqueries filter only group_id, others also account_id.
+    await this.exec('CREATE INDEX IF NOT EXISTS idx_feed_group ON feed(account_id, group_id)');
+    await this.exec('CREATE INDEX IF NOT EXISTS idx_feed_group_only ON feed(group_id)');
+    // Covers the default "全部" ordering and keyset paging without a temp sort.
+    await this.exec(
+      'CREATE INDEX IF NOT EXISTS idx_article_account_pub_id ON article(account_id, published_at DESC, id DESC)'
+    );
+    // Covers the unread/starred/total aggregate used on every badge refresh.
+    await this.exec(
+      'CREATE INDEX IF NOT EXISTS idx_article_account_state ON article(account_id, is_read, is_starred)'
     );
     Logger.info('Database schema ready (multi-account)');
   }
@@ -336,7 +358,7 @@ class ReadYouDatabase {
     await this.insertAccount(account);
   }
 
-  async updateAccountSyncState(id: string, updateAt: number, lastArticleId: string): Promise<void> {
+  async updateAccountSyncState(id: string, updateAt: number, lastArticleId: string | null): Promise<void> {
     await this.exec(
       'UPDATE account SET update_at = ?, last_article_id = ? WHERE id = ?',
       [updateAt, lastArticleId, id]
@@ -357,9 +379,10 @@ class ReadYouDatabase {
     const rs = await this.query(
       `SELECT id, name, sort_order FROM feed_group WHERE account_id = ?
        ORDER BY (SELECT MAX(a.published_at) FROM article a, feed f
-                 WHERE a.feed_id = f.id AND f.group_id = feed_group.id) DESC,
+                 WHERE a.feed_id = f.id AND f.group_id = feed_group.id
+                   AND a.account_id = ?) DESC,
                 sort_order, name`,
-      [accountId]
+      [accountId, accountId]
     );
     try {
       const idCol: number = this.colIndex(rs, 'id');
@@ -409,12 +432,12 @@ class ReadYouDatabase {
                 SUM(CASE WHEN is_read = 0 THEN 1 ELSE 0 END) AS unread_count,
                 SUM(CASE WHEN is_starred = 1 THEN 1 ELSE 0 END) AS starred_count,
                 MAX(published_at) AS latest_at
-         FROM article GROUP BY feed_id
+         FROM article WHERE account_id = ? GROUP BY feed_id
        ) a ON a.feed_id = f.id
        WHERE f.account_id = ?
        ORDER BY a.latest_at DESC, f.sort_order ASC, f.title ASC`;
     const result: Feed[] = [];
-    const rs = await this.query(sql, [accountId]);
+    const rs = await this.query(sql, [accountId, accountId]);
     try {
       const idCol: number = this.colIndex(rs, 'id');
       const titleCol: number = this.colIndex(rs, 'title');
@@ -535,11 +558,13 @@ class ReadYouDatabase {
       : ` OR a.id IN (${marks.join(',')})`);
   }
 
-  /** Android pullArticles: scope × filter, with optional ascending sort and search. */
+  /** Android pullArticles: scope × filter, with optional ascending sort and search.
+   *  A cursor turns paging into a keyset query instead of re-reading the whole
+   *  prefix with an ever-growing LIMIT. */
   async listArticles(
     accountId: string, feedId: string, filter: string, limit: number,
     groupId?: string, sortAscending?: boolean, searchContent?: string,
-    lightweight: boolean = false, pending?: PendingFilterIds
+    lightweight: boolean = false, pending?: PendingFilterIds, cursor?: ArticleCursor
   ): Promise<Article[]> {
     // The article list only renders title/summary/metadata. Reading `content`
     // and `full_content` here would marshal every article's full HTML body into
@@ -587,9 +612,17 @@ class ReadYouDatabase {
       const pattern: string = `%${searchContent}%`;
       args.push(pattern, pattern, pattern);
     }
+    // Keyset pagination: only rows strictly after the previous page's last row.
+    // The composite (published_at, id) predicate matches the ORDER BY and can
+    // use the covering index, so scrolling never re-reads the whole prefix.
+    if (cursor !== undefined) {
+      sql += sortAscending
+        ? ' AND (a.published_at > ? OR (a.published_at = ? AND a.id > ?))'
+        : ' AND (a.published_at < ? OR (a.published_at = ? AND a.id < ?))';
+      args.push(cursor.publishedAt, cursor.publishedAt, cursor.id);
+    }
     // Secondary key on id keeps ordering deterministic when several articles
-    // share the same published_at, so the list cannot reshuffle between the
-    // incremental-limit reloads used for paging.
+    // share the same published_at.
     sql += sortAscending
       ? ' ORDER BY a.published_at ASC, a.id ASC LIMIT ?'
       : ' ORDER BY a.published_at DESC, a.id DESC LIMIT ?';
@@ -711,22 +744,50 @@ class ReadYouDatabase {
     // re-fetch from the origin on every sync). Remote services insert only
     // id-difference sets, so they keep REPLACE to mirror ArticleDao.insert.
     const conflict: string = ignoreExisting ? 'IGNORE' : 'REPLACE';
-    const sql: string =
-      `INSERT OR ${conflict} INTO article
-       (id, account_id, feed_id, feed_title, title, author, link, summary, content, full_content,
-        image_url, published_at, is_read, is_starred)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+    const columns: string =
+      '(id, account_id, feed_id, feed_title, title, author, link, summary, content, full_content,' +
+      ' image_url, published_at, is_read, is_starred)';
+    const rowSql: string = '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
+    // 14 bind variables per row; keep below SQLite's 999-variable limit.
+    const chunkSize: number = 70;
+    let inserted: number = 0;
     await this.withTransaction(async () => {
-      for (const article of articles) {
-        await this.exec(sql, [
-          article.id, accountId, article.feedId, article.feedTitle, article.title,
-          article.author, article.link, article.summary, article.content, article.fullContent,
-          article.imageUrl, article.publishedAt,
-          article.isRead ? 1 : 0, article.isStarred ? 1 : 0,
-        ]);
+      for (let i: number = 0; i < articles.length; i += chunkSize) {
+        let chunk: Article[] = articles.slice(i, i + chunkSize);
+        if (ignoreExisting) {
+          // INSERT OR IGNORE would still report these as inserted. Filter them
+          // out so the returned count reflects genuinely new rows.
+          const ids: string[] = chunk.map((a: Article): string => a.id);
+          const holes: string = ids.map((): string => '?').join(',');
+          const rs = await this.query(`SELECT id FROM article WHERE id IN (${holes})`, ids);
+          const existing: Set<string> = new Set<string>();
+          try {
+            while (this.nextRow(rs)) {
+              existing.add(this.str(rs, this.colIndex(rs, 'id')));
+            }
+          } finally {
+            this.closeRs(rs);
+          }
+          chunk = chunk.filter((a: Article): boolean => !existing.has(a.id));
+        }
+        if (chunk.length === 0) {
+          continue;
+        }
+        const values: string = chunk.map((): string => rowSql).join(',');
+        const args: Array<string | number> = [];
+        for (const article of chunk) {
+          args.push(
+            article.id, accountId, article.feedId, article.feedTitle, article.title,
+            article.author, article.link, article.summary, article.content, article.fullContent,
+            article.imageUrl, article.publishedAt,
+            article.isRead ? 1 : 0, article.isStarred ? 1 : 0,
+          );
+        }
+        await this.exec(`INSERT OR ${conflict} INTO article ${columns} VALUES ${values}`, args);
+        inserted += chunk.length;
       }
     });
-    return articles.length;
+    return inserted;
   }
 
   async updateArticleContent(id: string, content: string): Promise<void> {
@@ -738,14 +799,16 @@ class ReadYouDatabase {
   }
 
   /** Delete articles older than the given timestamp (ms). Returns the deleted count. */
-  async deleteArticlesBefore(timestamp: number): Promise<number> {
+  async deleteArticlesBefore(timestamp: number, accountId?: string): Promise<number> {
     // Starred and unread articles are kept, matching Android: retention must
     // never remove articles the user explicitly wants to keep.
+    const scope: string = accountId === undefined ? '' : ' AND account_id = ?';
+    const args: Array<string | number> = accountId === undefined ? [timestamp] : [timestamp, accountId];
     const condition: string =
-      'published_at > 0 AND published_at < ? AND is_starred = 0 AND is_read = 1';
+      `published_at > 0 AND published_at < ? AND is_starred = 0 AND is_read = 1${scope}`;
     const rs = await this.query(
       `SELECT COUNT(*) AS n FROM article WHERE ${condition}`,
-      [timestamp]
+      args
     );
     let count: number = 0;
     try {
@@ -756,10 +819,7 @@ class ReadYouDatabase {
       this.closeRs(rs);
     }
     if (count > 0) {
-      await this.exec(
-        `DELETE FROM article WHERE ${condition}`,
-        [timestamp]
-      );
+      await this.exec(`DELETE FROM article WHERE ${condition}`, args);
     }
     return count;
   }
@@ -837,21 +897,48 @@ class ReadYouDatabase {
     }
   }
 
-  async setStatesByFeed(accountId: string, feedId: string, read: boolean): Promise<void> {
+  async setStatesByFeed(
+    accountId: string, feedId: string, read: boolean, before?: number
+  ): Promise<void> {
+    const cutoff: string = before !== undefined && before > 0 ? ' AND published_at < ?' : '';
+    const args: Array<string | number> = [read ? 1 : 0, accountId, feedId];
+    if (before !== undefined && before > 0) {
+      args.push(before);
+    }
     await this.exec(
-      'UPDATE article SET is_read = ? WHERE account_id = ? AND feed_id = ?',
-      [read ? 1 : 0, accountId, feedId]
+      `UPDATE article SET is_read = ? WHERE account_id = ? AND feed_id = ?${cutoff}`, args
     );
   }
 
+  async setStatesByGroup(
+    accountId: string, groupId: string, read: boolean, before?: number
+  ): Promise<void> {
+    const cutoff: string = before !== undefined && before > 0 ? ' AND published_at < ?' : '';
+    const args: Array<string | number> = [read ? 1 : 0, accountId, accountId, groupId];
+    if (before !== undefined && before > 0) {
+      args.push(before);
+    }
+    await this.exec(
+      `UPDATE article SET is_read = ? WHERE account_id = ? AND feed_id IN
+       (SELECT id FROM feed WHERE account_id = ? AND group_id = ?)${cutoff}`, args
+    );
+  }
+
+  // NOTE: a few helpers below (markAllRead/countArticles/updateAccountSyncState
+  // callers etc.) are retained deliberately even where the current UI path does
+  // not use them; do not remove as part of routine cleanup.
   async markAllRead(accountId: string): Promise<void> {
     await this.setAllRead(accountId, true);
   }
 
-  async setAllRead(accountId: string, read: boolean): Promise<void> {
+  async setAllRead(accountId: string, read: boolean, before?: number): Promise<void> {
+    const cutoff: string = before !== undefined && before > 0 ? ' AND published_at < ?' : '';
+    const args: Array<string | number> = [read ? 1 : 0, accountId];
+    if (before !== undefined && before > 0) {
+      args.push(before);
+    }
     await this.exec(
-      'UPDATE article SET is_read = ? WHERE account_id = ?',
-      [read ? 1 : 0, accountId]
+      `UPDATE article SET is_read = ? WHERE account_id = ?${cutoff}`, args
     );
   }
 
@@ -968,6 +1055,8 @@ class ReadYouDatabase {
     const args: Array<string | number> = [accountId];
     if (filter === 'unread') {
       sql += ' AND is_read = 0';
+    } else if (filter === 'read') {
+      sql += ' AND is_read = 1';
     } else if (filter === 'starred') {
       sql += ' AND is_starred = 1';
     }

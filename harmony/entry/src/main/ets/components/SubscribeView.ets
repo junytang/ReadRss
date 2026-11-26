@@ -86,6 +86,7 @@ export struct SubscribeView {
             .height(46)
             .margin({ top: 10 })
             .fontSize(this.fs(15))
+            .fontFamily(this.appFont())
             .backgroundColor(this.darkMode ? '#1F2226' : '#FFFFFF')
             .fontColor(this.textColor())
             .onChange((value: string) => {
@@ -101,6 +102,8 @@ export struct SubscribeView {
           }
 
           Button(this.isSubmitting ? '正在抓取…' : '订阅')
+            .fontFamily(this.appFont())
+            .fontSize(this.fs(15))
             .width('100%')
             .height(44)
             .margin({ top: 20 })

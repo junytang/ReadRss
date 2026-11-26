@@ -47,6 +47,22 @@ export default function parserTest(): void {
       expect(XmlParser.decode('a &amp; b &lt;tag&gt; &quot;q&quot; &#39;s&#39;')).assertEqual("a & b <tag> \"q\" 's'");
     });
 
+    it('decodes numeric entities beyond the BMP without throwing', 0, () => {
+      // fromCodePoint, not fromCharCode: emoji numeric references must survive.
+      expect(XmlParser.decode('hi &#128512;')).assertEqual('hi 😀');
+      expect(XmlParser.decode('hi &#x1F600;')).assertEqual('hi 😀');
+    });
+
+    it('leaves malformed numeric entities untouched instead of throwing', 0, () => {
+      expect(XmlParser.decode('a &#x110000; b')).assertEqual('a &#x110000; b');
+      expect(XmlParser.decode('a &#xD800; b')).assertEqual('a &#xD800; b');
+      expect(XmlParser.decode('a &#99999999; b')).assertEqual('a &#99999999; b');
+    });
+
+    it('does not double-decode nested amp entities', 0, () => {
+      expect(XmlParser.decode('&amp;lt;')).assertEqual('&lt;');
+    });
+
     it('reads attributes', 0, () => {
       const doc: XmlNode = new XmlParser().parse('<root><link href="https://a.com" rel="alternate"/></root>');
       const link: XmlNode | undefined = XmlParser.firstDescendant(doc, 'link');
@@ -98,6 +114,22 @@ export default function parserTest(): void {
     it('counts images', 0, () => {
       const root: HtmlNode = HtmlDom.parse('<article><p>x</p><img src="a"/><img src="b"/></article>');
       expect(HtmlDom.imageCount(root)).assertEqual(2);
+    });
+
+    it('survives pathologically deep nesting without stack overflow', 0, () => {
+      let html: string = '<article>';
+      for (let i: number = 0; i < 400; i++) {
+        html += '<div>';
+      }
+      html += 'deep';
+      for (let i: number = 0; i < 400; i++) {
+        html += '</div>';
+      }
+      html += '</article>';
+      const root: HtmlNode = HtmlDom.parse(html);
+      // Depth guards must stop recursion instead of throwing / overflowing.
+      expect(HtmlDom.textLength(root) >= 0).assertTrue();
+      expect(HtmlDom.toHtml(root).length >= 0).assertTrue();
     });
 
     it('parses attributes and nested structure', 0, () => {

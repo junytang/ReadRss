@@ -160,6 +160,7 @@ export struct ReadingView {
   // animation to wait for the new article's content before sliding it in;
   // loadData() itself is async, so awaiting load() is not enough.
   private pageRenderedResolve?: () => void;
+  private renderTimer: number = -1;
   // Coalesce style-setting changes: a slider's onChange fires on every frame,
   // but each change rebuilds the whole HTML and reloads the WebView. Debounce to
   // a single re-render after the user stops dragging.
@@ -181,6 +182,29 @@ export struct ReadingView {
   aboutToAppear(): void {
     this.currentArticleId = this.articleId;
     this.load();
+  }
+
+  aboutToDisappear(): void {
+    this.loadSeq++;
+    if (this.styleTimer >= 0) {
+      clearTimeout(this.styleTimer);
+      this.styleTimer = -1;
+    }
+    if (this.renderTimer >= 0) {
+      clearTimeout(this.renderTimer);
+      this.renderTimer = -1;
+    }
+    // Settle a pending waitForPageRender() before dropping the handle: otherwise
+    // openNeighbor()'s await never resolves and retains this component.
+    const pendingRender: (() => void) | undefined = this.pageRenderedResolve;
+    if (pendingRender !== undefined) {
+      pendingRender();
+    }
+    this.pageRenderedResolve = undefined;
+    // Release the several MB of rendered HTML when leaving the reader.
+    this.html = '';
+    this.lastPushedHtml = '';
+    this.article = undefined;
   }
 
   private async load(): Promise<void> {
@@ -367,12 +391,17 @@ export struct ReadingView {
           clearTimeout(timer);
           timer = -1;
         }
+        if (this.renderTimer >= 0) {
+          clearTimeout(this.renderTimer);
+          this.renderTimer = -1;
+        }
         this.pageRenderedResolve = undefined;
         resolve();
       };
       this.pageRenderedResolve = finish;
       // Align with the page script's 1200ms visibility fallback (plus margin).
       timer = setTimeout(finish, 1300);
+      this.renderTimer = timer;
     });
   }
 
@@ -636,8 +665,9 @@ export struct ReadingView {
     goBack();
   }
 
-  /** System back follows the same rule as the on-screen button. */
-  onBackPress(): boolean {
+  /** System back follows the same rule as the on-screen button. Called only
+   *  from NavDestination.onBackPressed to avoid double WebView history steps. */
+  private handleSystemBack(): boolean {
     if (this.webNavigated) {
       let canGoBack: boolean = false;
       try {
@@ -902,7 +932,7 @@ export struct ReadingView {
       .width('100%')
       .height('100%')
     }
-    .onBackPressed(() => this.onBackPress())
+    .onBackPressed(() => this.handleSystemBack())
     .hideTitleBar(true)
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
   }

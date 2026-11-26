@@ -13,7 +13,27 @@ export interface XmlNode {
   text: string;
 }
 
+/** Named HTML/XML entities supported by feed titles and summaries. */
+const ENTITIES: Map<string, string> = new Map<string, string>();
+ENTITIES.set('lt', '<');
+ENTITIES.set('gt', '>');
+ENTITIES.set('quot', '"');
+ENTITIES.set('apos', "'");
+ENTITIES.set('nbsp', ' ');
+ENTITIES.set('mdash', '—');
+ENTITIES.set('ndash', '–');
+ENTITIES.set('hellip', '…');
+ENTITIES.set('copy', '©');
+ENTITIES.set('reg', '®');
+ENTITIES.set('trade', '™');
+ENTITIES.set('rsquo', '’');
+ENTITIES.set('lsquo', '‘');
+ENTITIES.set('ldquo', '“');
+ENTITIES.set('rdquo', '”');
+ENTITIES.set('amp', '&');
+
 export class XmlParser {
+  private static readonly ENTITIES: Map<string, string> = ENTITIES;
   private src: string = '';
   private pos: number = 0;
   private root: XmlNode = XmlParser.node('#document');
@@ -193,28 +213,26 @@ export class XmlParser {
     if (!value) {
       return '';
     }
-    let out: string = value;
-    out = out.replace(/&lt;/g, '<');
-    out = out.replace(/&gt;/g, '>');
-    out = out.replace(/&quot;/g, '"');
-    out = out.replace(/&apos;/g, "'");
-    out = out.replace(/&nbsp;/g, ' ');
-    out = out.replace(/&mdash;/g, '—');
-    out = out.replace(/&ndash;/g, '–');
-    out = out.replace(/&hellip;/g, '…');
-    out = out.replace(/&copy;/g, '©');
-    out = out.replace(/&reg;/g, '®');
-    out = out.replace(/&trade;/g, '™');
-    out = out.replace(/&rsquo;/g, '’');
-    out = out.replace(/&lsquo;/g, '‘');
-    out = out.replace(/&ldquo;/g, '“');
-    out = out.replace(/&rdquo;/g, '”');
-    out = out.replace(/&#x([0-9a-fA-F]+);/g,
-      (match: string, hex: string) => String.fromCharCode(parseInt(hex, 16)));
-    out = out.replace(/&#(\d+);/g,
-      (match: string, dec: string) => String.fromCharCode(parseInt(dec, 10)));
-    out = out.replace(/&amp;/g, '&');
-    return out;
+    // Most feed text has no entity at all; skip 20 regex passes and 20 string
+    // allocations in the common case. For the rest, one pass handles named and
+    // numeric entities without double-decoding nested `&amp;lt;`.
+    if (value.indexOf('&') < 0) {
+      return value;
+    }
+    return value.replace(/&(#x[0-9a-fA-F]+|#\d+|[a-zA-Z]+);/g,
+      (match: string, token: string): string => {
+        if (token.startsWith('#x') || token.startsWith('#')) {
+          const code: number = token.startsWith('#x')
+            ? parseInt(token.substring(2), 16) : parseInt(token.substring(1), 10);
+          // Malformed/out-of-range entities must not throw and abort a sync.
+          if (Number.isNaN(code) || code < 0 || code > 0x10FFFF
+            || (code >= 0xD800 && code <= 0xDFFF)) {
+            return match;
+          }
+          return String.fromCodePoint(code);
+        }
+        return XmlParser.ENTITIES.get(token) ?? match;
+      });
   }
 
   /** Some sources (notably this FreshRSS instance) store fullwidth ASCII in
@@ -254,13 +272,18 @@ export class XmlParser {
 
   static descendants(node: XmlNode, name: string): XmlNode[] {
     const found: XmlNode[] = [];
+    XmlParser.collectDescendants(node, name, found);
+    return found;
+  }
+
+  /** Accumulator form avoids one temporary array and spread per tree level. */
+  private static collectDescendants(node: XmlNode, name: string, out: XmlNode[]): void {
     for (const item of node.children) {
       if (XmlParser.localName(item.name) === name) {
-        found.push(item);
+        out.push(item);
       }
-      found.push(...XmlParser.descendants(item, name));
+      XmlParser.collectDescendants(item, name, out);
     }
-    return found;
   }
 
   static firstDescendant(node: XmlNode, name: string): XmlNode | undefined {

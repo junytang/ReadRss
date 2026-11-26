@@ -142,7 +142,7 @@ harmony/
 
 - 配置以代码为准：`build-profile.json5` 中 `compatibleSdkVersion` / `targetSdkVersion = "26.0.0"`、`runtimeOS = "HarmonyOS"`；`oh-package.json5` 中 `modelVersion = "7.0.0"`（未显式声明 `compileSdkVersion` / `arkTSVersion`，API 26 工具链可正常编译）。
 - 阅读器「更多」菜单用系统 `bindMenu`；AVIF 走公共代理 + 虚假 HTTPS URL + WebView `onInterceptRequest` 拦截（`ArticleImageConverter.ets` / `ReadingView.ets`）。
-- 分页：`onReachEnd` 递增 limit 重查，首批 20–80 行补齐至 `FULL_PAGE_SIZE=100`，之后 `LOAD_MORE_STEP=100`。
+- 分页：`onReachEnd` 用 `(published_at, id)` 游标做 keyset 分页，只取下一片；首批 20–80 行补齐至 `FULL_PAGE_SIZE=100`，之后 `LOAD_MORE_STEP=100`。
 - 分批大小 50 / 100 / 200 / 300 / 500，默认 **100**；GReader ID 页固定 **1000**，`fetchBatchSize` 只控制正文抓取/入库批次。
 - GReader token 持久化 **30 天**，401 清除重登；已读 ID 每次 sync 都对账，无节流。
 - `listArticles` 次级排序 `ORDER BY published_at DESC, a.id DESC`（ASC 同理），防止相同时间戳重查跳序。
@@ -153,8 +153,8 @@ harmony/
 **三个 tick（AppStorage，定义于 `rss/SyncProgress.ets`）**
 - `syncFirstBatchTick`：首批入库后由 `signalFirstBatch` 发出，全 sync 仅一次（`firstBatchNotified` 挡住兜底调用），无节流。
 - `feedDataTick`：每批入库后由 `notifySyncBatch` 发出，节流 800ms。
-- `syncFinishedTick`：`notifySyncFinal` 发出，同时设置 `feedDataTick`，无节流。
-- `beginSync()` 每次重置 `lastNotify` / `firstBatchNotified`。三种服务都必须发 `beginSync → notifySyncBatch → notifyContentReady → notifySyncFinal` 全序列；`RssRepository.syncAll()` 不再发 tick（避免重复 reload）。
+- `syncFinishedTick`：由 `RssRepository.doSync()` 的 `finally` 统一调用 `notifySyncFinal(ok)` 发出，同时设置 `feedDataTick` / `syncFinishedOk`，无节流；成功与失败路径都有。
+- `beginSync()` 每次重置 `lastNotify` / `firstBatchNotified`。三种服务发 `beginSync → notifySyncBatch → notifyContentReady`，`UiReadySignal.fire()` 只发首批 tick；最终 tick 不再由服务发出，避免「首批即完成」导致后续批次不进列表。
 
 **ArticleListView watcher**
 - 首批 tick：下拉刷新时停转圈（`isRefreshing=false`），并立即 `load(false, true)` 显示新文章（修复「转圈停了 UI 不变」的关键，勿删）。
@@ -162,7 +162,7 @@ harmony/
 - 结束 tick：`load(false, true)` 补全列表且保留分页深度；非下拉刷新时弹「同步完成」，下拉刷新的 toast 由 `sync()` 自己弹。
 
 **分页与竞态护栏**
-- 分页是递增 limit 重查（非 append），SQL 固定 `ORDER BY published_at DESC, id DESC`；`ForEach` 以 article.id 为 key，已有行不重建。
+- 分页是 keyset 游标（`(published_at, id)` 严格小于/大于上一页末行），只查询下一片，不重读前缀；`ForEach` 以 article.id 为 key，已有行不重建。
 - `loadSeq` 每次 `load()` 递增并在每个 `await` 后校验；`pageLoadSeq` 被 `load` / `loadMore` 共同递增，丢弃过期追加；`orderKey` 快照 feed/group/filter/search/排序方向，使上下文切换时在途追加失效。
 - `load(resetPaging=true, fromSync=false, snapToTop=true)`：真正切换上下文才回顶；sync 自身刷新传 `fromSync=true` 保留滚动深度。
 - `suppressScrollMark` + `awaitingTopConfirm`：替换行后 List 仍持旧 offset，回顶确认前禁止滚动标记，避免误标未读。
@@ -171,7 +171,7 @@ harmony/
 - 重复下拉：停转圈 + toast「正在同步中，请稍候」，不发起新 sync；sync 期间 `loadMore()` 静默忽略、外部 `load()` 忽略（`isSyncing && !fromSync`），但 `refreshCounts/Feeds` 保留。
 - 首装/启动同步：`isSyncing=false`，结束时由 `onSyncFinished` 弹 toast，无转圈。
 - 页面下拉：`isSyncing=true` → `syncAll()` → 结束 tick 不弹 toast → `sync()` 弹一次并在 `finally` 复位；`sync()` 内不 `await load(...)`。
-- `FeedListView` 不监听 `syncFinishedTick`，只靠自身 `sync()` 的 `await this.load()`（不是冗余，勿删），同样有 `isSyncing` 重入保护。
+- `FeedListView` 是受控抽屉，没有 `sync()`；订阅徽标由父级 `ArticleListView` 通过 `readStatusTick` / `feedDataTick` 驱动刷新。
 - 设置写入即写 AppStorage（唯一响应式源）：外观/字体/字号走 `@StorageProp`；列表行为写键 + bump `listSettingsTick`；`markReadOnScroll` / `markReadOnOpen` / `activeAccountId` 常驻页即时响应。
 
 ### 自动化测试

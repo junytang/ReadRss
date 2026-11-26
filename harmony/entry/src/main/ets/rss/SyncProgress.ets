@@ -42,25 +42,26 @@ export function notifyContentReady(): void {
   signalFirstBatch(Date.now());
 }
 
-/** Called when a sync finishes. Guarantees the spinner stops even when no new
- *  article batch was ever committed (e.g. everything is already up to date). */
-export function notifySyncFinal(): void {
+/** Called once when the whole sync finishes (success or failure), by
+ *  RssRepository.doSync()'s finally block. Guarantees the spinner stops and
+ *  the list gets a final reload with every committed batch, even when no new
+ *  article was committed or the sync failed before the first batch. */
+export function notifySyncFinal(succeeded: boolean = true, failedCount: number = 0): void {
   const now: number = Date.now();
   signalFirstBatch(now);
   lastNotify = now;
   AppStorage.setOrCreate<number>('feedDataTick', now);
-  // Separate signal: a full sync finished, so the article list should reload
-  // with everything committed so far (e.g. first-install sync started from the
-  // EntryAbility, which has no page-level sync() to do a final load itself).
+  AppStorage.setOrCreate<boolean>('syncFinishedOk', succeeded);
+  AppStorage.setOrCreate<number>('syncFailedCount', failedCount);
   AppStorage.setOrCreate<number>('syncFinishedTick', now);
 }
 
 /**
  * One-shot UI readiness signal shared by all protocols. Fired as soon as the
  * first article batch (the visible window + buffer) is committed: the spinner
- * stops, the list reloads and the "sync complete" toast appears. Everything
- * after that (remaining batches, state reconciliation, pruning, notifications)
- * runs silently in the background and must not keep the UI in a loading state.
+ * stops and the first batch is loaded immediately. It deliberately does NOT
+ * emit syncFinishedTick — that signal now belongs to the real end of sync,
+ * so later batches and state reconciliation are always reflected in the list.
  */
 export class UiReadySignal {
   private fired: boolean = false;
@@ -75,9 +76,10 @@ export class UiReadySignal {
       return;
     }
     this.fired = true;
-    // Time-to-UI: the moment the first article batch is usable. Everything
-    // after this is silent background work and must not block the user.
+    // Time-to-UI: the moment the first article batch is usable. Later batches
+    // and reconciliation continue silently; the final reload is driven by
+    // notifySyncFinal() at the real end of sync.
     Logger.info(`UI ready after ${Date.now() - this.start}ms`);
-    notifySyncFinal();
+    signalFirstBatch(Date.now());
   }
 }

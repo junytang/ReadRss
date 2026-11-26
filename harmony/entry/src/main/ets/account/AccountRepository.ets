@@ -131,15 +131,15 @@ class ReadYouAccountRepository {
     await database.updateAccount(account);
   }
 
-  /** Returns false when the last account cannot be removed (Android shows a toast). */
+  /** Deletes an account. The last account may be removed too; the empty-state
+   *  UI guides the user. The first-run navigation guide is NOT re-armed. */
   async remove(id: string): Promise<boolean> {
-    const accounts: Account[] = await this.list();
-    if (accounts.length <= 1) {
-      return false;
-    }
+    const wasActive: boolean = settingsStore.get().activeAccountId === id;
     await database.deleteAccount(id);
     const remaining: Account[] = await database.listAccounts();
-    if (remaining.length > 0) {
+    if (remaining.length === 0) {
+      await settingsStore.setActiveAccountId('');
+    } else if (wasActive || settingsStore.get().activeAccountId.length === 0) {
       await settingsStore.setActiveAccountId(remaining[0].id);
     }
     return true;

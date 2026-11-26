@@ -101,3 +101,4 @@ out/
 signature
 # Local RSS server test environments (contain credentials/data)
 test/
+.workbuddy/memory/

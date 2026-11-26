@@ -11,6 +11,9 @@ import { Logger } from '../common/Logger';
 import { WindowInsets } from '../common/WindowInsets';
 
 export default class EntryAbility extends UIAbility {
+  private mainWindow?: window.Window;
+  private avoidAreaCallback?: () => void;
+
   /** Convert physical pixels to vp using the standard display density API. */
   private pxToVp(px: number): number {
     try {
@@ -36,7 +39,7 @@ export default class EntryAbility extends UIAbility {
     // Some devices report zero avoid areas; fall back to typical system-bar sizes.
     WindowInsets.top = top > 0 ? top : 28;
     WindowInsets.bottom = bottom > 0 ? bottom : 16;
-    AppStorage.set<number>('topInset', WindowInsets.top);
+    AppStorage.setOrCreate<number>('topInset', WindowInsets.top);
     AppStorage.setOrCreate<number>('bottomInset', WindowInsets.bottom);
     // Publish the usable window height so the article list can size its first
     // batch to roughly two screens instead of a hard-coded row count.
@@ -44,10 +47,10 @@ export default class EntryAbility extends UIAbility {
       const heightVp: number = this.pxToVp(win.getWindowProperties().windowRect.height);
       const published: number = heightVp > 0 ? heightVp : 800;
       WindowInsets.height = published;
-      AppStorage.set<number>('windowHeightVp', published);
+      AppStorage.setOrCreate<number>('windowHeightVp', published);
     } catch (error) {
       Logger.warn(`window height unavailable: ${(error as Error).message}`);
-      AppStorage.set<number>('windowHeightVp', 800);
+      AppStorage.setOrCreate<number>('windowHeightVp', 800);
     }
   }
 
@@ -87,17 +90,21 @@ export default class EntryAbility extends UIAbility {
         } catch (error) {
           Logger.warn(`setWindowSystemBarProperties skipped: ${(error as Error).message}`);
         }
-        win.on('avoidAreaChange', () => this.applySafeArea(win));
+        this.mainWindow = win;
+        this.avoidAreaCallback = (): void => this.applySafeArea(win);
+        win.on('avoidAreaChange', this.avoidAreaCallback);
       })
       .catch((error: Error) => {
         Logger.error(`Window setup failed: ${error.message}`);
       });
 
-    // Initialise persistence before loading UI so pages can read data immediately.
+    // Only the data needed for the first frame blocks loadContent. Token
+    // stores, pending-mark caches, cleanup and network sync start afterwards.
     const context = this.context;
-    const dataReady: Promise<void> = database.init(context)
+    const uiReady: Promise<void> = database.init(context)
       .then(() => settingsStore.init(context))
-      .then(() => gReaderTokenStore.init(context))
+      // Pending read/star diffs must be restored BEFORE the first list query:
+      // the list uses them both for row projection and for pending-filter IDs.
       .then(() => readStatusStore.init(context))
       .then(async () => {
         // Apply the persisted color mode BEFORE loadContent. Calling setColorMode
@@ -113,43 +120,39 @@ export default class EntryAbility extends UIAbility {
           Logger.warn(`setColorMode skipped: ${(error as Error).message}`);
         }
         await accountRepository.ensureDefault();
-        // Startup retention cleanup (non-blocking for UI).
-        rssRepository.cleanExpiredArticles(settingsStore.get().keepArticleDays)
-          .catch((error: Error) => {
-            Logger.error(`Article cleanup failed: ${error.message}`);
-          });
-        // First install always syncs the starter feed. On later launches only
-        // sync when the "启动时同步" setting is on — mirrors Android's
-        // AbstractRssRepository.initSync() reading Account.syncOnStart.
-        // Never block UI loading on network work.
-        // 首装已不再创建默认账号，没有账号时不能同步；引导用户添加账号后再同步。
-        // if (accountRepository.isFirstRun() || settingsStore.get().syncOnLaunch) {
-        if (!accountRepository.isFirstRun() && settingsStore.get().syncOnLaunch) {
-          rssRepository.syncAll().catch((error: Error) => {
-            Logger.error(`Startup sync failed: ${error.message}`);
-          });
-        }
         AppStorage.setOrCreate<boolean>('darkMode', settingsStore.get().darkMode);
         AppStorage.setOrCreate<string>('activeAccountId', settingsStore.get().activeAccountId);
-        // First install: published for the mounted UI to guide the user to
-        // Settings > Account management > Add account.
         AppStorage.setOrCreate<number>(
           'firstRunTick', accountRepository.isFirstRun() ? Date.now() : 0
         );
-        AppStorage.setOrCreate<number>('accountSwitchTick', 0);
-        AppStorage.setOrCreate<number>('feedDataTick', 0);
-        AppStorage.setOrCreate<number>('syncFirstBatchTick', 0);
-        AppStorage.setOrCreate<number>('syncFinishedTick', 0);
-        AppStorage.setOrCreate<number>('navBackTick', 0);
-        AppStorage.setOrCreate<number>('fontDataTick', 0);
-        AppStorage.setOrCreate<number>('listSettingsTick', 0);
-        AppStorage.setOrCreate<number>('readStatusTick', 0);
-        AppStorage.setOrCreate<number>('readStatusFlushedTick', 0);
-        AppStorage.setOrCreate<number>('feedIconTick', 0);
         AppStorage.set<string>('currentFilter', FILTER_UNREAD);
       });
 
-    Promise.all([windowReady, dataReady]).then(() => {
+    const finishDeferredInit = async (): Promise<void> => {
+      await gReaderTokenStore.init(context);
+      AppStorage.setOrCreate<number>('accountSwitchTick', 0);
+      AppStorage.setOrCreate<number>('feedDataTick', 0);
+      AppStorage.setOrCreate<number>('syncFirstBatchTick', 0);
+      AppStorage.setOrCreate<number>('syncFinishedTick', 0);
+      AppStorage.setOrCreate<number>('navBackTick', 0);
+      AppStorage.setOrCreate<number>('fontDataTick', 0);
+      AppStorage.setOrCreate<number>('listSettingsTick', 0);
+      AppStorage.setOrCreate<number>('readStatusTick', 0);
+      AppStorage.setOrCreate<number>('readStatusFlushedTick', 0);
+      AppStorage.setOrCreate<number>('feedIconTick', 0);
+      rssRepository.cleanExpiredArticles(settingsStore.get().keepArticleDays)
+        .catch((error: Error) => {
+          Logger.error(`Article cleanup failed: ${error.message}`);
+        });
+      // 首装不再自动创建账号；没有账号时由引导页让用户添加后再同步。
+      if (!accountRepository.isFirstRun() && settingsStore.get().syncOnLaunch) {
+        rssRepository.syncAll().catch((error: Error) => {
+          Logger.error(`Startup sync failed: ${error.message}`);
+        });
+      }
+    };
+
+    Promise.all([windowReady, uiReady]).then(() => {
       // Note: the custom font is registered in Index.aboutToAppear using the
       // page's own UIContext. Registering here via the window's UIContext (before
       // loadContent) has no bound page yet and the registration is discarded.
@@ -158,6 +161,9 @@ export default class EntryAbility extends UIAbility {
           Logger.error(`loadContent failed: ${err.code} ${err.message}`);
         } else {
           Logger.info('loadContent succeeded');
+          finishDeferredInit().catch((error: Error) => {
+            Logger.error(`deferred init failed: ${error.message}`);
+          });
         }
       });
     }).catch((error: Error) => {
@@ -167,6 +173,11 @@ export default class EntryAbility extends UIAbility {
   }
 
   onWindowStageDestroy(): void {
+    if (this.mainWindow !== undefined && this.avoidAreaCallback !== undefined) {
+      this.mainWindow.off('avoidAreaChange', this.avoidAreaCallback);
+    }
+    this.mainWindow = undefined;
+    this.avoidAreaCallback = undefined;
     Logger.info('EntryAbility onWindowStageDestroy');
   }
 

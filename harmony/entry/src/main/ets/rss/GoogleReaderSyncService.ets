@@ -45,6 +45,15 @@ const STARRED_TAG: string = 'user/-/state/com.google/starred';
  *  the configured fetchBatchSize only governs content fetch + insert batches. */
 const ID_PAGE_SIZE: string = '1000';
 const READ_ID_PAGES: number = 3;
+/** Unread/starred ID streams are authoritative for state. Cap them at 20 pages
+ *  (20k ids) to protect self-hosted servers; if a stream is truncated we skip
+ *  that direction of state reconciliation rather than marking the tail read. */
+const STATE_ID_PAGES: number = 20;
+
+interface ItemIdPage {
+  ids: string[];
+  truncated: boolean;
+}
 /** Bounded parallelism for content batches, shared with every other protocol. */
 
 /** Port of GoogleReaderRssService.kt (also handles FreshRSS). */
@@ -139,20 +148,25 @@ export class GoogleReaderSyncService implements FeedSyncService {
       }
     }
     await api.disableTag(categoryStreamId(remoteId(group.id)));
-    await database.deleteGroupsExcept(account.id, [group.id]);
+    // Keep every OTHER group; passing [group.id] would delete all groups but
+    // the one just removed.
+    const remaining: string[] = (await database.listGroups(account.id))
+      .map((item: FeedGroup): string => item.id)
+      .filter((id: string): boolean => id !== group.id);
+    await database.deleteGroupsExcept(account.id, remaining);
   }
 
   // ------------------------------ ID stream helpers ------------------------
 
   private async allItemIds(
-    api: GoogleReaderApi, base: ApiParams, maxPages: number = Number.MAX_SAFE_INTEGER
-  ): Promise<string[]> {
+    api: GoogleReaderApi, base: ApiParams, maxPages: number = STATE_ID_PAGES
+  ): Promise<ItemIdPage> {
     const ids: string[] = [];
     let continuation: string | undefined = undefined;
     let page: number = 0;
     for (;;) {
       if (page >= maxPages) {
-        break;
+        return { ids: ids, truncated: true };
       }
       page++;
       const params: ApiParams = {
@@ -175,7 +189,7 @@ export class GoogleReaderSyncService implements FeedSyncService {
         break;
       }
     }
-    return ids;
+    return { ids: ids, truncated: false };
   }
 
   private async chunks<T>(items: T[], size: number): Promise<T[][]> {
@@ -209,9 +223,9 @@ export class GoogleReaderSyncService implements FeedSyncService {
       // list appears in ~1s. The main pass reads article states from the DB
       // and will not re-fetch these ids.
       if (account.updateAt === 0) {
-        const firstIds: string[] = await this.allItemIds(
+        const firstIds: string[] = (await this.allItemIds(
           api, { s: READING_LIST_STREAM, xt: READ_TAG, n: String(UI_WINDOW_SIZE) }, 1
-        );
+        )).ids;
         if (firstIds.length > 0) {
           const contents: ItemsContentsResult = await api.getItemsContents(firstIds);
           const firstArticles: Article[] = [];
@@ -287,9 +301,9 @@ export class GoogleReaderSyncService implements FeedSyncService {
       // The three ID streams are independent — fetch them concurrently. On a
       // first sync this was 3 sequential round-trips before any article could
       // be shown; now it costs one (bounded by SYNC_CONCURRENCY = 3).
-      const idStreams: [string[], string[], string[]] = await Promise.all([
-        this.allItemIds(api, unreadParams),
-        this.allItemIds(api, starredParams),
+      const idStreams: [ItemIdPage, ItemIdPage, ItemIdPage] = await Promise.all([
+        this.allItemIds(api, unreadParams, STATE_ID_PAGES),
+        this.allItemIds(api, starredParams, STATE_ID_PAGES),
         // Recently-read IDs (ot=<上次同步时间>) are only for CONTENT: an
         // article that arrived after our last sync but was read by another
         // client is in neither unreadSet nor starredSet, so its body would
@@ -297,9 +311,17 @@ export class GoogleReaderSyncService implements FeedSyncService {
         // FreshRSS's ot filters on crawl time, not on when a mark happened.
         this.allItemIds(api, readParams, READ_ID_PAGES),
       ]);
-      const unreadSet: Set<string> = new Set<string>(idStreams[0]);
-      const starredSet: Set<string> = new Set<string>(idStreams[1]);
-      const recentReadIds: string[] = idStreams[2];
+      const unreadSet: Set<string> = new Set<string>(idStreams[0].ids);
+      const starredSet: Set<string> = new Set<string>(idStreams[1].ids);
+      const recentReadIds: string[] = idStreams[2].ids;
+      const recentReadSet: Set<string> = new Set<string>(recentReadIds);
+      // A truncated authoritative stream must not be used to mark the tail
+      // read/unstarred; skip that direction of reconciliation instead.
+      const reconcileReadState: boolean = !idStreams[0].truncated;
+      const reconcileStarState: boolean = !idStreams[1].truncated;
+      if (!reconcileReadState || !reconcileStarState) {
+        Logger.warn('GReader ID stream truncated; skipping affected state reconciliation');
+      }
       Logger.info(`GReader sync auth+ids: ${Date.now() - phaseTime}ms`);
       phaseTime = Date.now();
 
@@ -374,10 +396,14 @@ export class GoogleReaderSyncService implements FeedSyncService {
           // unreadSet is COMPLETE (no ot), so it is authoritative in both
           // directions. FreshRSS's ot filters on crawl time, not read time, so
           // a read-ID stream cannot detect old articles read by another client.
-          if (state.isRead && unreadSet.has(id)) toUnread.push(state.id);
-          if (!state.isRead && !unreadSet.has(id)) toRead.push(state.id);
-          if (!state.isStarred && starredSet.has(id)) toStar.push(state.id);
-          if (state.isStarred && !starredSet.has(id)) toUnstar.push(state.id);
+          if (reconcileReadState) {
+            if (state.isRead && unreadSet.has(id)) toUnread.push(state.id);
+            if (!state.isRead && !unreadSet.has(id)) toRead.push(state.id);
+          }
+          if (reconcileStarState) {
+            if (!state.isStarred && starredSet.has(id)) toStar.push(state.id);
+            if (state.isStarred && !starredSet.has(id)) toUnstar.push(state.id);
+          }
         }
       }
       await database.setStates(toRead, true, undefined);
@@ -432,9 +458,10 @@ export class GoogleReaderSyncService implements FeedSyncService {
         try {
           contents = await api.getItemsContents(batch);
         } catch (error) {
-          // Android's deferred fetch tolerates a failed page; one bad batch
-          // must not abort the whole sync.
+          // A failed batch must not abort the sync, but a fully broken content
+          // endpoint must not be reported as success either.
           Logger.warn(`GReader contents batch failed: ${(error as Error).message}`);
+          result.failed++;
           return;
         }
         const articles: Article[] = [];
@@ -461,8 +488,15 @@ export class GoogleReaderSyncService implements FeedSyncService {
             content: item.summary?.content ?? '',
             imageUrl: this.firstImage(item.summary?.content ?? ''),
             publishedAt: published > now ? now : published,
-            isRead: !unreadSet.has(id),
-            isStarred: starredSet.has(id),
+            // If the unread stream was truncated, absence from the partial set
+            // does NOT mean read. Fall back to the ot read stream; unknown
+            // entries stay unread so they are not silently hidden from the user.
+            isRead: item.categories !== undefined && item.categories.length > 0
+              ? item.categories.indexOf(READ_TAG) >= 0
+              : (reconcileReadState ? !unreadSet.has(id) : recentReadSet.has(id)),
+            isStarred: item.categories !== undefined && item.categories.length > 0
+              ? item.categories.indexOf(STARRED_TAG) >= 0
+              : starredSet.has(id),
             fullContent: '',
           });
         }
@@ -500,8 +534,9 @@ export class GoogleReaderSyncService implements FeedSyncService {
 
       await database.deleteFeedsExcept(account.id, keepFeedIds);
       await database.deleteGroupsExcept(account.id, keepGroupIds);
-      account.updateAt = now;
-      await database.updateAccount(account);
+      // Update only the sync cursor: a full REPLACE would overwrite any account
+      // settings the user changed while this sync was running.
+      await database.updateAccountSyncState(account.id, now, account.lastArticleId);
       Logger.info(`GReader sync reconcile+prune: ${Date.now() - phaseTime}ms; total: ${Date.now() - now}ms`);
       result.succeeded = 1;
       // Fallback when toFetch was empty: nothing was committed, so no batch
@@ -546,6 +581,29 @@ export class GoogleReaderSyncService implements FeedSyncService {
       }
     }
     return done;
+  }
+
+  async markAllRead(
+    account: Account, feedId: string, groupId: string, read: boolean, before?: number
+  ): Promise<void> {
+    if (!read) {
+      // No bulk "mark all unread" endpoint: fall back to explicit ids.
+      const ids: string[] = await database.listArticleIds(account.id, 'read', feedId, groupId, before);
+      await this.markRead(account, ids, false, before);
+      return;
+    }
+    const streamId: string = feedId.length > 0
+      ? feedStreamId(remoteId(feedId))
+      : groupId.length > 0 ? categoryStreamId(remoteId(groupId)) : READING_LIST_STREAM;
+    const since: number | undefined = before !== undefined ? Math.floor(before / 1000) : undefined;
+    await this.api(account).markAllAsRead(streamId, since);
+    if (feedId.length > 0) {
+      await database.setStatesByFeed(account.id, feedId, true, before);
+    } else if (groupId.length > 0) {
+      await database.setStatesByGroup(account.id, groupId, true, before);
+    } else {
+      await database.setAllRead(account.id, true, before);
+    }
   }
 
   async markReadGroup(account: Account, groupId: string, read: boolean, before?: number): Promise<void> {

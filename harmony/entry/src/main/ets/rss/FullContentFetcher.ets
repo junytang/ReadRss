@@ -11,6 +11,8 @@ export const FULL_CONTENT_VERSION_MARKER: string = '<!--ry-extract-v16-->';
  * Removes page chrome before returning the article body HTML.
  */
 export class FullContentFetcher {
+  /** Cap a single article page at 4 MB before decode/parse. */
+  private static readonly MAX_HTML_BYTES: number = 4 * 1024 * 1024;
   static async fetch(url: string, title: string): Promise<string> {
     if (!url.startsWith('http://') && !url.startsWith('https://')) {
       return '';
@@ -31,6 +33,11 @@ export class FullContentFetcher {
         return '';
       }
       const bytes: ArrayBuffer = response.result as ArrayBuffer;
+      // A broken/huge page must not be fully decoded and parsed into memory.
+      if (bytes.byteLength > FullContentFetcher.MAX_HTML_BYTES) {
+        Logger.warn(`Full content too large: ${bytes.byteLength} bytes`);
+        return '';
+      }
       const charset: string = FullContentFetcher.detectCharset(response, bytes);
       const html: string = FullContentFetcher.decode(bytes, charset);
       return FullContentFetcher.clean(html, title);

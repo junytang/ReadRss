@@ -305,6 +305,8 @@ export struct FeedListView {
   deleteAction(feedId: string): void {
     Row() {
       Button('取消订阅')
+        .fontFamily(this.appFont())
+        .fontSize(this.fs(15))
         .backgroundColor('#D93025')
         .fontColor(Color.White)
         .onClick(async () => {

@@ -47,7 +47,7 @@
 | 文件 | 职责 |
 |---|---|
 | `harmony/entry/src/main/ets/components/ArticleListView.ets` | 文章列表：`load/loadMore/sync`、全部 watcher、序号护栏、乐观标记、滚动标记 |
-| `harmony/entry/src/main/ets/components/FeedListView.ets` | 订阅页：加载、`isSyncing` 保护、未读徽标 |
+| `harmony/entry/src/main/ets/components/FeedListView.ets` | 订阅页抽屉：由父级刷新驱动，未读徽标 |
 | `harmony/entry/src/main/ets/data/Database.ets` | RDB 与 SQL；`listArticles`（377 行起，含次级排序） |
 | `harmony/entry/src/main/ets/rss/SyncProgress.ets` | 三个 tick 的定义与节流 |
 | `harmony/entry/src/main/ets/rss/RssRepository.ets` | 同步门面 `syncAll()`（169 行起） |

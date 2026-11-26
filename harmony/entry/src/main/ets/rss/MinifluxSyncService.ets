@@ -6,10 +6,10 @@ import { Article, Feed, FeedGroup } from '../model/Models';
 import {
   beginSync, notifySyncBatch, notifyContentReady, UiReadySignal,
 } from './SyncProgress';
-import { UI_WINDOW_SIZE } from './SyncRuntime';
+import { forEachLimited, SYNC_CONCURRENCY, UI_WINDOW_SIZE } from './SyncRuntime';
 import {
   MinifluxApi, MinifluxCategory, MinifluxEntry, MinifluxEntryParams, MinifluxFeed, MinifluxFeedIcon,
-  iconDataUrl, isUnsupportedStarFieldError, errorText,
+  iconDataUrl, isUnsupportedStarFieldError, isNotFoundError, errorText,
 } from './MinifluxApi';
 import { FeedNotify, FeedSyncService, SyncResult } from './SyncService';
 import { Logger } from '../common/Logger';
@@ -21,6 +21,12 @@ const DEFAULT_GROUP_TITLE: string = 'Defaults';
 /** Miniflux caps /v1/entries at 1000; 100 keeps responses small and is stable
  *  across versions. Decoupled from the UI's fetchBatchSize. */
 const ENTRY_PAGE_SIZE: number = 300;
+/** Fresh-sync first-screen budget: at most 9000 newest entries per stream.
+ *  Older history beyond this is intentionally NOT imported: the cursor is a
+ *  high-water mark, so incremental syncs only see ids above it and will not
+ *  revisit the skipped tail. Keeping the bound avoids a multi-hundred-MB first
+ *  sync; raise it if full-history import is required. */
+const MAX_FRESH_BODY_PAGES: number = 30;
 /** Miniflux allows up to 10,000 ids per response. Using the maximum turns a
  *  large unread stream into ONE request instead of ten sequential OFFSET pages
  *  (OFFSET paging gets progressively slower on a big entries table). */
@@ -281,6 +287,9 @@ export class MinifluxSyncService implements FeedSyncService {
       }
       const unreadIds: Set<string> = new Set<string>();
       const starredIds: Set<string> = new Set<string>();
+      // False when a transient ID fetch failed: keep the previous server state
+      // instead of reconciling against empty sets (which would mark all read).
+      let stateIdsAvailable: boolean = true;
       const notifyByFeed: Map<string, FeedNotify> = new Map<string, FeedNotify>();
       let pendingArticles: Article[] = [];
 
@@ -342,7 +351,9 @@ export class MinifluxSyncService implements FeedSyncService {
         // high-water mark while `before_entry_id` walks down for later pages —
         // stable even if new entries arrive mid-sync (unlike offset paging).
         let before: number | undefined = undefined;
+        let pages: number = 0;
         for (;;) {
+          pages++;
           const options: MinifluxEntryParams = {
             status: status, starred: starred, afterEntryId: startCursor,
             beforeEntryId: before, limit: pageSize, order: 'id', direction: 'desc',
@@ -359,6 +370,7 @@ export class MinifluxSyncService implements FeedSyncService {
           }
           await insertPending();
           if (items.length < pageSize) break;
+          if (freshSync && pages >= MAX_FRESH_BODY_PAGES) break;
           before = items[items.length - 1].id;
         }
       };
@@ -396,12 +408,22 @@ export class MinifluxSyncService implements FeedSyncService {
         } catch (error) {
           unreadIds.clear();
           starredIds.clear();
-          Logger.warn(`Miniflux entry ids unavailable, using full streams: ${(error as Error).message}`);
-          // /v1/entries/ids needs Miniflux >= 2.3.2: rebuild state from full
-          // streams. Bodies from the cursor are already stored; addNew skips
-          // rows we have.
-          await fetchBodies('unread', undefined, 0, true);
-          await fetchBodies(undefined, true, 0, true);
+          if (isNotFoundError(error as Error)) {
+            Logger.warn(`Miniflux entries/ids unsupported, using full streams: ${(error as Error).message}`);
+            // /v1/entries/ids needs Miniflux >= 2.3.2: rebuild state from full
+            // streams. Bodies from the cursor are already stored; addNew skips
+            // rows we have.
+            await fetchBodies('unread', undefined, 0, true);
+            await fetchBodies(undefined, true, 0, true);
+          } else {
+            // 5xx / timeout / malformed body: never fall back to a full-history
+            // fetch or reconcile against empty sets. Skip this round's state
+            // update and retry on the next sync.
+            stateIdsAvailable = false;
+            // State could not be verified: never report a clean success.
+            result.failed++;
+            Logger.warn(`Miniflux entries/ids unavailable, skipping state sync: ${(error as Error).message}`);
+          }
         }
       }
       Logger.info(`Miniflux sync ids+bodies: ${Date.now() - phaseTime}ms`);
@@ -447,7 +469,7 @@ export class MinifluxSyncService implements FeedSyncService {
         existingFeeds.set(feed.id, feed);
       }
       // Icons change rarely: reuse stored data URIs and fetch only missing ones
-      // — concurrently, so N missing icons cost one round-trip, not N.
+      // with the same bounded concurrency as the rest of the sync.
       const iconById: Map<number, string> = new Map<number, string>();
       const iconFetches: IconFetch[] = [];
       for (const remote of remoteFeeds) {
@@ -460,21 +482,16 @@ export class MinifluxSyncService implements FeedSyncService {
         }
       }
       if (iconFetches.length > 0) {
-        const results: [number, string][] = await Promise.all(
-          iconFetches.map(async (item: IconFetch): Promise<[number, string]> => {
-            try {
-              const body = await api.getIcon(item.feedId);
-              return [item.iconId, body !== undefined && body.data !== undefined
-                ? iconDataUrl(body.data, body.mime_type) : ''];
-            } catch (error) {
-              // A single broken icon must not fail the whole sync.
-              return [item.iconId, ''];
-            }
-          })
-        );
-        for (const result of results) {
-          iconById.set(result[0], result[1]);
-        }
+        await forEachLimited(iconFetches, async (item: IconFetch): Promise<void> => {
+          try {
+            const body = await api.getIcon(item.feedId);
+            iconById.set(item.iconId, body !== undefined && body.data !== undefined
+              ? iconDataUrl(body.data, body.mime_type) : '');
+          } catch (error) {
+            // A single broken icon must not fail the whole sync.
+            iconById.set(item.iconId, '');
+          }
+        }, SYNC_CONCURRENCY);
       }
 
       const keepFeedIds: string[] = [];
@@ -518,30 +535,32 @@ export class MinifluxSyncService implements FeedSyncService {
       // reconciliation cannot revert the user's just-changed state.
       // Iterate the existing set directly — Array.from(knownIds) would allocate
       // a second full copy of every id just before the heaviest DB writes.
-      const toRead: string[] = [];
-      const toUnread: string[] = [];
-      const toStar: string[] = [];
-      const toUnstar: string[] = [];
-      for (const id of knownIds) {
-        const localId: string = dbId(account.id, id);
-        if (pendingStatusRegistry.has(localId)) {
-          continue;
+      if (stateIdsAvailable) {
+        const toRead: string[] = [];
+        const toUnread: string[] = [];
+        const toStar: string[] = [];
+        const toUnstar: string[] = [];
+        for (const id of knownIds) {
+          const localId: string = dbId(account.id, id);
+          if (pendingStatusRegistry.has(localId)) {
+            continue;
+          }
+          if (unreadIds.has(id)) {
+            toUnread.push(localId);
+          } else {
+            toRead.push(localId);
+          }
+          if (starredIds.has(id)) {
+            toStar.push(localId);
+          } else {
+            toUnstar.push(localId);
+          }
         }
-        if (unreadIds.has(id)) {
-          toUnread.push(localId);
-        } else {
-          toRead.push(localId);
-        }
-        if (starredIds.has(id)) {
-          toStar.push(localId);
-        } else {
-          toUnstar.push(localId);
-        }
+        await database.setStates(toRead, true, undefined);
+        await database.setStates(toUnread, false, undefined);
+        await database.setStates(toStar, undefined, true);
+        await database.setStates(toUnstar, undefined, false);
       }
-      await database.setStates(toRead, true, undefined);
-      await database.setStates(toUnread, false, undefined);
-      await database.setStates(toStar, undefined, true);
-      await database.setStates(toUnstar, undefined, false);
 
       // Prune one by one with deleteFeedPreservingStarred; deleteFeedsExcept
       // would also delete starred articles of removed feeds.
@@ -552,11 +571,10 @@ export class MinifluxSyncService implements FeedSyncService {
       }
       await database.deleteGroupsExcept(account.id, keepGroupIds);
 
-      account.updateAt = preTime;
-      // Persist the high-water mark for the next incremental sync.
-      account.lastArticleId = maxEntryId > lastMaxId
+      // Persist only the sync cursor; avoid REPLACE-ing concurrent edits.
+      const nextCursor: string | null = maxEntryId > lastMaxId
         ? dbId(account.id, String(maxEntryId)) : account.lastArticleId;
-      await database.updateAccount(account);
+      await database.updateAccountSyncState(account.id, preTime, nextCursor);
       Logger.info(`Miniflux sync reconcile+prune: ${Date.now() - phaseTime}ms; total: ${Date.now() - preTime}ms`);
       result.succeeded = 1;
       // Fallback when no article was committed (nothing new on the server).

@@ -25,6 +25,11 @@ export interface FeedSyncService {
   sync(account: Account): Promise<SyncResult>;
   subscribe(account: Account, url: string): Promise<Feed>;
   markRead(account: Account, articleIds: string[], read: boolean, before?: number): Promise<string[]>;
+  /** Protocol-level bulk mark for a whole feed/group/all scope. When present,
+   *  markAllRead() uses it instead of one request per article id. */
+  markAllRead?(account: Account, feedId: string, groupId: string, read: boolean, before?: number): Promise<void>;
+  // NOTE: markReadGroup / markReadFeed / deleteGroup are implemented by all
+  // services but currently have no UI caller — kept intentionally, not cleaned.
   markReadGroup(account: Account, groupId: string, read: boolean, before?: number): Promise<void>;
   markReadFeed(account: Account, feedId: string, read: boolean, before?: number): Promise<void>;
   markStarred(account: Account, article: Article, starred: boolean): Promise<void>;

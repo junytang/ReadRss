@@ -14,13 +14,21 @@ function acc(id: string, type: AccountType): Account {
 }
 
 export default function accountRepositoryTest(): void {
-  describe('AccountRepository.remove guard', () => {
-    it('returns false when only one account exists', 0, async () => {
+  describe('AccountRepository.remove', () => {
+    it('allows removing the last account', 0, async () => {
       const mock: MockKit = new MockKit();
       const la = mock.mockFunc(database, database.listAccounts);
-      when(la)().afterReturn(Promise.resolve([acc('1', AccountType.LOCAL)]));
+      // After deletion there are no accounts left: clear the active id but do
+      // NOT re-arm the first-run navigation guide.
+      when(la)().afterReturn(Promise.resolve([]));
+      const da = mock.mockFunc(database, database.deleteAccount);
+      when(da)('1').afterReturn(Promise.resolve());
+      AppStorage.setOrCreate<number>('firstRunTick', 0);
       const result: boolean = await accountRepository.remove('1');
-      expect(result).assertFalse();
+      expect(result).assertTrue();
+      mock.verify('deleteAccount', ['1']).once();
+      expect(AppStorage.get<string>('activeAccountId') ?? 'x').assertEqual('');
+      expect(AppStorage.get<number>('firstRunTick') ?? -1).assertEqual(0);
       mock.clear(database);
     });
 

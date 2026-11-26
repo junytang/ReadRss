@@ -19,12 +19,23 @@ if [ ! -x "$NODE" ]; then
   echo "SKIP: DevEco node not found at $NODE"
   FAIL=1
 else
-  (cd "$ROOT/harmony" && "$NODE" "$HVIGOR" --mode module -p product=default \
+  RESULT="$ROOT/harmony/entry/.test/default/intermediates/test/coverage_data/test_result.txt"
+  rm -f "$RESULT"
+  # The daemon can die between runs on this machine; a fresh no-daemon run is
+  # slower but makes the result trustworthy.
+  (cd "$ROOT/harmony" && "$NODE" "$HVIGOR" --stop-daemon >/dev/null 2>&1 || true)
+  (cd "$ROOT/harmony" && "$NODE" "$HVIGOR" --no-daemon --mode module -p product=default \
     -p buildMode=debug test --analyze=normal)
   [ $? -ne 0 ] && FAIL=1
-  RESULT="$ROOT/harmony/entry/.test/default/intermediates/test/coverage_data/test_result.txt"
   if [ -f "$RESULT" ]; then
     grep "Tests run:" "$RESULT" || true
+    if ! grep -q "Tests run:" "$RESULT" || grep -Eq 'Failure: [1-9]|Error: [1-9]' "$RESULT"; then
+      echo "ArkTS unit tests reported failures"
+      FAIL=1
+    fi
+  else
+    echo "ArkTS test result file not found: $RESULT"
+    FAIL=1
   fi
 fi
 

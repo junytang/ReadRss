@@ -39,6 +39,7 @@ struct Index {
   @StorageProp('topInset') topInset: number = 0;
   @StorageProp('firstRunTick') @Watch('onFirstRunTick') firstRunTick: number = 0;
   private firstRunGuided: boolean = false;
+  private guideTimer: number = 0;
 
   @Builder
   pageMap(name: string, param: Object): void {
@@ -82,7 +83,9 @@ struct Index {
     }
     this.firstRunGuided = true;
     // Defer until the Navigation container is attached to the stack.
-    setTimeout((): void => {
+    this.guideTimer = setTimeout((): void => {
+      this.guideTimer = 0;
+      if (!this.firstRunGuided) return;
       openSettings();
       openAccounts();
       openAccountEditor('');
@@ -90,6 +93,9 @@ struct Index {
   }
 
   onFirstRunTick(): void {
+    // Guide is strictly first-install only. Deleting the last account does not
+    // re-arm it (that would push Settings+Accounts+Editor onto an existing
+    // route stack and force several back presses).
     this.guideFirstRun();
   }
 
@@ -109,6 +115,13 @@ struct Index {
     FontManager.register(this.getUIContext(), settings.customFontPath);
     FontManager.setSystemFamily(settings.systemFontFamily);
     AppStorage.set<number>('fontScale', settings.systemFontScale);
+  }
+
+  aboutToDisappear(): void {
+    if (this.guideTimer !== 0) {
+      clearTimeout(this.guideTimer);
+      this.guideTimer = 0;
+    }
   }
 
   build() {

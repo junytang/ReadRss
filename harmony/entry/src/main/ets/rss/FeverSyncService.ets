@@ -12,6 +12,7 @@ import { FeedSyncService, FeedNotify, SyncResult } from './SyncService';
 import { Logger } from '../common/Logger';
 import { NotificationHelper } from '../common/NotificationHelper';
 import { pendingStatusRegistry } from './PendingStatusRegistry';
+import { md5Hex } from '../common/Md5';
 
 const MAX_TIMESTAMP: number = 9223372036854775; // Date(Long.MAX_VALUE).time / 1000
 
@@ -290,8 +291,10 @@ export class FeverSyncService implements FeedSyncService {
       ]);
       const unread: string[] | undefined = stateIds[0];
       const savedRaw: string[] = stateIds[1];
+      // Hash the CSVs: joining 50k ids would build a ~1 MB string twice per
+      // sync just to compare it with the previous one.
       const unreadSig: string = unread === undefined ? '__undef__' : unread.join(',');
-      const signature: string = unreadSig + '||' + savedRaw.join(',');
+      const signature: string = md5Hex(unreadSig + '||' + savedRaw.join(','));
       if (this.stateSignatures.get(account.id) !== signature || result.newArticles > 0) {
         const unreadSet: Set<string> | undefined = unread === undefined ? undefined : new Set<string>(unread);
         const saved: Set<string> = new Set<string>(savedRaw);
@@ -331,9 +334,10 @@ export class FeverSyncService implements FeedSyncService {
       }
       await database.deleteGroupsExcept(account.id, keepGroupIds);
 
-      account.updateAt = preTime;
-      account.lastArticleId = lastSeenId.length > 0 ? dbId(account.id, lastSeenId) : null;
-      await database.updateAccount(account);
+      // Cursor-only update avoids REPLACE-ing concurrent account edits.
+      await database.updateAccountSyncState(
+        account.id, preTime, lastSeenId.length > 0 ? dbId(account.id, lastSeenId) : null
+      );
       result.succeeded = 1;
       // Fallback when no new item was committed.
       uiReady.fire();
@@ -352,6 +356,11 @@ export class FeverSyncService implements FeedSyncService {
     const api: FeverApi = this.api(account);
     const status: FeverStatus = read ? FeverStatus.READ : FeverStatus.UNREAD;
     if (articleIds.length === 0) {
+      // DEAD BRANCH: every caller (RssRepository's markAllRead id fallback)
+      // filters empty id lists before calling, so this is unreachable today.
+      // Kept for interface robustness, but note api.markFeed below receives
+      // `before` in ms while it expects SECONDS — convert before ever wiring
+      // this path up (see markAllRead's beforeSec for the correct form).
       for (const feed of await database.listFeeds(account.id)) {
         // Android marks each local feed via markFeed, then updates locally.
         await database.setStatesByFeed(account.id, feed.id, read);
@@ -381,11 +390,42 @@ export class FeverSyncService implements FeedSyncService {
     return done;
   }
 
+  async markAllRead(
+    account: Account, feedId: string, groupId: string, read: boolean, before?: number
+  ): Promise<void> {
+    const api: FeverApi = this.api(account);
+    const status: FeverStatus = read ? FeverStatus.READ : FeverStatus.UNREAD;
+    const beforeSec: number = Math.floor((before ?? MAX_TIMESTAMP) / 1000);
+    if (groupId.length > 0) {
+      await database.setStatesByGroup(account.id, groupId, read, before);
+      await api.markGroup(status, remoteId(groupId), beforeSec);
+      return;
+    }
+    if (feedId.length > 0) {
+      await database.setStatesByFeed(account.id, feedId, read, before);
+      // FeverApi.markFeed expects SECONDS, while `before` from the UI is ms.
+      await api.markFeed(status, remoteId(feedId), beforeSec);
+      return;
+    }
+    // Whole account: one markFeed request per feed, not one per article.
+    for (const feed of await database.listFeeds(account.id)) {
+      await database.setStatesByFeed(account.id, feed.id, read, before);
+      await api.markFeed(status, remoteId(feed.id), beforeSec);
+    }
+    await database.setAllRead(account.id, read, before);
+  }
+
+  // DEAD CODE (interface parity, see SyncService NOTE): no live caller — the
+  // UI marks groups through markAllRead's bulk path. Also latent: `before` is
+  // passed in ms while api.markGroup expects SECONDS.
   async markReadGroup(account: Account, groupId: string, read: boolean, before: number = MAX_TIMESTAMP): Promise<void> {
     const api: FeverApi = this.api(account);
     await api.markGroup(read ? FeverStatus.READ : FeverStatus.UNREAD, remoteId(groupId), before);
   }
 
+  // DEAD CODE (interface parity, see SyncService NOTE): no live caller for
+  // Fever — the UI marks feeds through markAllRead's bulk path. Also latent:
+  // `before` is passed in ms while api.markFeed expects SECONDS.
   async markReadFeed(account: Account, feedId: string, read: boolean, before: number = MAX_TIMESTAMP): Promise<void> {
     const api: FeverApi = this.api(account);
     await database.setStatesByFeed(account.id, feedId, read);

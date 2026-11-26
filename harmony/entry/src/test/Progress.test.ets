@@ -1,5 +1,7 @@
 import { describe, it, expect } from '@ohos/hypium';
-import { beginSync, notifySyncBatch, notifyContentReady, notifySyncFinal } from '../main/ets/rss/SyncProgress';
+import {
+  beginSync, notifySyncBatch, notifyContentReady, notifySyncFinal, UiReadySignal,
+} from '../main/ets/rss/SyncProgress';
 
 export default function progressTest(): void {
   describe('SyncProgress tick signals', () => {
@@ -26,6 +28,23 @@ export default function progressTest(): void {
       notifySyncFinal();
       expect((AppStorage.get<number>('feedDataTick') ?? 0) > 0).assertTrue();
       expect((AppStorage.get<number>('syncFinishedTick') ?? 0) > 0).assertTrue();
+    });
+
+    it('UiReadySignal only signals first batch, not sync completion', 0, () => {
+      beginSync();
+      AppStorage.setOrCreate<number>('syncFinishedTick', 0);
+      new UiReadySignal(Date.now()).fire();
+      expect((AppStorage.get<number>('syncFirstBatchTick') ?? 0) > 0).assertTrue();
+      expect((AppStorage.get<number>('syncFinishedTick') ?? 0) === 0).assertTrue();
+    });
+
+    it('notifySyncFinal records failure state', 0, () => {
+      beginSync();
+      notifySyncFinal(false, 2);
+      expect(AppStorage.get<boolean>('syncFinishedOk') === false).assertTrue();
+      expect(AppStorage.get<number>('syncFailedCount')).assertEqual(2);
+      // Restore success state for later suites.
+      AppStorage.setOrCreate<boolean>('syncFinishedOk', true);
     });
 
     it('batch throttle: rapid batches do not each bump feedDataTick', 0, () => {

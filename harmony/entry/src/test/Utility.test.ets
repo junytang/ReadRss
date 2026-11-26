@@ -334,6 +334,12 @@ export default function utilityTest(): void {
       expect(html.indexOf('%s') >= 0).assertFalse();
     });
 
+    it('does not interpret $& or $` sequences in article HTML', 0, () => {
+      const body: string = '<p>price $& dollar $` tick $\' end</p>';
+      const html: string = WebViewHtml.fill('css', 'https://b/', body);
+      expect(html.indexOf(body) >= 0).assertTrue();
+    });
+
     it('body script keeps MutationObserver and font-ready logic', 0, () => {
       expect(WebViewHtml.SCRIPT.indexOf('MutationObserver') >= 0).assertTrue();
       expect(WebViewHtml.SCRIPT.indexOf('document.fonts.ready') >= 0).assertTrue();

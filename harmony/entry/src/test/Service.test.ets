@@ -4,6 +4,8 @@ import { GoogleReaderApi } from '../main/ets/rss/GoogleReaderApi';
 import { database } from '../main/ets/data/Database';
 import { Account, AccountType, dbId, remoteId } from '../main/ets/account/AccountModels';
 import { Article } from '../main/ets/model/Models';
+import { FeverSyncService } from '../main/ets/rss/FeverSyncService';
+import { FeverApi, FeverStatus } from '../main/ets/rss/FeverApi';
 
 function account(): Account {
   const a: Account = {
@@ -32,6 +34,50 @@ export default function serviceTest(): void {
     it('markStarredBatch on empty ids returns []', 0, async () => {
       const svc: GoogleReaderSyncService = new GoogleReaderSyncService();
       expect((await svc.markStarredBatch(account(), [], true)).length).assertEqual(0);
+    });
+  });
+
+  describe('bulk mark-all-read endpoints', () => {
+    it('GReader uses one mark-all-as-read stream call with seconds and applies the cutoff locally', 0, async () => {
+      const mock: MockKit = new MockKit();
+      const svc: GoogleReaderSyncService = new GoogleReaderSyncService();
+      const a: Account = account();
+      const fakeApi: GoogleReaderApi = new GoogleReaderApi('https://x', 'u', 'p');
+      const apiFn = mock.mockPrivateFunc(svc, 'api');
+      when(apiFn)(a).afterReturn(fakeApi);
+      const markFn = mock.mockPrivateFunc(fakeApi, 'markAllAsRead');
+      when(markFn)('user/-/state/com.google/reading-list', 6)
+        .afterReturn(Promise.resolve('OK'));
+      const dbFn = mock.mockFunc(database, database.setAllRead);
+      when(dbFn)(a.id, true, 6000).afterReturn(Promise.resolve());
+
+      await svc.markAllRead(a, '', '', true, 6000);
+      mock.verify('markAllAsRead', ['user/-/state/com.google/reading-list', 6]).once();
+      mock.verify('setAllRead', [a.id, true, 6000]).once();
+      mock.clear(database);
+      mock.clear(fakeApi);
+      mock.clear(svc);
+    });
+
+    it('Fever converts ms to seconds for markFeed and keeps the cutoff locally', 0, async () => {
+      const mock: MockKit = new MockKit();
+      const svc: FeverSyncService = new FeverSyncService();
+      const a: Account = account();
+      a.type = AccountType.FEVER;
+      const fakeApi: FeverApi = new FeverApi('https://x', 'u', 'p');
+      const apiFn = mock.mockPrivateFunc(svc, 'api');
+      when(apiFn)(a).afterReturn(fakeApi);
+      const markFn = mock.mockFunc(fakeApi, fakeApi.markFeed);
+      when(markFn)(FeverStatus.READ, remoteId('f1'), 6).afterReturn(Promise.resolve());
+      const dbFn = mock.mockFunc(database, database.setStatesByFeed);
+      when(dbFn)(a.id, 'f1', true, 6000).afterReturn(Promise.resolve());
+
+      await svc.markAllRead(a, 'f1', '', true, 6000);
+      mock.verify('markFeed', [FeverStatus.READ, remoteId('f1'), 6]).once();
+      mock.verify('setStatesByFeed', [a.id, 'f1', true, 6000]).once();
+      mock.clear(database);
+      mock.clear(fakeApi);
+      mock.clear(svc);
     });
   });
 

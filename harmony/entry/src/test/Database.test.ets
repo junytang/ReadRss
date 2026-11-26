@@ -16,12 +16,15 @@ class FakeStore {
   onQuery: (sql: string, args: Array<relationalStore.ValueType>) => Promise<relationalStore.ResultSet> =
     (): Promise<relationalStore.ResultSet> => Promise.resolve(new EmptyResultSet() as object as relationalStore.ResultSet);
   onExec: (sql: string) => Promise<void> = (): Promise<void> => Promise.resolve();
+  onExecWithArgs: (sql: string, args: Array<relationalStore.ValueType>) => Promise<void> =
+    (): Promise<void> => Promise.resolve();
 
   querySql(sql: string, args: Array<relationalStore.ValueType>): Promise<relationalStore.ResultSet> {
     return this.onQuery(sql, args);
   }
   executeSql(sql: string, args: Array<relationalStore.ValueType>): Promise<void> {
-    return this.onExec(sql);
+    void this.onExec(sql);
+    return this.onExecWithArgs(sql, args);
   }
   beginTransaction(): void {}
   commit(): void {}
@@ -39,6 +42,7 @@ class EmptyResultSet implements FakeResultSet {
 /** ResultSet with one row; getLong returns values in sequence per call. */
 class OneRowResultSet implements FakeResultSet {
   seq: number[] = [];
+  idValue: string = '';
   private idx: number = 0;
   private rowDone: boolean = false;
   goToNextRow(): boolean {
@@ -47,7 +51,7 @@ class OneRowResultSet implements FakeResultSet {
     return true;
   }
   getColumnIndex(name: string): number { return 0; }
-  getString(i: number): string { return ''; }
+  getString(i: number): string { return this.idValue; }
   getLong(i: number): number {
     const v: number = this.seq[this.idx] ?? 0;
     this.idx++;
@@ -85,6 +89,67 @@ export default function databaseTest(): void {
       expect(capturedSql.indexOf('a.title LIKE ?') >= 0).assertTrue();
       expect(capturedSql.indexOf('ORDER BY a.published_at DESC, a.id DESC LIMIT ?') >= 0).assertTrue();
       expect(capturedArgs.length).assertEqual(7);
+      mock.clear(database);
+    });
+
+    it('listArticles uses a keyset cursor predicate with the last row values', 0, async () => {
+      const mock: MockKit = new MockKit();
+      let capturedSql: string = '';
+      let capturedArgs: Array<relationalStore.ValueType> = [];
+      const rs: relationalStore.ResultSet = new EmptyResultSet() as object as relationalStore.ResultSet;
+      const fakeStore: FakeStore = new FakeStore();
+      fakeStore.onQuery = (sql: string, args: Array<relationalStore.ValueType>): Promise<relationalStore.ResultSet> => {
+        capturedSql = sql;
+        capturedArgs = args;
+        return Promise.resolve(rs);
+      };
+      const dbMock = mock.mockPrivateFunc(database, 'db');
+      when(dbMock)().afterReturn(fakeStore as object as relationalStore.RdbStore);
+
+      await database.listArticles('acc1', '', 'unread', 30, '', false, undefined, true, undefined,
+        { publishedAt: 1234, id: 'a9' });
+      expect(capturedSql.indexOf('a.published_at < ? OR (a.published_at = ? AND a.id < ?)') >= 0)
+        .assertTrue();
+      expect(capturedArgs.length).assertEqual(5);
+      expect(capturedArgs[1]).assertEqual(1234);
+      expect(capturedArgs[2]).assertEqual(1234);
+      expect(capturedArgs[3]).assertEqual('a9');
+      mock.clear(database);
+    });
+
+    it('insertArticles batches rows and counts only genuinely new ids on IGNORE', 0, async () => {
+      const mock: MockKit = new MockKit();
+      const statements: string[] = [];
+      const fakeStore: FakeStore = new FakeStore();
+      fakeStore.onExecWithArgs = (sql: string): Promise<void> => {
+        if (sql.indexOf('INSERT OR IGNORE') >= 0) {
+          statements.push(sql);
+        }
+        return Promise.resolve();
+      };
+      // One existing row: the count must exclude it.
+      const existing: OneRowResultSet = new OneRowResultSet();
+      existing.idValue = 'a1';
+      fakeStore.onQuery = (): Promise<relationalStore.ResultSet> =>
+        Promise.resolve(existing as object as relationalStore.ResultSet);
+      const dbMock = mock.mockPrivateFunc(database, 'db');
+      when(dbMock)().afterReturn(fakeStore as object as relationalStore.RdbStore);
+
+      const articles: Article[] = [];
+      for (let i: number = 0; i < 3; i++) {
+        const a: Article = {
+          id: `a${i}`, feedId: 'f1', feedTitle: 'F', title: 't', author: '', link: '',
+          summary: '', content: '', fullContent: '', imageUrl: '', publishedAt: 1,
+          isRead: false, isStarred: false,
+        };
+        articles.push(a);
+      }
+      const inserted: number = await database.insertArticles(articles, 'acc1', true);
+      // a1 already exists locally: it must not be counted as newly inserted.
+      expect(inserted).assertEqual(2);
+      expect(statements.length).assertEqual(1);
+      // Two surviving rows produce two multi-column VALUES groups.
+      expect((statements[0].match(/\(\?\s*,\s*\?/g) ?? []).length >= 2).assertTrue();
       mock.clear(database);
     });
 
@@ -211,6 +276,32 @@ export default function databaseTest(): void {
       await database.setStates(['a1', 'a2'], true, undefined);
       expect(sqls.length >= 1).assertTrue();
       expect(sqls[0].indexOf('UPDATE article SET is_read = ?') >= 0).assertTrue();
+      mock.clear(database);
+    });
+
+    it('bulk read-state setters honor the before cutoff', 0, async () => {
+      const mock: MockKit = new MockKit();
+      const sqls: string[] = [];
+      const argsets: Array<Array<relationalStore.ValueType>> = [];
+      const fakeStore: FakeStore = new FakeStore();
+      fakeStore.onExecWithArgs = (sql: string, args: Array<relationalStore.ValueType>): Promise<void> => {
+        sqls.push(sql);
+        argsets.push(args);
+        return Promise.resolve();
+      };
+      const dbMock = mock.mockPrivateFunc(database, 'db');
+      when(dbMock)().afterReturn(fakeStore as object as relationalStore.RdbStore);
+
+      await database.setStatesByFeed('acc1', 'f1', true, 5000);
+      await database.setStatesByGroup('acc1', 'g1', true, 5000);
+      await database.setAllRead('acc1', true, 5000);
+      expect(sqls.length).assertEqual(3);
+      for (const sql of sqls) {
+        expect(sql.indexOf('published_at < ?') >= 0).assertTrue();
+      }
+      for (const args of argsets) {
+        expect(args[args.length - 1]).assertEqual(5000);
+      }
       mock.clear(database);
     });
 

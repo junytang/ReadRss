@@ -139,11 +139,13 @@ if (window.MutationObserver) {
   }
 
   static fill(style: string, baseHref: string, body: string): string {
+    // Function replacers avoid String.replace's `$&` / `$'` substitution
+    // semantics, which would corrupt article HTML containing those sequences.
     let result: string = WebViewHtml.HTML;
-    result = result.replace('%s', style);
-    result = result.replace('%s', baseHref);
-    result = result.replace('%s', body);
-    result = result.replace('%s', WebViewHtml.SCRIPT);
+    result = result.replace('%s', (): string => style);
+    result = result.replace('%s', (): string => baseHref);
+    result = result.replace('%s', (): string => body);
+    result = result.replace('%s', (): string => WebViewHtml.SCRIPT);
     return result;
   }
 }

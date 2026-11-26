@@ -229,36 +229,55 @@ class ReadStatusStore {
 
   // -------------------------------- marking ------------------------------
 
-  markRead(articleId: string, unread: boolean, currentUnread: boolean, feedId: string, groupId: string): void {
+  markRead(
+    articleId: string, unread: boolean, currentUnread: boolean, feedId: string, groupId: string,
+    silent: boolean = false
+  ): void {
     if (this.diffs.markRead(articleId, unread, currentUnread, feedId, groupId)) {
       pendingStatusRegistry.add(articleId);
     }
     // A fresh local change supersedes any older server retry for this id.
     this.remoteReads.clear(articleId);
-    this.publish();
+    this.publish(silent);
     this.schedule();
   }
 
-  markReadLocal(articleId: string, unread: boolean, currentUnread: boolean, feedId: string, groupId: string): void {
+  markReadLocal(
+    articleId: string, unread: boolean, currentUnread: boolean, feedId: string, groupId: string,
+    silent: boolean = false
+  ): void {
     if (this.diffs.markRead(articleId, unread, currentUnread, feedId, groupId)) {
       pendingStatusRegistry.add(articleId);
     }
     this.remoteReads.clear(articleId);
-    this.publish();
+    this.publish(silent);
   }
 
-  markStarred(articleId: string, starred: boolean, currentStarred: boolean, feedId: string): void {
+  markStarred(
+    articleId: string, starred: boolean, currentStarred: boolean, feedId: string,
+    silent: boolean = false
+  ): void {
     if (this.diffs.markStarred(articleId, starred, currentStarred, feedId)) {
       pendingStatusRegistry.add(articleId);
     }
     this.remoteStars.clear(articleId);
-    this.publish();
+    this.publish(silent);
     this.schedule();
   }
 
-  private publish(): void {
+  /** Publish once after a batch of silent mark* calls. */
+  notifyChanged(): void {
+    this.publish(false);
+  }
+
+  private publish(silent: boolean = false): void {
     this.markCacheDirty();
-    AppStorage.setOrCreate<number>('readStatusTick', Date.now());
+    if (!silent) {
+      // Monotonic counter: Date.now() can repeat within a millisecond, and
+      // AppStorage/@Watch ignores equal values, dropping the refresh.
+      const tick: number = (AppStorage.get<number>('readStatusTick') ?? 0) + 1;
+      AppStorage.setOrCreate<number>('readStatusTick', tick);
+    }
   }
 
   // ------------------------------ background merge -----------------------
@@ -273,11 +292,23 @@ class ReadStatusStore {
     }, delay);
   }
 
+  private flushTask?: Promise<void>;
+
   async flush(): Promise<void> {
-    if (this.flushing || (this.diffs.readCount() === 0 && this.diffs.starCount() === 0)) {
+    if (this.flushing) {
+      // A sync must wait for an already-running flush instead of reconciling
+      // against a stale server view while marks are still being pushed.
+      if (this.flushTask !== undefined) {
+        await this.flushTask;
+      }
+      return;
+    }
+    if (this.diffs.readCount() === 0 && this.diffs.starCount() === 0) {
       return;
     }
     this.flushing = true;
+    let finishFlush: () => void = (): void => {};
+    this.flushTask = new Promise<void>((resolve: () => void): void => { finishFlush = resolve; });
     if (this.timer >= 0) {
       clearTimeout(this.timer);
       this.timer = -1;
@@ -328,6 +359,8 @@ class ReadStatusStore {
       }
     } finally {
       this.flushing = false;
+      finishFlush();
+      this.flushTask = undefined;
       this.flushCache();
     }
   }

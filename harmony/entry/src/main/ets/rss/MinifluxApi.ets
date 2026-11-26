@@ -97,6 +97,12 @@ export function isUnsupportedStarFieldError(message: string | undefined): boolea
   return text.indexOf('400') >= 0 && text.indexOf('starred') >= 0;
 }
 
+/** True only for HTTP 404, i.e. the endpoint is absent on an old server.
+ *  Used to distinguish a missing capability from transient network errors. */
+export function isNotFoundError(error: Object | string): boolean {
+  return errorText(error).startsWith(NOT_FOUND);
+}
+
 /** Miniflux returns `image/png;base64,...` (data-URI body without prefix).
  *  Keep its real MIME type so ArkWeb does not mislabel JPEG/ICO icons. */
 export function iconDataUrl(data: string, mimeType?: string): string {
@@ -305,12 +311,17 @@ export class MinifluxApi {
     return result ?? { entries: [] };
   }
 
-  /** ID-only listing (Miniflux >= 2.3.2) — no article bodies transferred. */
+  /** ID-only listing (Miniflux >= 2.3.2) — no article bodies transferred.
+   *  A 200 without `entry_ids` is malformed, not an empty list: treating it as
+   *  empty would mark every local article read during reconciliation. */
   async getEntryIds(params: MinifluxEntryParams): Promise<number[]> {
     const result = await this.request<MinifluxEntryIds | undefined>(
       http.RequestMethod.GET, 'entries/ids', undefined, this.entryQuery(params)
     );
-    return result?.entry_ids ?? [];
+    if (result === undefined || result.entry_ids === undefined) {
+      throw new Error('Miniflux entries/ids response missing entry_ids');
+    }
+    return result.entry_ids;
   }
 
   async getEntryContent(id: number): Promise<string> {

@@ -3,10 +3,11 @@ import { Account, dbId } from '../account/AccountModels';
 import { database } from '../data/Database';
 import { settingsStore } from '../data/SettingsStore';
 import { Article, Feed } from '../model/Models';
-import { beginSync, notifySyncBatch, notifySyncFinal, notifyContentReady } from './SyncProgress';
+import { beginSync, notifySyncBatch, notifyContentReady } from './SyncProgress';
 import { ParsedFeed, RssParser } from './RssParser';
 import { FeedSyncService, SyncResult } from './SyncService';
 import { Logger } from '../common/Logger';
+import { forEachLimited, SYNC_CONCURRENCY } from './SyncRuntime';
 
 /** Direct RSS/Atom fetching. Equivalent to Android's LocalRssService. */
 export class LocalSyncService implements FeedSyncService {
@@ -82,7 +83,9 @@ export class LocalSyncService implements FeedSyncService {
     const result: SyncResult = { succeeded: 0, failed: 0, newArticles: 0 };
     const batchSize: number = settingsStore.get().fetchBatchSize;
     beginSync();
-    for (const feed of feeds) {
+    // Bounded concurrency: one slow feed must not block every other source.
+    // Inserts remain serialized by Database.withTransaction.
+    await forEachLimited(feeds, async (feed: Feed): Promise<void> => {
       try {
         const parsed: ParsedFeed = this.parser.parse(await this.fetch(feed.url), feed.id, feed.title);
         if (parsed.title.length > 0 && parsed.title !== feed.title) {
@@ -101,10 +104,10 @@ export class LocalSyncService implements FeedSyncService {
         result.failed += 1;
         Logger.error(`Local sync failed for ${feed.url}: ${(error as Error).message}`);
       }
-    }
-    // All feed content is committed; stop the spinner here.
+    }, SYNC_CONCURRENCY);
+    // All feed content is committed; stop the spinner here. The repository
+    // emits the single syncFinishedTick at the real end of every sync.
     notifyContentReady();
-    notifySyncFinal();
     return result;
   }
 

@@ -63,13 +63,8 @@ export struct AccountsView {
       return;
     }
     try {
-      const removed: boolean = await accountRepository.remove(account.id);
-      if (!removed) {
-        ToastUtil.show(this.getUIContext(), '必须至少有一个账户');
-        return;
-      }
+      await accountRepository.remove(account.id);
       await this.load();
-      AppStorage.setOrCreate<number>('accountSwitchTick', Date.now());
     } catch (error) {
       ToastUtil.show(this.getUIContext(), (error as Error).message);
     }

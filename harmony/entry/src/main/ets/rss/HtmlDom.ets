@@ -4,10 +4,12 @@ export interface HtmlNode {
   attrs: string;
   children: HtmlNode[];
   text: string;
+  /** Memoized subtree stats; scoring visits many nodes repeatedly. */
+  statsCache?: ContentStats;
 }
 
 /** Signals used by the generic content-scoring algorithm. */
-interface ContentStats {
+export interface ContentStats {
   text: number;
   linkText: number;
   paragraphs: number;
@@ -17,6 +19,9 @@ interface ContentStats {
 
 /** Lenient HTML parser: enough structure for article-body extraction. */
 export class HtmlDom {
+  /** Guard for recursive scoring/serialization on deeply nested markup. */
+  private static readonly MAX_DEPTH: number = 200;
+
   static parse(html: string): HtmlNode {
     const root: HtmlNode = HtmlDom.node('#document');
     const stack: HtmlNode[] = [root];
@@ -87,19 +92,25 @@ export class HtmlDom {
   }
 
   /** Total text length of a node including descendants. */
-  static textLength(node: HtmlNode): number {
+  static textLength(node: HtmlNode, depth: number = 0): number {
+    if (depth > HtmlDom.MAX_DEPTH) {
+      return 0;
+    }
     let total: number = node.text.length;
     for (const child of node.children) {
-      total += HtmlDom.textLength(child);
+      total += HtmlDom.textLength(child, depth + 1);
     }
     return total;
   }
 
   /** Count images inside a node (including descendants). */
-  static imageCount(node: HtmlNode): number {
+  static imageCount(node: HtmlNode, depth: number = 0): number {
+    if (depth > HtmlDom.MAX_DEPTH) {
+      return 0;
+    }
     let count: number = node.tag === 'img' ? 1 : 0;
     for (const child of node.children) {
-      count += HtmlDom.imageCount(child);
+      count += HtmlDom.imageCount(child, depth + 1);
     }
     return count;
   }
@@ -154,8 +165,17 @@ export class HtmlDom {
     return current;
   }
 
-  /** Accumulate the signals used by the generic content-scoring algorithm. */
-  private static stats(node: HtmlNode): ContentStats {
+  /** Accumulate the signals used by the generic content-scoring algorithm.
+   *  Memoized on the node: bestContentNode and drillToContent revisit the same
+   *  subtrees several times, which was O(N²) on long articles. */
+  private static stats(node: HtmlNode, depth: number = 0): ContentStats {
+    if (node.statsCache !== undefined) {
+      return node.statsCache;
+    }
+    // Maliciously nested markup must not overflow the JS stack.
+    if (depth > HtmlDom.MAX_DEPTH) {
+      return { text: 0, linkText: 0, paragraphs: 0, images: 0, breaks: 0 };
+    }
     let text: number = node.text.length;
     let linkText: number = 0;
     let paragraphs: number = 0;
@@ -174,17 +194,19 @@ export class HtmlDom {
       breaks = 1;
     }
     for (const child of node.children) {
-      const childStats: ContentStats = HtmlDom.stats(child);
+      const childStats: ContentStats = HtmlDom.stats(child, depth + 1);
       text += childStats.text;
       linkText += childStats.linkText;
       paragraphs += childStats.paragraphs;
       images += childStats.images;
       breaks += childStats.breaks;
     }
-    return {
+    const result: ContentStats = {
       text: text, linkText: linkText, paragraphs: paragraphs,
       images: images, breaks: breaks,
     };
+    node.statsCache = result;
+    return result;
   }
 
   private static classAndId(node: HtmlNode): string {
@@ -315,17 +337,25 @@ export class HtmlDom {
   private static readonly VOID_TAGS: string[] =
     ['br', 'hr', 'img', 'input', 'meta', 'link', 'source', 'wbr'];
 
-  static toHtml(node: HtmlNode): string {
-    if (node.tag === '#document' || node.tag === '#text') {
-      let out: string = node.text;
-      for (const child of node.children) out += HtmlDom.toHtml(child);
-      return out;
+  static toHtml(node: HtmlNode, depth: number = 0): string {
+    if (depth > HtmlDom.MAX_DEPTH) {
+      return '';
     }
-    let out: string = `<${node.tag}${node.attrs}>` + node.text;
-    for (const child of node.children) out += HtmlDom.toHtml(child);
-    if (HtmlDom.VOID_TAGS.indexOf(node.tag) < 0) {
-      out += `</${node.tag}>`;
+    // Array + join avoids one intermediate string allocation per child.
+    const parts: string[] = [];
+    if (node.tag !== '#document' && node.tag !== '#text') {
+      parts.push(`<${node.tag}${node.attrs}>`);
     }
-    return out;
+    if (node.text.length > 0) {
+      parts.push(node.text);
+    }
+    for (const child of node.children) {
+      parts.push(HtmlDom.toHtml(child, depth + 1));
+    }
+    if (node.tag !== '#document' && node.tag !== '#text'
+      && HtmlDom.VOID_TAGS.indexOf(node.tag) < 0) {
+      parts.push(`</${node.tag}>`);
+    }
+    return parts.join('');
   }
 }
