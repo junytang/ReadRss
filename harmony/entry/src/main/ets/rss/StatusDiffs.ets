@@ -48,6 +48,23 @@ export class StatusDiffs {
     this.attempts.clear();
   }
 
+  /** Clear only one account's diffs. Article ids are "accountId|remoteId". */
+  clearAccount(accountId: string): void {
+    const prefix: string = `${accountId}|`;
+    for (const id of Array.from(this.readDiffs.keys())) {
+      if (id.startsWith(prefix)) {
+        this.readDiffs.delete(id);
+        this.attempts.delete(id);
+      }
+    }
+    for (const id of Array.from(this.starDiffs.keys())) {
+      if (id.startsWith(prefix)) {
+        this.starDiffs.delete(id);
+        this.attempts.delete(id);
+      }
+    }
+  }
+
   // ------------------------------- queries --------------------------------
 
   effectiveUnread(articleId: string, dbUnread: boolean): boolean {

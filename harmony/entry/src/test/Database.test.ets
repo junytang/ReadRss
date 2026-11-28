@@ -153,6 +153,50 @@ export default function databaseTest(): void {
       mock.clear(database);
     });
 
+    it('clearFullContent scopes the UPDATE to one account', 0, async () => {
+      const mock: MockKit = new MockKit();
+      let sql: string = '';
+      let args: Array<relationalStore.ValueType> = [];
+      const fakeStore: FakeStore = new FakeStore();
+      fakeStore.onExecWithArgs = (s: string, a: Array<relationalStore.ValueType>): Promise<void> => {
+        sql = s;
+        args = a;
+        return Promise.resolve();
+      };
+      const dbMock = mock.mockPrivateFunc(database, 'db');
+      when(dbMock)().afterReturn(fakeStore as object as relationalStore.RdbStore);
+
+      await database.clearFullContent('acc2');
+      expect(sql.indexOf('WHERE account_id = ?') >= 0).assertTrue();
+      expect(args.length).assertEqual(1);
+      expect(args[0]).assertEqual('acc2');
+      mock.clear(database);
+    });
+
+    it('debugClearAllArticles scopes deletion and cursor reset to one account', 0, async () => {
+      const mock: MockKit = new MockKit();
+      const statements: string[] = [];
+      const args: Array<Array<relationalStore.ValueType>> = [];
+      const fakeStore: FakeStore = new FakeStore();
+      fakeStore.onExecWithArgs = (s: string, a: Array<relationalStore.ValueType>): Promise<void> => {
+        statements.push(s);
+        args.push(a);
+        return Promise.resolve();
+      };
+      const dbMock = mock.mockPrivateFunc(database, 'db');
+      when(dbMock)().afterReturn(fakeStore as object as relationalStore.RdbStore);
+
+      await database.debugClearAllArticles('acc2');
+      expect(statements.length).assertEqual(2);
+      // article is keyed by account_id; account is keyed by id.
+      expect(statements[0].indexOf('DELETE FROM article WHERE account_id = ?') >= 0).assertTrue();
+      expect(statements[1].indexOf('UPDATE account') >= 0).assertTrue();
+      expect(statements[1].indexOf('WHERE id = ?') >= 0).assertTrue();
+      expect(args[0][0]).assertEqual('acc2');
+      expect(args[1][0]).assertEqual('acc2');
+      mock.clear(database);
+    });
+
     it('listArticles includes pending local ids in starred/unread filters', 0, async () => {
       const mock: MockKit = new MockKit();
       let capturedSql: string = '';

@@ -23,6 +23,16 @@ class PendingStatusRegistry {
   clear(): void {
     this.ids.clear();
   }
+
+  /** Remove only ids belonging to one account (article ids are "accountId|id"). */
+  clearAccount(accountId: string): void {
+    const prefix: string = `${accountId}|`;
+    for (const id of Array.from(this.ids)) {
+      if (id.startsWith(prefix)) {
+        this.ids.delete(id);
+      }
+    }
+  }
 }
 
 export const pendingStatusRegistry: PendingStatusRegistry = new PendingStatusRegistry();

@@ -23,6 +23,7 @@ import entryTimeTest from './EntryTime.test';
 import accountSelectionTest from './AccountSelection.test';
 import feedDisplayTest from './FeedDisplay.test';
 import designInvariantsTest from './DesignInvariants.test';
+import feverFirstSyncTest from './FeverFirstSync.test';
 
 export default function testsuite(): void {
   parserTest();
@@ -50,4 +51,5 @@ export default function testsuite(): void {
   accountSelectionTest();
   feedDisplayTest();
   designInvariantsTest();
+  feverFirstSyncTest();
 }

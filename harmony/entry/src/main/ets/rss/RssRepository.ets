@@ -174,14 +174,16 @@ class FeedRepository {
   }
 
   async clearFullContentCache(): Promise<void> {
-    await database.clearFullContent();
+    const account: Account = await this.activeAccount();
+    await database.clearFullContent(account.id);
   }
 
   /** Debug only: wipe all local articles, reset sync cursors and pending marks
    *  so the next pull-to-refresh re-downloads everything from scratch. */
   async debugClearAllArticles(): Promise<number> {
-    const count: number = await database.debugClearAllArticles();
-    readStatusStore.resetForDebug();
+    const account: Account = await this.activeAccount();
+    const count: number = await database.debugClearAllArticles(account.id);
+    readStatusStore.resetForDebugAccount(account.id);
     AppStorage.setOrCreate<number>('feedDataTick', Date.now());
     AppStorage.setOrCreate<number>('articleListClearTick', Date.now());
     return count;

@@ -15,6 +15,9 @@ import { pendingStatusRegistry } from './PendingStatusRegistry';
 import { md5Hex } from '../common/Md5';
 import { gReaderPublishedAt } from './EntryPublishedTime';
 import { normalizeFeedText } from '../model/FeedDisplay';
+import {
+  shouldKeepFeverFirstSyncItem, FEVER_FRESH_MAX_PAGES,
+} from './FeverFirstSync';
 
 const MAX_TIMESTAMP: number = 9223372036854775; // Date(Long.MAX_VALUE).time / 1000
 
@@ -66,7 +69,26 @@ export class FeverSyncService implements FeedSyncService {
       // rows already inserted.
       let newArticles: number = 0;
       const fastIds: Set<string> = new Set<string>();
-      if (!account.lastArticleId || account.lastArticleId.length === 0) {
+      const freshSync: boolean = !account.lastArticleId || account.lastArticleId.length === 0;
+      // Fresh installs store bodies only for unread/starred articles, like GReader.
+      // `undefined` means the server has no ID endpoint: fall back to importing
+      // everything so nothing is silently lost on older Fever servers.
+      let freshUnreadIds: Set<string> = new Set<string>();
+      let freshStarredIds: Set<string> = new Set<string>();
+      let limitFresh: boolean = false;
+      if (freshSync) {
+        try {
+          const unread: string[] | undefined = await api.getUnreadIds();
+          if (unread !== undefined) {
+            freshUnreadIds = new Set<string>(unread);
+            freshStarredIds = new Set<string>(await api.getSavedIds());
+            limitFresh = true;
+          }
+        } catch (error) {
+          Logger.warn(`Fever state ids unavailable, importing full history: ${(error as Error).message}`);
+        }
+      }
+      if (freshSync) {
         const cachedFeeds: Feed[] = await database.listFeeds(account.id);
         const firstTitles: Map<string, string> = new Map<string, string>();
         for (const feed of cachedFeeds) {
@@ -83,6 +105,9 @@ export class FeverSyncService implements FeedSyncService {
           const id: string = String(item.id);
           // Never REPLACE a row whose mark is still pending locally.
           if (pendingStatusRegistry.has(dbId(account.id, id))) {
+            continue;
+          }
+          if (limitFresh && !shouldKeepFeverFirstSyncItem(id, freshUnreadIds, freshStarredIds)) {
             continue;
           }
           fastIds.add(id);
@@ -212,9 +237,12 @@ export class FeverSyncService implements FeedSyncService {
       // One notification per feed for the whole sync (Android behaviour), instead
       // of re-notifying and re-reading the feed table on every batch.
       const notifyByFeed: Map<string, FeedNotify> = new Map<string, FeedNotify>();
+      const foundFresh: Set<string> = new Set<string>(fastIds);
+      let freshPages: number = 0;
       for (;;) {
         const body = await api.getItemsSince(lastSeenId);
         const items: FeverItem[] = body.items ?? [];
+        freshPages++;
         const articles: Article[] = [];
         for (const item of items) {
           const id: string = String(item.id ?? '');
@@ -224,6 +252,12 @@ export class FeverSyncService implements FeedSyncService {
           // INSERT OR REPLACE must not clobber a locally pending mark.
           if (pendingStatusRegistry.has(dbId(account.id, id))) {
             continue;
+          }
+          if (limitFresh) {
+            if (!shouldKeepFeverFirstSyncItem(id, freshUnreadIds, freshStarredIds)) {
+              continue;
+            }
+            foundFresh.add(id);
           }
           if (item.id === undefined || item.id === null || item.feed_id === undefined || item.feed_id === null) {
             throw new Error('Fever item missing required field');
@@ -276,6 +310,17 @@ export class FeverSyncService implements FeedSyncService {
         lastSeenId = String(items[items.length - 1].id);
         if (items.length < 50) {
           break;
+        }
+        if (limitFresh) {
+          // Stop once every unread/starred id has been observed, or after a
+          // bounded page budget — never import the whole history on first install.
+          if (foundFresh.size >= freshUnreadIds.size + freshStarredIds.size) {
+            break;
+          }
+          if (freshPages >= FEVER_FRESH_MAX_PAGES) {
+            Logger.warn('Fever fresh sync reached page budget; remaining history is on demand');
+            break;
+          }
         }
       }
       result.newArticles = newArticles;

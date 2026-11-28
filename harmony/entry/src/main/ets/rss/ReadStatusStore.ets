@@ -79,6 +79,17 @@ class ReadStatusStore {
     }
   }
 
+  /** Account-scoped variant used by the settings "clear this account" action.
+   *  Other accounts' pending marks, retry queues and cache entries stay intact. */
+  resetForDebugAccount(accountId: string): void {
+    this.diffs.clearAccount(accountId);
+    this.remoteReads.clearAccount(accountId);
+    this.remoteStars.clearAccount(accountId);
+    pendingStatusRegistry.clearAccount(accountId);
+    this.markCacheDirty();
+    this.flushCache();
+  }
+
   // ------------------------------ persistence -----------------------------
 
   private cachePath(): string {

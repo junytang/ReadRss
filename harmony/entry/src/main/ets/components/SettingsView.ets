@@ -95,22 +95,22 @@ export struct SettingsView {
   private clearCacheMenu(): Array<MenuElement> {
     const items: Array<MenuElement> = [];
     items.push({
-      value: '清除全文缓存',
+      value: '清除本账号全文缓存',
       action: async () => {
         await rssRepository.clearFullContentCache();
-        ToastUtil.show(this.getUIContext(), '全文缓存已清除');
+        ToastUtil.show(this.getUIContext(), '本账号全文缓存已清除');
       },
     });
     items.push({
-      value: '清除所有文章',
+      value: '清除本账号所有文章',
       action: () => {
         this.getUIContext().showAlertDialog({
-          message: '清除所有本地文章并重置同步游标？下次下拉刷新将重新下载全部内容。',
+          message: '清除当前账号的本地文章并重置其同步游标？下次下拉刷新将重新下载该账号的内容。',
           confirm: {
             value: '清除',
             action: async () => {
               const count: number = await rssRepository.debugClearAllArticles();
-              ToastUtil.show(this.getUIContext(), `已清除 ${count} 篇文章`);
+              ToastUtil.show(this.getUIContext(), `已清除本账号 ${count} 篇文章`);
             },
           },
         });

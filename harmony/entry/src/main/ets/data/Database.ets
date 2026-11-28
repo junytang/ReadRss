@@ -824,8 +824,14 @@ class ReadYouDatabase {
     return count;
   }
 
-  async clearFullContent(): Promise<void> {
-    await this.exec("UPDATE article SET full_content = ''");
+  /** Clear full-text bodies. When accountId is given, only that account's
+   *  rows are touched (the settings action is account-scoped). */
+  async clearFullContent(accountId?: string): Promise<void> {
+    if (accountId === undefined || accountId.length === 0) {
+      await this.exec("UPDATE article SET full_content = ''");
+    } else {
+      await this.exec("UPDATE article SET full_content = '' WHERE account_id = ?", [accountId]);
+    }
   }
 
   /** On a fresh install the first articles are committed before remote feed
@@ -842,8 +848,11 @@ class ReadYouDatabase {
   /** Debug only: wipe every local article and reset the incremental cursors so
    *  the next sync behaves like a first install (full re-fetch). Kept in the DB
    *  layer so feed/group/account rows survive — only articles and cursors go. */
-  async debugClearAllArticles(): Promise<number> {
-    const rs = await this.query('SELECT COUNT(*) AS n FROM article');
+  async debugClearAllArticles(accountId?: string): Promise<number> {
+    const scoped: boolean = accountId !== undefined && accountId.length > 0;
+    const where: string = scoped ? ' WHERE account_id = ?' : '';
+    const args: Array<string | number> = scoped ? [accountId!] : [];
+    const rs = await this.query(`SELECT COUNT(*) AS n FROM article${where}`, args);
     let count: number = 0;
     try {
       if (this.nextRow(rs)) {
@@ -852,8 +861,16 @@ class ReadYouDatabase {
     } finally {
       this.closeRs(rs);
     }
-    await this.exec('DELETE FROM article');
-    await this.exec('UPDATE account SET update_at = 0, last_article_id = NULL');
+    // `article` is scoped by account_id, but the `account` table's key is `id`.
+    // Without the different predicate this UPDATE throws after the DELETE,
+    // so the UI never receives the clear tick and keeps showing stale rows.
+    await this.withTransaction(async () => {
+      await this.exec(`DELETE FROM article${where}`, args);
+      const accountPredicate: string = scoped ? ' WHERE id = ?' : '';
+      await this.exec(
+        `UPDATE account SET update_at = 0, last_article_id = NULL${accountPredicate}`, args
+      );
+    });
     return count;
   }
 

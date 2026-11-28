@@ -35,6 +35,19 @@ export default function storeTest(): void {
       expect(d.unreadDelta('', '', true)).assertEqual(0);
     });
 
+    it('clearAccount removes only one account\'s diffs', 0, () => {
+      const d: StatusDiffs = new StatusDiffs();
+      d.markRead('1|r1', false, true, 'f1', 'g1');
+      d.markRead('2|r2', false, true, 'f1', 'g1');
+      d.markStarred('1|s1', true, false, 'f1');
+      d.markStarred('2|s2', true, false, 'f1');
+      d.clearAccount('1');
+      expect(d.hasRead('1|r1')).assertFalse();
+      expect(d.hasStar('1|s1')).assertFalse();
+      expect(d.hasRead('2|r2')).assertTrue();
+      expect(d.hasStar('2|s2')).assertTrue();
+    });
+
     it('unreadDelta scoped by feed and group', 0, () => {
       const d: StatusDiffs = new StatusDiffs();
       d.markRead('a1', false, true, 'f1', 'g1');
