@@ -19,6 +19,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Need full history + tags so the release notes can diff this tag
+          # against the previous one (a shallow checkout has neither).
+          fetch-depth: 0
 
       - name: Setup HarmonyOS CLI tools
         uses: ErBWs/setup-ohos@v2
@@ -64,14 +68,39 @@ jobs:
           path: harmony/entry/build/default/outputs/default/ReadRss-unsigned.hap
           if-no-files-found: error
 
+      - name: Generate release notes from previous tag
+        run: |
+          set -euo pipefail
+          CURRENT="${{ github.ref_name }}"
+          # Nearest reachable HarmonyOS tag before this one; an empty result on
+          # the very first tag means we list everything up to CURRENT.
+          PREV=$(git describe --tags --abbrev=0 --match 'harmonyos-*' "${CURRENT}^" 2>/dev/null || true)
+          {
+            echo "自动构建的 ReadRss HarmonyOS unsigned HAP（未签名，需自行配置调试签名后安装）。"
+            echo
+            echo "标签：${CURRENT} · 提交：${{ github.sha }}"
+            echo
+            if [ -n "$PREV" ]; then
+              echo "变更（${PREV}..${CURRENT}）："
+            else
+              echo "变更："
+            fi
+            echo
+            if [ -n "$PREV" ]; then
+              git log --no-merges --pretty=format:'- %h %s' "${PREV}..${CURRENT}"
+            else
+              git log --no-merges --pretty=format:'- %h %s' "$CURRENT"
+            fi
+            echo
+          } > release_notes.md
+          cat release_notes.md
+
       - name: Publish unsigned HAP to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           # Use the pushed tag itself (e.g. harmonyos-1.0.0) as the release tag.
           tag_name: ${{ github.ref_name }}
           name: ReadRss ${{ github.ref_name }}
-          body: |
-            自动构建的 ReadRss HarmonyOS unsigned HAP（未签名，需自行配置调试签名后安装）。
-            标签：${{ github.ref_name }} · 提交：${{ github.sha }}
+          body_path: release_notes.md
           files: harmony/entry/build/default/outputs/default/ReadRss-unsigned.hap
           fail_on_unmatched_files: true
